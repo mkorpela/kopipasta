@@ -11,11 +11,17 @@ def read_gitignore():
         '.terraform', 'output', 'poetry.lock', 'package-lock.json', '.env',
         '*.log', '*.bak', '*.swp', '*.swo', '*.tmp', 'tmp', 'temp', 'logs',
         'build', 'target', '.DS_Store', 'Thumbs.db', '*.class', '*.jar',
-        '*.war', '*.ear', '*.sqlite', '*.db', '.github', '.gitignore'
+        '*.war', '*.ear', '*.sqlite', '*.db', '.github', '.gitignore',
+        '*.jpg', '*.jpeg', '*.png', '*.gif', '*.bmp', '*.tiff',
+        '*.ico', '*.svg', '*.webp', '*.mp3', '*.mp4', '*.avi',
+        '*.mov', '*.wmv', '*.flv', '*.pdf', '*.doc', '*.docx',
+        '*.xls', '*.xlsx', '*.ppt', '*.pptx', '*.zip', '*.rar',
+        '*.tar', '*.gz', '*.7z', '*.exe', '*.dll', '*.so', '*.dylib'
     ]
     gitignore_patterns = default_ignore_patterns.copy()
 
     if os.path.exists('.gitignore'):
+        print(".gitignore detected.")
         with open('.gitignore', 'r') as file:
             for line in file:
                 line = line.strip()
@@ -30,12 +36,23 @@ def is_ignored(path, ignore_patterns):
             return True
     return False
 
+def is_binary(file_path):
+    try:
+        with open(file_path, 'rb') as file:
+            return b'\0' in file.read(1024)
+    except IOError:
+        return False
+
+def get_human_readable_size(size):
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if size < 1024.0:
+            return f"{size:.2f} {unit}"
+        size /= 1024.0
+
 def get_project_structure(ignore_patterns):
     tree = []
     for root, dirs, files in os.walk('.'):
-        # Remove ignored directories
         dirs[:] = [d for d in dirs if not is_ignored(os.path.join(root, d), ignore_patterns)]
-        # Remove ignored files
         files = [f for f in files if not is_ignored(os.path.join(root, f), ignore_patterns)]
         level = root.replace('.', '').count(os.sep)
         indent = ' ' * 4 * level + '|-- '
@@ -79,7 +96,7 @@ def get_language_for_file(file_path):
 
 def select_files_in_directory(directory, ignore_patterns):
     files = [f for f in os.listdir(directory)
-             if os.path.isfile(os.path.join(directory, f)) and not is_ignored(os.path.join(directory, f), ignore_patterns)]
+             if os.path.isfile(os.path.join(directory, f)) and not is_ignored(os.path.join(directory, f), ignore_patterns) and not is_binary(os.path.join(directory, f))]
 
     if not files:
         return []
@@ -87,7 +104,9 @@ def select_files_in_directory(directory, ignore_patterns):
     print(f"\nDirectory: {directory}")
     print("Files:")
     for file in files:
-        print(f"- {file}")
+        file_path = os.path.join(directory, file)
+        file_size = get_human_readable_size(os.path.getsize(file_path))
+        print(f"- {file} ({file_size})")
 
     while True:
         choice = input("\n(y)es add all / (n)o ignore all / (s)elect individually / (q)uit? ").lower()
@@ -100,8 +119,10 @@ def select_files_in_directory(directory, ignore_patterns):
         elif choice == 's':
             selected_files = []
             for file in files:
+                file_path = os.path.join(directory, file)
+                file_size = get_human_readable_size(os.path.getsize(file_path))
                 while True:
-                    file_choice = input(f"{file} (y/n/q)? ").lower()
+                    file_choice = input(f"{file} ({file_size}) (y/n/q)? ").lower()
                     if file_choice == 'y':
                         selected_files.append(file)
                         break
@@ -125,10 +146,8 @@ def process_directory(directory, ignore_patterns):
     processed_dirs = set()
 
     for root, dirs, files in os.walk(directory):
-        # Remove ignored directories
         dirs[:] = [d for d in dirs if not is_ignored(os.path.join(root, d), ignore_patterns)]
-        # Remove ignored files
-        files = [f for f in files if not is_ignored(os.path.join(root, f), ignore_patterns)]
+        files = [f for f in files if not is_ignored(os.path.join(root, f), ignore_patterns) and not is_binary(os.path.join(root, f))]
 
         if root in processed_dirs:
             continue
@@ -142,38 +161,45 @@ def process_directory(directory, ignore_patterns):
 
 def generate_prompt(files_to_include, ignore_patterns):
     prompt = "# Project Overview\n\n"
-    prompt += "## Summary of Included Files\n\n"
-    for file in files_to_include:
-        relative_path = get_relative_path(file)
-        prompt += f"- {relative_path}\n"
-    prompt += "\n"
+    char_count = len(prompt)
 
     prompt += "## Project Structure\n\n"
     prompt += "```\n"
     prompt += get_project_structure(ignore_patterns)
     prompt += "\n```\n\n"
+    char_count = len(prompt)
+    print_char_count(char_count)
 
     prompt += "## File Contents\n\n"
     for file in files_to_include:
         relative_path = get_relative_path(file)
         language = get_language_for_file(file)
-        prompt += f"### {relative_path}\n\n"
-        prompt += f"```{language}\n"
-        prompt += read_file_contents(file)
-        prompt += "\n```\n\n"
+        file_content = f"### {relative_path}\n\n```{language}\n{read_file_contents(file)}\n```\n\n"
+        prompt += file_content
+        char_count += len(file_content)
+        print_char_count(char_count)
 
     prompt += "## Task Instructions\n\n"
     task_instructions = input("Enter the task instructions: ")
     prompt += f"{task_instructions}\n\n"
+    char_count += len(task_instructions) + 4  # +4 for newlines
+    print_char_count(char_count)
 
     prompt += "## Task Analysis and Planning\n\n"
-    prompt += (
+    analysis_text = (
         "Before starting, explain the task back to me in your own words. "
         "Ask for any clarifications if needed. Once you're clear, ask to proceed.\n\n"
         "Then, outline a plan for the task. Finally, use your plan to complete the task."
     )
+    prompt += analysis_text
+    char_count += len(analysis_text)
+    print_char_count(char_count)
 
-    return prompt
+    return prompt, char_count
+
+def print_char_count(count):
+    token_estimate = count // 4
+    print(f"\rCurrent prompt size: {count} characters (~ {token_estimate} tokens)", end="", flush=True)
 
 def main():
     parser = argparse.ArgumentParser(description="Generate a prompt with project structure and file contents.")
@@ -187,7 +213,7 @@ def main():
 
     for input_path in args.inputs:
         if os.path.isfile(input_path):
-            if not is_ignored(input_path, ignore_patterns):
+            if not is_ignored(input_path, ignore_patterns) and not is_binary(input_path):
                 files_to_include.append(input_path)
                 print(f"Added file: {input_path}")
             else:
@@ -206,17 +232,19 @@ def main():
     print("\nFile selection complete.")
     print(f"Summary: Added {len(files_to_include)} files from {len(processed_dirs)} directories.")
 
-    prompt = generate_prompt(files_to_include, ignore_patterns)
-    print("\nGenerated prompt:")
+    prompt, final_char_count = generate_prompt(files_to_include, ignore_patterns)
+    print("\n\nGenerated prompt:")
     print(prompt)
 
     # Copy the prompt to clipboard
     try:
         pyperclip.copy(prompt)
-        print("\nPrompt has been copied to clipboard.")
+        separator = "\n" + "=" * 40 + "\n☕🍝 Kopipasta Complete! 🍝☕\n" + "=" * 40 + "\n"
+        print(separator)
+        final_token_estimate = final_char_count // 4
+        print(f"Prompt has been copied to clipboard. Final size: {final_char_count} characters (~ {final_token_estimate} tokens)")
     except pyperclip.PyperclipException as e:
         print(f"Failed to copy to clipboard: {e}")
 
 if __name__ == "__main__":
     main()
-

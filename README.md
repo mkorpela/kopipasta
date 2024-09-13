@@ -1,4 +1,7 @@
+
 # kopipasta
+
+![kopipasta](kopipasta.jpg)
 
 A CLI tool to generate prompts with project structure and file contents.
 

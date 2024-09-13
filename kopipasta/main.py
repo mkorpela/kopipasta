@@ -94,54 +94,66 @@ def get_language_for_file(file_path):
     }
     return language_map.get(extension, '')
 
-def select_files_in_directory(directory, ignore_patterns):
+def select_files_in_directory(directory, ignore_patterns, current_char_count=0):
     files = [f for f in os.listdir(directory)
              if os.path.isfile(os.path.join(directory, f)) and not is_ignored(os.path.join(directory, f), ignore_patterns) and not is_binary(os.path.join(directory, f))]
 
     if not files:
-        return []
+        return [], current_char_count
 
     print(f"\nDirectory: {directory}")
     print("Files:")
     for file in files:
         file_path = os.path.join(directory, file)
-        file_size = get_human_readable_size(os.path.getsize(file_path))
-        print(f"- {file} ({file_size})")
+        file_size = os.path.getsize(file_path)
+        file_size_readable = get_human_readable_size(file_size)
+        file_char_estimate = file_size  # Assuming 1 byte ≈ 1 character for text files
+        file_token_estimate = file_char_estimate // 4
+        print(f"- {file} ({file_size_readable}, ~{file_char_estimate} chars, ~{file_token_estimate} tokens)")
 
     while True:
-        choice = input("\n(y)es add all / (n)o ignore all / (s)elect individually / (q)uit? ").lower()
+        print_char_count(current_char_count)
+        choice = input("(y)es add all / (n)o ignore all / (s)elect individually / (q)uit? ").lower()
         if choice == 'y':
+            for file in files:
+                current_char_count += os.path.getsize(os.path.join(directory, file))
             print(f"Added all files from {directory}")
-            return files
+            return files, current_char_count
         elif choice == 'n':
             print(f"Ignored all files from {directory}")
-            return []
+            return [], current_char_count
         elif choice == 's':
             selected_files = []
             for file in files:
                 file_path = os.path.join(directory, file)
-                file_size = get_human_readable_size(os.path.getsize(file_path))
+                file_size = os.path.getsize(file_path)
+                file_size_readable = get_human_readable_size(file_size)
+                file_char_estimate = file_size
+                file_token_estimate = file_char_estimate // 4
                 while True:
-                    file_choice = input(f"{file} ({file_size}) (y/n/q)? ").lower()
+                    if current_char_count > 0:
+                        print_char_count(current_char_count)
+                    file_choice = input(f"{file} ({file_size_readable}, ~{file_char_estimate} chars, ~{file_token_estimate} tokens) (y/n/q)? ").lower()
                     if file_choice == 'y':
                         selected_files.append(file)
+                        current_char_count += file_char_estimate
                         break
                     elif file_choice == 'n':
                         break
                     elif file_choice == 'q':
                         print(f"Quitting selection for {directory}")
-                        return selected_files
+                        return selected_files, current_char_count
                     else:
                         print("Invalid choice. Please enter 'y', 'n', or 'q'.")
             print(f"Added {len(selected_files)} files from {directory}")
-            return selected_files
+            return selected_files, current_char_count
         elif choice == 'q':
             print(f"Quitting selection for {directory}")
-            return []
+            return [], current_char_count
         else:
             print("Invalid choice. Please try again.")
 
-def process_directory(directory, ignore_patterns):
+def process_directory(directory, ignore_patterns, current_char_count=0):
     files_to_include = []
     processed_dirs = set()
 
@@ -152,39 +164,28 @@ def process_directory(directory, ignore_patterns):
         if root in processed_dirs:
             continue
 
-        selected_files = select_files_in_directory(root, ignore_patterns)
+        selected_files, current_char_count = select_files_in_directory(root, ignore_patterns, current_char_count)
         full_paths = [os.path.join(root, f) for f in selected_files]
         files_to_include.extend(full_paths)
         processed_dirs.add(root)
 
-    return files_to_include, processed_dirs
+    return files_to_include, processed_dirs, current_char_count
 
 def generate_prompt(files_to_include, ignore_patterns):
     prompt = "# Project Overview\n\n"
-    char_count = len(prompt)
-
     prompt += "## Project Structure\n\n"
     prompt += "```\n"
     prompt += get_project_structure(ignore_patterns)
     prompt += "\n```\n\n"
-    char_count = len(prompt)
-    print_char_count(char_count)
-
     prompt += "## File Contents\n\n"
     for file in files_to_include:
         relative_path = get_relative_path(file)
         language = get_language_for_file(file)
         file_content = f"### {relative_path}\n\n```{language}\n{read_file_contents(file)}\n```\n\n"
         prompt += file_content
-        char_count += len(file_content)
-        print_char_count(char_count)
-
     prompt += "## Task Instructions\n\n"
     task_instructions = input("Enter the task instructions: ")
     prompt += f"{task_instructions}\n\n"
-    char_count += len(task_instructions) + 4  # +4 for newlines
-    print_char_count(char_count)
-
     prompt += "## Task Analysis and Planning\n\n"
     analysis_text = (
         "Before starting, explain the task back to me in your own words. "
@@ -192,14 +193,11 @@ def generate_prompt(files_to_include, ignore_patterns):
         "Then, outline a plan for the task. Finally, use your plan to complete the task."
     )
     prompt += analysis_text
-    char_count += len(analysis_text)
-    print_char_count(char_count)
-
-    return prompt, char_count
+    return prompt
 
 def print_char_count(count):
     token_estimate = count // 4
-    print(f"\rCurrent prompt size: {count} characters (~ {token_estimate} tokens)", end="", flush=True)
+    print(f"\rCurrent prompt size: {count} characters (~ {token_estimate} tokens)", flush=True)
 
 def main():
     parser = argparse.ArgumentParser(description="Generate a prompt with project structure and file contents.")
@@ -210,6 +208,7 @@ def main():
 
     files_to_include = []
     processed_dirs = set()
+    current_char_count = 0
 
     for input_path in args.inputs:
         if os.path.isfile(input_path):
@@ -219,7 +218,7 @@ def main():
             else:
                 print(f"Ignored file: {input_path}")
         elif os.path.isdir(input_path):
-            dir_files, dir_processed = process_directory(input_path, ignore_patterns)
+            dir_files, dir_processed, current_char_count = process_directory(input_path, ignore_patterns, current_char_count)
             files_to_include.extend(dir_files)
             processed_dirs.update(dir_processed)
         else:
@@ -230,17 +229,19 @@ def main():
         return
 
     print("\nFile selection complete.")
+    print_char_count(current_char_count)
     print(f"Summary: Added {len(files_to_include)} files from {len(processed_dirs)} directories.")
 
-    prompt, final_char_count = generate_prompt(files_to_include, ignore_patterns)
+    prompt = generate_prompt(files_to_include, ignore_patterns)
     print("\n\nGenerated prompt:")
     print(prompt)
 
     # Copy the prompt to clipboard
     try:
         pyperclip.copy(prompt)
-        separator = "\n" + "=" * 40 + "\n☕🍝 Kopipasta Complete! 🍝☕\n" + "=" * 40 + "\n"
+        separator = "\n" + "=" * 40 + "\n☕🍝       Kopipasta Complete!       🍝☕\n" + "=" * 40 + "\n"
         print(separator)
+        final_char_count = len(prompt)
         final_token_estimate = final_char_count // 4
         print(f"Prompt has been copied to clipboard. Final size: {final_char_count} characters (~ {final_token_estimate} tokens)")
     except pyperclip.PyperclipException as e:

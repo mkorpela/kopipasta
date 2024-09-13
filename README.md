@@ -3,7 +3,7 @@
 
 A CLI tool to generate prompts with project structure and file contents.
 
-![kopipasta](kopipasta.jpg)
+<img src="kopipasta.jpg" alt="kopipasta" width="300">
 
 ## Installation
 

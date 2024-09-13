@@ -22,7 +22,7 @@ Replace `[files_or_directories]` with the paths to the files or directories you 
 
 Example:
 ```
-kopipasta . src/ config.json
+kopipasta src/ config.json
 ```
 
 This will generate a prompt including the project structure and contents of the specified files and directories, ignoring files and directories typically excluded in version control (based on common .gitignore patterns).

@@ -15,6 +15,7 @@ setup(
     packages=find_packages(),
     install_requires=[
         "pyperclip==1.9.0",
+        "requests==2.32.3",
     ],
     classifiers=[
         "Development Status :: 3 - Alpha",

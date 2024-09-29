@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="kopipasta",
-    version="0.8.0",
+    version="0.9.0",
     author="Mikko Korpela",
     author_email="mikko.korpela@gmail.com",
     description="A CLI tool to generate prompts with project structure and file contents",

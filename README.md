@@ -1,6 +1,6 @@
 # kopipasta
 
-A CLI tool to generate prompts with project structure, file contents, and web content, while handling environment variables securely and offering snippets for large files.
+A CLI tool to generate prompts with project structure, file contents, and web content, while handling environment variables securely and offering snippets for large files also interactive patch selection, allowing you to include only the most relevant parts of your code.
 
 <img src="kopipasta.jpg" alt="kopipasta" width="300">
 

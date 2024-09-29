@@ -516,8 +516,13 @@ def process_directory(directory, ignore_patterns, current_char_count=0):
             continue
 
         selected_files, current_char_count = select_files_in_directory(root, ignore_patterns, current_char_count)
-        full_paths = [(os.path.join(root, f), use_snippet) for f, use_snippet in selected_files]
-        files_to_include.extend(full_paths)
+        for file_tuple in selected_files:
+            if len(file_tuple) == 3:
+                f, use_snippet, chunks = file_tuple
+                files_to_include.append((os.path.join(root, f), use_snippet, chunks))
+            else:
+                f, use_snippet = file_tuple
+                files_to_include.append((os.path.join(root, f), use_snippet))
         processed_dirs.add(root)
 
     return files_to_include, processed_dirs, current_char_count

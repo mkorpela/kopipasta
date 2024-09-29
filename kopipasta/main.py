@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import os
 import argparse
+import ast
 import re
+from textwrap import dedent
 import pyperclip
 import fnmatch
 
@@ -88,6 +90,7 @@ def get_language_for_file(file_path):
         '.ts': 'typescript',
         '.tsx': 'tsx',
         '.html': 'html',
+        '.htm': 'html',
         '.css': 'css',
         '.json': 'json',
         '.md': 'markdown',
@@ -96,9 +99,250 @@ def get_language_for_file(file_path):
         '.yml': 'yaml',
         '.yaml': 'yaml',
         '.go': 'go',
-        '.toml': 'toml'
+        '.toml': 'toml',
+        '.c': 'c',
+        '.cpp': 'cpp',
+        '.cc': 'cpp',
+        '.h': 'cpp',
+        '.hpp': 'cpp',
     }
     return language_map.get(extension, '')
+
+def split_python_file(file_content):
+    """
+    Splits Python code into logical chunks using the AST module.
+    Returns a list of tuples: (chunk_code, start_line, end_line)
+    """
+    tree = ast.parse(file_content)
+    chunks = []
+    prev_end = 0
+    lines = file_content.splitlines(keepends=True)
+
+    def get_code(start, end):
+        return ''.join(lines[start:end])
+
+    for node in ast.iter_child_nodes(tree):
+        if hasattr(node, 'lineno'):
+            start_line = node.lineno - 1  # Convert to 0-indexed
+            end_line = getattr(node, 'end_lineno', None)
+            if end_line is None:
+                end_line = node.lineno
+            # Add code before the node
+            if prev_end < start_line:
+                chunks.append((get_code(prev_end, start_line), prev_end, start_line))
+            # Add the node code
+            chunks.append((get_code(start_line, end_line), start_line, end_line))
+            prev_end = end_line
+    # Add any remaining code at the end
+    if prev_end < len(lines):
+        chunks.append((get_code(prev_end, len(lines)), prev_end, len(lines)))
+    return chunks
+
+def split_javascript_file(file_content):
+    """
+    Splits JavaScript code into logical chunks using regular expressions.
+    Returns a list of tuples: (chunk_code, start_line, end_line)
+    """
+    lines = file_content.splitlines(keepends=True)
+    chunks = []
+    pattern = re.compile(
+        r'^\s*(export\s+)?(async\s+)?(function\s+\w+|class\s+\w+|\w+\s*=\s*\(.*?\)\s*=>)',
+        re.MULTILINE
+    )
+    matches = list(pattern.finditer(file_content))
+
+    if not matches:
+        return [(file_content, 0, len(lines))]
+
+    prev_end_line = 0
+    for match in matches:
+        start_index = match.start()
+        start_line = file_content.count('\n', 0, start_index)
+        if prev_end_line < start_line:
+            code = ''.join(lines[prev_end_line:start_line])
+            chunks.append((code, prev_end_line, start_line))
+
+        function_code_lines = []
+        brace_count = 0
+        in_block = False
+        for i in range(start_line, len(lines)):
+            line = lines[i]
+            function_code_lines.append(line)
+            brace_count += line.count('{') - line.count('}')
+            if '{' in line:
+                in_block = True
+            if in_block and brace_count == 0:
+                end_line = i + 1
+                code = ''.join(function_code_lines)
+                chunks.append((code, start_line, end_line))
+                prev_end_line = end_line
+                break
+        else:
+            end_line = len(lines)
+            code = ''.join(function_code_lines)
+            chunks.append((code, start_line, end_line))
+            prev_end_line = end_line
+
+    if prev_end_line < len(lines):
+        code = ''.join(lines[prev_end_line:])
+        chunks.append((code, prev_end_line, len(lines)))
+
+    return chunks
+
+def split_html_file(file_content):
+    """
+    Splits HTML code into logical chunks based on top-level elements using regular expressions.
+    Returns a list of tuples: (chunk_code, start_line, end_line)
+    """
+    pattern = re.compile(r'<(?P<tag>\w+)(\s|>).*?</(?P=tag)>', re.DOTALL)
+    lines = file_content.splitlines(keepends=True)
+    chunks = []
+    matches = list(pattern.finditer(file_content))
+
+    if not matches:
+        return [(file_content, 0, len(lines))]
+
+    prev_end = 0
+    for match in matches:
+        start_index = match.start()
+        end_index = match.end()
+        start_line = file_content.count('\n', 0, start_index)
+        end_line = file_content.count('\n', 0, end_index)
+
+        if prev_end < start_line:
+            code = ''.join(lines[prev_end:start_line])
+            chunks.append((code, prev_end, start_line))
+
+        code = ''.join(lines[start_line:end_line])
+        chunks.append((code, start_line, end_line))
+        prev_end = end_line
+
+    if prev_end < len(lines):
+        code = ''.join(lines[prev_end:])
+        chunks.append((code, prev_end, len(lines)))
+
+    return chunks
+
+def split_c_file(file_content):
+    """
+    Splits C/C++ code into logical chunks using regular expressions.
+    Returns a list of tuples: (chunk_code, start_line, end_line)
+    """
+    pattern = re.compile(r'^\s*(?:[\w\*\s]+)\s+(\w+)\s*\([^)]*\)\s*\{', re.MULTILINE)
+    lines = file_content.splitlines(keepends=True)
+    chunks = []
+    matches = list(pattern.finditer(file_content))
+
+    if not matches:
+        return [(file_content, 0, len(lines))]
+
+    prev_end_line = 0
+    for match in matches:
+        start_index = match.start()
+        start_line = file_content.count('\n', 0, start_index)
+        if prev_end_line < start_line:
+            code = ''.join(lines[prev_end_line:start_line])
+            chunks.append((code, prev_end_line, start_line))
+
+        function_code_lines = []
+        brace_count = 0
+        in_function = False
+        for i in range(start_line, len(lines)):
+            line = lines[i]
+            function_code_lines.append(line)
+            brace_count += line.count('{') - line.count('}')
+            if '{' in line:
+                in_function = True
+            if in_function and brace_count == 0:
+                end_line = i + 1
+                code = ''.join(function_code_lines)
+                chunks.append((code, start_line, end_line))
+                prev_end_line = end_line
+                break
+        else:
+            end_line = len(lines)
+            code = ''.join(function_code_lines)
+            chunks.append((code, start_line, end_line))
+            prev_end_line = end_line
+
+    if prev_end_line < len(lines):
+        code = ''.join(lines[prev_end_line:])
+        chunks.append((code, prev_end_line, len(lines)))
+
+    return chunks
+
+def split_generic_file(file_content):
+    """
+    Splits generic text files into chunks based on double newlines.
+    Returns a list of tuples: (chunk_code, start_line, end_line)
+    """
+    lines = file_content.splitlines(keepends=True)
+    chunks = []
+    start = 0
+    for i, line in enumerate(lines):
+        if line.strip() == '':
+            if start < i:
+                chunk_code = ''.join(lines[start:i])
+                chunks.append((chunk_code, start, i))
+            start = i + 1
+    if start < len(lines):
+        chunk_code = ''.join(lines[start:])
+        chunks.append((chunk_code, start, len(lines)))
+    return chunks
+
+def select_file_patches(file_path):
+    file_content = read_file_contents(file_path)
+    language = get_language_for_file(file_path)
+    chunks = []
+    total_char_count = 0
+
+    if language == 'python':
+        code_chunks = split_python_file(file_content)
+    elif language == 'javascript':
+        code_chunks = split_javascript_file(file_content)
+    elif language == 'html':
+        code_chunks = split_html_file(file_content)
+    elif language in ['c', 'cpp']:
+        code_chunks = split_c_file(file_content)
+    else:
+        code_chunks = split_generic_file(file_content)
+
+    print(f"\nSelecting patches for {file_path}")
+    for index, (chunk_code, start_line, end_line) in enumerate(code_chunks):
+        print(f"\nChunk {index + 1} (Lines {start_line + 1}-{end_line}):")
+        print(f"```{language}\n{chunk_code}\n```")
+        while True:
+            choice = input("(y)es include / (n)o skip / (q)uit rest of file? ").lower()
+            if choice == 'y':
+                chunks.append(chunk_code)
+                total_char_count += len(chunk_code)
+                break
+            elif choice == 'n':
+                placeholder = get_placeholder_comment(language)
+                chunks.append(placeholder)
+                total_char_count += len(placeholder)
+                break
+            elif choice == 'q':
+                print("Skipping the rest of the file.")
+                return chunks, total_char_count
+            else:
+                print("Invalid choice. Please enter 'y', 'n', or 'q'.")
+
+    return chunks, total_char_count
+
+def get_placeholder_comment(language):
+    comments = {
+        'python': '# Skipped content\n',
+        'javascript': '// Skipped content\n',
+        'typescript': '// Skipped content\n',
+        'java': '// Skipped content\n',
+        'c': '// Skipped content\n',
+        'cpp': '// Skipped content\n',
+        'html': '<!-- Skipped content -->\n',
+        'css': '/* Skipped content */\n',
+        'default': '# Skipped content\n'
+    }
+    return comments.get(language, comments['default'])
 
 def get_file_snippet(file_path, max_lines=50, max_bytes=4096):
     snippet = ""
@@ -166,7 +410,7 @@ def select_files_in_directory(directory, ignore_patterns, current_char_count=0):
                 while True:
                     if current_char_count > 0:
                         print_char_count(current_char_count)
-                    file_choice = input(f"{file} ({file_size_readable}, ~{file_char_estimate} chars, ~{file_token_estimate} tokens) (y/n/q)? ").lower()
+                    file_choice = input(f"{file} ({file_size_readable}, ~{file_char_estimate} chars, ~{file_token_estimate} tokens) (y/n/p/q)? ").lower()
                     if file_choice == 'y':
                         if is_large_file(file_path):
                             while True:
@@ -186,11 +430,17 @@ def select_files_in_directory(directory, ignore_patterns, current_char_count=0):
                         break
                     elif file_choice == 'n':
                         break
+                    elif file_choice == 'p':
+                        chunks, char_count = select_file_patches(file_path)
+                        if chunks:
+                            selected_files.append((file_path, False, chunks))
+                            current_char_count += char_count
+                        break
                     elif file_choice == 'q':
                         print(f"Quitting selection for {directory}")
                         return selected_files, current_char_count
                     else:
-                        print("Invalid choice. Please enter 'y', 'n', or 'q'.")
+                        print("Invalid choice. Please enter 'y', 'n', 'p', or 'q'.")
             print(f"Added {len(selected_files)} files from {directory}")
             return selected_files, current_char_count
         elif choice == 'q':
@@ -277,10 +527,22 @@ def generate_prompt(files_to_include, ignore_patterns, web_contents, env_vars):
     prompt += get_project_structure(ignore_patterns)
     prompt += "\n```\n\n"
     prompt += "## File Contents\n\n"
-    for file, use_snippet in files_to_include:
+    for file_tuple in files_to_include:
+        if len(file_tuple) == 3:
+            file, use_snippet, chunks = file_tuple
+        else:
+            file, use_snippet = file_tuple
+            chunks = None
+
         relative_path = get_relative_path(file)
         language = get_language_for_file(file)
-        if use_snippet:
+
+        if chunks is not None:
+            prompt += f"### {relative_path} (selected patches)\n\n```{language}\n"
+            for chunk in chunks:
+                prompt += f"{chunk}\n"
+            prompt += "```\n\n"
+        elif use_snippet:
             file_content = get_file_snippet(file)
             prompt += f"### {relative_path} (snippet)\n\n```{language}\n{file_content}\n```\n\n"
         else:
@@ -332,13 +594,30 @@ def main():
                 print(f"Added web content from: {input_path}")
         elif os.path.isfile(input_path):
             if not is_ignored(input_path, ignore_patterns) and not is_binary(input_path):
-                use_snippet = is_large_file(input_path)
-                files_to_include.append((input_path, use_snippet))
-                if use_snippet:
-                    current_char_count += len(get_file_snippet(input_path))
-                else:
-                    current_char_count += os.path.getsize(input_path)
-                print(f"Added file: {input_path}{' (snippet)' if use_snippet else ''}")
+                while True:
+                    file_choice = input(f"{input_path} (y)es include / (n)o skip / (p)atches / (q)uit? ").lower()
+                    if file_choice == 'y':
+                        use_snippet = is_large_file(input_path)
+                        files_to_include.append((input_path, use_snippet))
+                        if use_snippet:
+                            current_char_count += len(get_file_snippet(input_path))
+                        else:
+                            current_char_count += os.path.getsize(input_path)
+                        print(f"Added file: {input_path}{' (snippet)' if use_snippet else ''}")
+                        break
+                    elif file_choice == 'n':
+                        break
+                    elif file_choice == 'p':
+                        chunks, char_count = select_file_patches(input_path)
+                        if chunks:
+                            files_to_include.append((input_path, False, chunks))
+                            current_char_count += char_count
+                        break
+                    elif file_choice == 'q':
+                        print("Quitting.")
+                        return
+                    else:
+                        print("Invalid choice. Please enter 'y', 'n', 'p', or 'q'.")
             else:
                 print(f"Ignored file: {input_path}")
         elif os.path.isdir(input_path):

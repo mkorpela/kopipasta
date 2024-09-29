@@ -111,8 +111,10 @@ def get_language_for_file(file_path):
 def split_python_file(file_content):
     """
     Splits Python code into logical chunks using the AST module.
+    Ensures each chunk is at least 10 lines.
     Returns a list of tuples: (chunk_code, start_line, end_line)
     """
+    import ast
     tree = ast.parse(file_content)
     chunks = []
     prev_end = 0
@@ -121,22 +123,75 @@ def split_python_file(file_content):
     def get_code(start, end):
         return ''.join(lines[start:end])
 
-    for node in ast.iter_child_nodes(tree):
-        if hasattr(node, 'lineno'):
-            start_line = node.lineno - 1  # Convert to 0-indexed
-            end_line = getattr(node, 'end_lineno', None)
-            if end_line is None:
-                end_line = node.lineno
-            # Add code before the node
-            if prev_end < start_line:
-                chunks.append((get_code(prev_end, start_line), prev_end, start_line))
-            # Add the node code
-            chunks.append((get_code(start_line, end_line), start_line, end_line))
-            prev_end = end_line
+    nodes = [node for node in ast.iter_child_nodes(tree) if hasattr(node, 'lineno')]
+
+    i = 0
+    while i < len(nodes):
+        node = nodes[i]
+        start_line = node.lineno - 1  # Convert to 0-indexed
+        end_line = getattr(node, 'end_lineno', None)
+        if end_line is None:
+            end_line = start_line + 1
+
+        # Merge chunks to meet minimum lines
+        chunk_start = start_line
+        chunk_end = end_line
+        while (chunk_end - chunk_start) < 10 and i + 1 < len(nodes):
+            i += 1
+            next_node = nodes[i]
+            next_start = next_node.lineno - 1
+            next_end = getattr(next_node, 'end_lineno', None) or next_start + 1
+            chunk_end = next_end
+
+        # Add code before the node (e.g., imports or global code)
+        if prev_end < chunk_start:
+            code = get_code(prev_end, chunk_start)
+            if code.strip():
+                chunks.append((code, prev_end, chunk_start))
+        
+        # Add the merged chunk
+        code = get_code(chunk_start, chunk_end)
+        chunks.append((code, chunk_start, chunk_end))
+        prev_end = chunk_end
+        i += 1
+
     # Add any remaining code at the end
     if prev_end < len(lines):
-        chunks.append((get_code(prev_end, len(lines)), prev_end, len(lines)))
-    return chunks
+        code = get_code(prev_end, len(lines))
+        if code.strip():
+            chunks.append((code, prev_end, len(lines)))
+
+    return merge_small_chunks(chunks)
+
+def merge_small_chunks(chunks, min_lines=10):
+    """
+    Merges chunks to ensure each has at least min_lines lines.
+    """
+    merged_chunks = []
+    buffer_code = ''
+    buffer_start = None
+    buffer_end = None
+
+    for code, start_line, end_line in chunks:
+        num_lines = end_line - start_line
+        if buffer_code == '':
+            buffer_code = code
+            buffer_start = start_line
+            buffer_end = end_line
+        else:
+            buffer_code += code
+            buffer_end = end_line
+
+        if (buffer_end - buffer_start) >= min_lines:
+            merged_chunks.append((buffer_code, buffer_start, buffer_end))
+            buffer_code = ''
+            buffer_start = None
+            buffer_end = None
+
+    if buffer_code:
+        merged_chunks.append((buffer_code, buffer_start, buffer_end))
+
+    return merged_chunks
 
 def split_javascript_file(file_content):
     """
@@ -187,7 +242,7 @@ def split_javascript_file(file_content):
         code = ''.join(lines[prev_end_line:])
         chunks.append((code, prev_end_line, len(lines)))
 
-    return chunks
+    return merge_small_chunks(chunks)
 
 def split_html_file(file_content):
     """
@@ -221,7 +276,7 @@ def split_html_file(file_content):
         code = ''.join(lines[prev_end:])
         chunks.append((code, prev_end, len(lines)))
 
-    return chunks
+    return merge_small_chunks(chunks)
 
 def split_c_file(file_content):
     """
@@ -269,7 +324,7 @@ def split_c_file(file_content):
         code = ''.join(lines[prev_end_line:])
         chunks.append((code, prev_end_line, len(lines)))
 
-    return chunks
+    return merge_small_chunks(chunks)
 
 def split_generic_file(file_content):
     """
@@ -288,7 +343,7 @@ def split_generic_file(file_content):
     if start < len(lines):
         chunk_code = ''.join(lines[start:])
         chunks.append((chunk_code, start, len(lines)))
-    return chunks
+    return merge_small_chunks(chunks)
 
 def select_file_patches(file_path):
     file_content = read_file_contents(file_path)

@@ -374,7 +374,7 @@ def select_file_patches(file_path):
                 break
             elif choice == 'n':
                 placeholder = get_placeholder_comment(language)
-                if chunks and chunks[-1] != placeholder:
+                if not chunks or chunks[-1] != placeholder:
                     chunks.append(placeholder)
                 total_char_count += len(placeholder)
                 break

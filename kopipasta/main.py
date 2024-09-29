@@ -374,11 +374,14 @@ def select_file_patches(file_path):
                 break
             elif choice == 'n':
                 placeholder = get_placeholder_comment(language)
-                chunks.append(placeholder)
+                if chunks and chunks[-1] != placeholder:
+                    chunks.append(placeholder)
                 total_char_count += len(placeholder)
                 break
             elif choice == 'q':
                 print("Skipping the rest of the file.")
+                if chunks and chunks[-1] != placeholder:
+                    chunks.append(placeholder)
                 return chunks, total_char_count
             else:
                 print("Invalid choice. Please enter 'y', 'n', or 'q'.")

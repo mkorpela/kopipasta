@@ -4,6 +4,8 @@ A CLI tool to generate prompts with project structure, file contents, and web co
 
 <img src="kopipasta.jpg" alt="kopipasta" width="300">
 
+- An LLM told me that kopi means Coffee in some languages.. and a Diffusion model then made this delicious soup.
+
 ## Installation
 
 You can install kopipasta using pipx (or pip):

@@ -361,6 +361,7 @@ def select_file_patches(file_path):
         code_chunks = split_c_file(file_content)
     else:
         code_chunks = split_generic_file(file_content)
+    placeholder = get_placeholder_comment(language)
 
     print(f"\nSelecting patches for {file_path}")
     for index, (chunk_code, start_line, end_line) in enumerate(code_chunks):
@@ -373,7 +374,6 @@ def select_file_patches(file_path):
                 total_char_count += len(chunk_code)
                 break
             elif choice == 'n':
-                placeholder = get_placeholder_comment(language)
                 if not chunks or chunks[-1] != placeholder:
                     chunks.append(placeholder)
                 total_char_count += len(placeholder)

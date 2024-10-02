@@ -713,7 +713,53 @@ def main():
 
     files_to_include = []
     web_contents = {}
-    current_char_count = 0
+
+    def process_directory(directory):
+        files = [f for f in os.listdir(directory)
+                 if os.path.isfile(os.path.join(directory, f)) and not is_ignored(os.path.join(directory, f), ignore_patterns) and not is_binary(os.path.join(directory, f))]
+
+        if not files:
+            return []
+
+        print(f"\nDirectory: {directory}")
+        print("Files:")
+        for file in files:
+            file_path = os.path.join(directory, file)
+            file_size = os.path.getsize(file_path)
+            file_size_readable = get_human_readable_size(file_size)
+            print(f"- {file} ({file_size_readable})")
+
+        while True:
+            choice = input("(y)es add all / (n)o ignore all / (s)elect individually / (q)uit? ").lower()
+            if choice == 'y':
+                return [(os.path.join(directory, f), False) for f in files]
+            elif choice == 'n':
+                return []
+            elif choice == 's':
+                selected_files = []
+                for file in files:
+                    file_path = os.path.join(directory, file)
+                    while True:
+                        file_choice = input(f"{file} (y/n/p/q)? ").lower()
+                        if file_choice == 'y':
+                            selected_files.append((file_path, False))
+                            break
+                        elif file_choice == 'n':
+                            break
+                        elif file_choice == 'p':
+                            chunks, _ = select_file_patches(file_path)
+                            if chunks:
+                                selected_files.append((file_path, True, chunks))
+                            break
+                        elif file_choice == 'q':
+                            return selected_files
+                        else:
+                            print("Invalid choice. Please enter 'y', 'n', 'p', or 'q'.")
+                return selected_files
+            elif choice == 'q':
+                return []
+            else:
+                print("Invalid choice. Please try again.")
 
     for input_path in args.inputs:
         if input_path.startswith(('http://', 'https://')):
@@ -721,7 +767,6 @@ def main():
             if content:
                 content, is_snippet = handle_content(content, content_type, input_path)
                 web_contents[input_path] = (content, is_snippet, content_type)
-                current_char_count += len(json.dumps(content)) if content_type == 'json' else len(content)
                 print(f"Added web content from: {input_path}")
         elif os.path.isfile(input_path):
             if not is_ignored(input_path, ignore_patterns) and not is_binary(input_path):
@@ -731,16 +776,14 @@ def main():
                         content, content_type = read_file_content(input_path)
                         content, is_snippet = handle_content(content, content_type, input_path)
                         files_to_include.append((input_path, content, is_snippet, content_type))
-                        current_char_count += len(json.dumps(content)) if content_type == 'json' else len(content)
                         print(f"Added file: {input_path}{' (snippet)' if is_snippet else ''}")
                         break
                     elif file_choice == 'n':
                         break
                     elif file_choice == 'p':
-                        chunks, char_count = select_file_patches(input_path)
+                        chunks, _ = select_file_patches(input_path)
                         if chunks:
                             files_to_include.append((input_path, None, False, 'text', chunks))
-                            current_char_count += char_count
                         break
                     elif file_choice == 'q':
                         print("Quitting.")
@@ -750,36 +793,16 @@ def main():
             else:
                 print(f"Ignored file: {input_path}")
         elif os.path.isdir(input_path):
-            for root, _, files in os.walk(input_path):
-                for file in files:
-                    file_path = os.path.join(root, file)
-                    if not is_ignored(file_path, ignore_patterns) and not is_binary(file_path):
-                        while True:
-                            file_choice = input(f"{file_path} (y)es include / (n)o skip / (p)atches / (q)uit? ").lower()
-                            if file_choice == 'y':
-                                content, content_type = read_file_content(file_path)
-                                content, is_snippet = handle_content(content, content_type, file_path)
-                                files_to_include.append((file_path, content, is_snippet, content_type))
-                                current_char_count += len(json.dumps(content)) if content_type == 'json' else len(content)
-                                print(f"Added file: {file_path}{' (snippet)' if is_snippet else ''}")
-                                break
-                            elif file_choice == 'n':
-                                break
-                            elif file_choice == 'p':
-                                chunks, char_count = select_file_patches(file_path)
-                                if chunks:
-                                    files_to_include.append((file_path, None, False, 'text', chunks))
-                                    current_char_count += char_count
-                                break
-                            elif file_choice == 'q':
-                                print("Quitting directory processing.")
-                                break
-                            else:
-                                print("Invalid choice. Please enter 'y', 'n', 'p', or 'q'.")
-                    if file_choice == 'q':
-                        break
-                if file_choice == 'q':
-                    break
+            selected_files = process_directory(input_path)
+            for file_info in selected_files:
+                if len(file_info) == 2:
+                    file_path, use_snippet = file_info
+                    content, content_type = read_file_content(file_path)
+                    content, is_snippet = handle_content(content, content_type, file_path)
+                    files_to_include.append((file_path, content, is_snippet, content_type))
+                else:
+                    file_path, _, chunks = file_info
+                    files_to_include.append((file_path, None, False, 'text', chunks))
         else:
             print(f"Warning: {input_path} is not a valid file, directory, or URL. Skipping.")
 
@@ -788,7 +811,6 @@ def main():
         return
 
     print("\nFile and web content selection complete.")
-    print_char_count(current_char_count)
     print(f"Summary: Added {len(files_to_include)} files and {len(web_contents)} web sources.")
 
     prompt = generate_prompt(files_to_include, ignore_patterns, web_contents, env_vars)
@@ -800,7 +822,6 @@ def main():
         pyperclip.copy(prompt)
         separator = "\n" + "=" * 40 + "\n☕🍝       Kopipasta Complete!       🍝☕\n" + "=" * 40 + "\n"
         print(separator)
-        final_char_count = len(prompt)
         final_token_estimate = final_char_count // 4
         print(f"Prompt has been copied to clipboard. Final size: {final_char_count} characters (~ {final_token_estimate} tokens)")
     except pyperclip.PyperclipException as e:

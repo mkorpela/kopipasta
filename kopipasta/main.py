@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+import csv
+import io
+import json
 import os
 import argparse
 import ast
@@ -44,7 +47,12 @@ def is_ignored(path, ignore_patterns):
 def is_binary(file_path):
     try:
         with open(file_path, 'rb') as file:
-            return b'\0' in file.read(1024)
+            chunk = file.read(1024)
+            if b'\0' in chunk:  # null bytes indicate binary file
+                return True
+            if file_path.lower().endswith(('.json', '.csv')):
+                return False
+            return False
     except IOError:
         return False
 
@@ -413,6 +421,10 @@ def get_file_snippet(file_path, max_lines=50, max_bytes=4096):
             byte_count += len(line.encode('utf-8'))
     return snippet
 
+def print_char_count(count):
+    token_estimate = count // 4
+    print(f"\rCurrent prompt size: {count} characters (~ {token_estimate} tokens)", flush=True)
+
 def select_files_in_directory(directory, ignore_patterns, current_char_count=0):
     files = [f for f in os.listdir(directory)
              if os.path.isfile(os.path.join(directory, f)) and not is_ignored(os.path.join(directory, f), ignore_patterns) and not is_binary(os.path.join(directory, f))]
@@ -534,12 +546,76 @@ def fetch_web_content(url):
     try:
         response = requests.get(url)
         response.raise_for_status()
-        full_content = response.text
-        snippet = full_content[:1000] if len(full_content) > 10000 else full_content
-        return full_content, snippet
+        content_type = response.headers.get('content-type', '').lower()
+        if 'json' in content_type:
+            return response.json(), 'json'
+        elif 'csv' in content_type:
+            return response.text, 'csv'
+        else:
+            return response.text, 'text'
     except requests.RequestException as e:
         print(f"Error fetching content from {url}: {e}")
         return None, None
+
+def read_file_content(file_path):
+    _, ext = os.path.splitext(file_path)
+    if ext.lower() == '.json':
+        with open(file_path, 'r') as f:
+            return json.load(f), 'json'
+    elif ext.lower() == '.csv':
+        with open(file_path, 'r') as f:
+            return f.read(), 'csv'
+    else:
+        with open(file_path, 'r') as f:
+            return f.read(), 'text'
+
+def get_content_snippet(content, content_type, max_lines=50, max_chars=4096):
+    if content_type == 'json':
+        return json.dumps(content, indent=2)[:max_chars]
+    elif content_type == 'csv':
+        csv_content = content if isinstance(content, str) else content.getvalue()
+        csv_reader = csv.reader(io.StringIO(csv_content))
+        rows = list(csv_reader)[:max_lines]
+        output = io.StringIO()
+        csv.writer(output).writerows(rows)
+        return output.getvalue()[:max_chars]
+    else:
+        return '\n'.join(content.split('\n')[:max_lines])[:max_chars]
+
+def handle_content(content, content_type, file_or_url):
+    is_large = len(json.dumps(content)) > 102400 if content_type == 'json' else len(content) > 102400
+
+    if is_large:
+        while True:
+            choice = input(f"{file_or_url} is large. View (f)ull content, (s)nippet, or (p)review? ").lower()
+            if choice in ['f', 's', 'p']:
+                break
+            print("Invalid choice. Please enter 'f', 's', or 'p'.")
+
+        if choice == 'f':
+            return content, False
+        elif choice == 's':
+            return get_content_snippet(content, content_type), True
+        else:  # preview
+            preview = get_content_preview(content, content_type)
+            print(f"\nPreview of {file_or_url}:\n{preview}\n")
+            return handle_content(content, content_type, file_or_url)
+    else:
+        return content, False
+
+
+def get_content_preview(content, content_type):
+    if content_type == 'json':
+        return json.dumps(content, indent=2)[:1000] + "\n..."
+    elif content_type == 'csv':
+        csv_content = content if isinstance(content, str) else content.getvalue()
+        csv_reader = csv.reader(io.StringIO(csv_content))
+        rows = list(csv_reader)[:10]
+        output = io.StringIO()
+        csv.writer(output).writerows(rows)
+        return output.getvalue() + "\n..."
+    else:
+        return '\n'.join(content.split('\n')[:20]) + "\n..."
 
 def read_env_file():
     env_vars = {}
@@ -591,33 +667,29 @@ def generate_prompt(files_to_include, ignore_patterns, web_contents, env_vars):
     prompt += "\n```\n\n"
     prompt += "## File Contents\n\n"
     for file_tuple in files_to_include:
-        if len(file_tuple) == 3:
-            file, use_snippet, chunks = file_tuple
-        else:
-            file, use_snippet = file_tuple
+        if len(file_tuple) == 4:
+            file, content, is_snippet, content_type = file_tuple
             chunks = None
-
+        else:
+            file, content, is_snippet, content_type, chunks = file_tuple
         relative_path = get_relative_path(file)
-        language = get_language_for_file(file)
+        language = get_language_for_file(file) if content_type == 'text' else content_type
 
         if chunks is not None:
             prompt += f"### {relative_path} (selected patches)\n\n```{language}\n"
             for chunk in chunks:
                 prompt += f"{chunk}\n"
             prompt += "```\n\n"
-        elif use_snippet:
-            file_content = get_file_snippet(file)
-            prompt += f"### {relative_path} (snippet)\n\n```{language}\n{file_content}\n```\n\n"
         else:
-            file_content = read_file_contents(file)
-            file_content = handle_env_variables(file_content, env_vars)
-            prompt += f"### {relative_path}\n\n```{language}\n{file_content}\n```\n\n"
+            content = handle_env_variables(content, env_vars)
+            prompt += f"### {relative_path}{' (snippet)' if is_snippet else ''}\n\n```{language}\n{content}\n```\n\n"
     
     if web_contents:
         prompt += "## Web Content\n\n"
-        for url, (full_content, snippet) in web_contents.items():
-            content = handle_env_variables(snippet if len(full_content) > 10000 else full_content, env_vars)
-            prompt += f"### {url}{' (snippet)' if len(full_content) > 10000 else ''}\n\n```\n{content}\n```\n\n"
+        for url, (content, is_snippet, content_type) in web_contents.items():
+            content = handle_env_variables(content, env_vars)
+            language = content_type if content_type in ['json', 'csv'] else ''
+            prompt += f"### {url}{' (snippet)' if is_snippet else ''}\n\n```{language}\n{content}\n```\n\n"
     
     prompt += "## Task Instructions\n\n"
     task_instructions = input("Enter the task instructions: ")
@@ -631,10 +703,6 @@ def generate_prompt(files_to_include, ignore_patterns, web_contents, env_vars):
     prompt += analysis_text
     return prompt
 
-def print_char_count(count):
-    token_estimate = count // 4
-    print(f"\rCurrent prompt size: {count} characters (~ {token_estimate} tokens)", flush=True)
-
 def main():
     parser = argparse.ArgumentParser(description="Generate a prompt with project structure, file contents, and web content.")
     parser.add_argument('inputs', nargs='+', help='Files, directories, or URLs to include in the prompt')
@@ -644,36 +712,34 @@ def main():
     env_vars = read_env_file()
 
     files_to_include = []
-    processed_dirs = set()
     web_contents = {}
     current_char_count = 0
 
     for input_path in args.inputs:
         if input_path.startswith(('http://', 'https://')):
-            full_content, snippet = fetch_web_content(input_path)
-            if full_content:
-                web_contents[input_path] = (full_content, snippet)
-                current_char_count += len(snippet if len(full_content) > 10000 else full_content)
+            content, content_type = fetch_web_content(input_path)
+            if content:
+                content, is_snippet = handle_content(content, content_type, input_path)
+                web_contents[input_path] = (content, is_snippet, content_type)
+                current_char_count += len(json.dumps(content)) if content_type == 'json' else len(content)
                 print(f"Added web content from: {input_path}")
         elif os.path.isfile(input_path):
             if not is_ignored(input_path, ignore_patterns) and not is_binary(input_path):
                 while True:
                     file_choice = input(f"{input_path} (y)es include / (n)o skip / (p)atches / (q)uit? ").lower()
                     if file_choice == 'y':
-                        use_snippet = is_large_file(input_path)
-                        files_to_include.append((input_path, use_snippet))
-                        if use_snippet:
-                            current_char_count += len(get_file_snippet(input_path))
-                        else:
-                            current_char_count += os.path.getsize(input_path)
-                        print(f"Added file: {input_path}{' (snippet)' if use_snippet else ''}")
+                        content, content_type = read_file_content(input_path)
+                        content, is_snippet = handle_content(content, content_type, input_path)
+                        files_to_include.append((input_path, content, is_snippet, content_type))
+                        current_char_count += len(json.dumps(content)) if content_type == 'json' else len(content)
+                        print(f"Added file: {input_path}{' (snippet)' if is_snippet else ''}")
                         break
                     elif file_choice == 'n':
                         break
                     elif file_choice == 'p':
                         chunks, char_count = select_file_patches(input_path)
                         if chunks:
-                            files_to_include.append((input_path, False, chunks))
+                            files_to_include.append((input_path, None, False, 'text', chunks))
                             current_char_count += char_count
                         break
                     elif file_choice == 'q':
@@ -684,9 +750,36 @@ def main():
             else:
                 print(f"Ignored file: {input_path}")
         elif os.path.isdir(input_path):
-            dir_files, dir_processed, current_char_count = process_directory(input_path, ignore_patterns, current_char_count)
-            files_to_include.extend(dir_files)
-            processed_dirs.update(dir_processed)
+            for root, _, files in os.walk(input_path):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    if not is_ignored(file_path, ignore_patterns) and not is_binary(file_path):
+                        while True:
+                            file_choice = input(f"{file_path} (y)es include / (n)o skip / (p)atches / (q)uit? ").lower()
+                            if file_choice == 'y':
+                                content, content_type = read_file_content(file_path)
+                                content, is_snippet = handle_content(content, content_type, file_path)
+                                files_to_include.append((file_path, content, is_snippet, content_type))
+                                current_char_count += len(json.dumps(content)) if content_type == 'json' else len(content)
+                                print(f"Added file: {file_path}{' (snippet)' if is_snippet else ''}")
+                                break
+                            elif file_choice == 'n':
+                                break
+                            elif file_choice == 'p':
+                                chunks, char_count = select_file_patches(file_path)
+                                if chunks:
+                                    files_to_include.append((file_path, None, False, 'text', chunks))
+                                    current_char_count += char_count
+                                break
+                            elif file_choice == 'q':
+                                print("Quitting directory processing.")
+                                break
+                            else:
+                                print("Invalid choice. Please enter 'y', 'n', 'p', or 'q'.")
+                    if file_choice == 'q':
+                        break
+                if file_choice == 'q':
+                    break
         else:
             print(f"Warning: {input_path} is not a valid file, directory, or URL. Skipping.")
 
@@ -696,7 +789,7 @@ def main():
 
     print("\nFile and web content selection complete.")
     print_char_count(current_char_count)
-    print(f"Summary: Added {len(files_to_include)} files from {len(processed_dirs)} directories and {len(web_contents)} web sources.")
+    print(f"Summary: Added {len(files_to_include)} files and {len(web_contents)} web sources.")
 
     prompt = generate_prompt(files_to_include, ignore_patterns, web_contents, env_vars)
     print("\n\nGenerated prompt:")

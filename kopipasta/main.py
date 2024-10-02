@@ -822,6 +822,7 @@ def main():
         pyperclip.copy(prompt)
         separator = "\n" + "=" * 40 + "\n☕🍝       Kopipasta Complete!       🍝☕\n" + "=" * 40 + "\n"
         print(separator)
+        final_char_count = len(prompt)
         final_token_estimate = final_char_count // 4
         print(f"Prompt has been copied to clipboard. Final size: {final_char_count} characters (~ {final_token_estimate} tokens)")
     except pyperclip.PyperclipException as e:

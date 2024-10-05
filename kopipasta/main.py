@@ -5,7 +5,7 @@ import json
 import os
 import argparse
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 import pyperclip
 import fnmatch
 
@@ -519,9 +519,9 @@ def select_files_in_directory(directory: str, ignore_patterns: List[str], curren
         else:
             print("Invalid choice. Please try again.")
 
-def process_directory(directory, ignore_patterns, current_char_count=0):
+def process_directory(directory: str, ignore_patterns: List[str], current_char_count: int = 0) -> Tuple[List[FileTuple], Set[str], int]:
     files_to_include: List[FileTuple] = []
-    processed_dirs = set()
+    processed_dirs: Set[str] = set()
 
     for root, dirs, files in os.walk(directory):
         dirs[:] = [d for d in dirs if not is_ignored(os.path.join(root, d), ignore_patterns)]
@@ -535,12 +535,8 @@ def process_directory(directory, ignore_patterns, current_char_count=0):
         if choice == 'y':
             selected_files, current_char_count = select_files_in_directory(root, ignore_patterns, current_char_count)
             for file_tuple in selected_files:
-                if len(file_tuple) == 3:
-                    f, use_snippet, chunks = file_tuple
-                    files_to_include.append((os.path.join(root, f), use_snippet, chunks))
-                else:
-                    f, use_snippet = file_tuple
-                    files_to_include.append((os.path.join(root, f), use_snippet))
+                full_path = os.path.join(root, file_tuple[0])
+                files_to_include.append((full_path, file_tuple[1], file_tuple[2], file_tuple[3]))
             processed_dirs.add(root)
         elif choice == 'n':
             dirs[:] = []  # Skip all subdirectories
@@ -553,20 +549,25 @@ def process_directory(directory, ignore_patterns, current_char_count=0):
 
     return files_to_include, processed_dirs, current_char_count
 
-def fetch_web_content(url):
+def fetch_web_content(url: str) -> Tuple[Optional[FileTuple], Optional[str], Optional[str]]:
     try:
         response = requests.get(url)
         response.raise_for_status()
         content_type = response.headers.get('content-type', '').lower()
+        full_content = response.text
+        snippet = full_content[:10000] + "..." if len(full_content) > 10000 else full_content
+        
         if 'json' in content_type:
-            return response.json(), 'json'
+            content_type = 'json'
         elif 'csv' in content_type:
-            return response.text, 'csv'
+            content_type = 'csv'
         else:
-            return response.text, 'text'
+            content_type = 'text'
+        
+        return (url, False, None, content_type), full_content, snippet
     except requests.RequestException as e:
         print(f"Error fetching content from {url}: {e}")
-        return None, None
+        return None, None, None
 
 def read_file_content(file_path):
     _, ext = os.path.splitext(file_path)
@@ -670,7 +671,7 @@ def handle_env_variables(content, env_vars):
 
     return content
 
-def generate_prompt(files_to_include: List[FileTuple], ignore_patterns: List[str], web_contents: Dict[str, Tuple[str, str]], env_vars: Dict[str, str]) -> str:
+def generate_prompt(files_to_include: List[FileTuple], ignore_patterns: List[str], web_contents: Dict[str, Tuple[FileTuple, str]], env_vars: Dict[str, str]) -> str:
     prompt = "# Project Overview\n\n"
     prompt += "## Project Structure\n\n"
     prompt += "```\n"
@@ -696,7 +697,8 @@ def generate_prompt(files_to_include: List[FileTuple], ignore_patterns: List[str
     
     if web_contents:
         prompt += "## Web Content\n\n"
-        for url, (content, is_snippet, content_type) in web_contents.items():
+        for url, (file_tuple, content) in web_contents.items():
+            _, is_snippet, _, content_type = file_tuple
             content = handle_env_variables(content, env_vars)
             language = content_type if content_type in ['json', 'csv'] else ''
             prompt += f"### {url}{' (snippet)' if is_snippet else ''}\n\n```{language}\n{content}\n```\n\n"
@@ -721,18 +723,45 @@ def main():
     ignore_patterns = read_gitignore()
     env_vars = read_env_file()
 
-    files_to_include:List[FileTuple] = []
+    files_to_include: List[FileTuple] = []
     processed_dirs = set()
-    web_contents = {}
+    web_contents: Dict[str, Tuple[FileTuple, str]] = {}
     current_char_count = 0
 
     for input_path in args.inputs:
         if input_path.startswith(('http://', 'https://')):
-            full_content, snippet = fetch_web_content(input_path)
-            if full_content:
-                web_contents[input_path] = (full_content, snippet)
-                current_char_count += len(snippet if len(full_content) > 10000 else full_content)
-                print(f"Added web content from: {input_path}")
+            result = fetch_web_content(input_path)
+            if result:
+                file_tuple, full_content, snippet = result
+                is_large = len(full_content) > 10000
+                if is_large:
+                    print(f"\nContent from {input_path} is large. Here's a snippet:\n")
+                    print(snippet)
+                    print("\n" + "-"*40 + "\n")
+                    
+                    while True:
+                        choice = input("Use (f)ull content or (s)nippet? ").lower()
+                        if choice in ['f', 's']:
+                            break
+                        print("Invalid choice. Please enter 'f' or 's'.")
+                    
+                    if choice == 'f':
+                        content = full_content
+                        is_snippet = False
+                        print("Using full content.")
+                    else:
+                        content = snippet
+                        is_snippet = True
+                        print("Using snippet.")
+                else:
+                    content = full_content
+                    is_snippet = False
+                    print(f"Content from {input_path} is not large. Using full content.")
+                
+                file_tuple = (file_tuple[0], is_snippet, file_tuple[2], file_tuple[3])
+                web_contents[input_path] = (file_tuple, content)
+                current_char_count += len(content)
+                print(f"Added {'snippet of ' if is_snippet else ''}web content from: {input_path}")
         elif os.path.isfile(input_path):
             if not is_ignored(input_path, ignore_patterns) and not is_binary(input_path):
                 while True:

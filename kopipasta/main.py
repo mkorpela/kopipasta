@@ -4,13 +4,14 @@ import io
 import json
 import os
 import argparse
-import ast
 import re
-from textwrap import dedent
+from typing import Dict, List, Optional, Tuple
 import pyperclip
 import fnmatch
 
 import requests
+
+FileTuple = Tuple[str, bool, Optional[List[str]], str]
 
 def read_gitignore():
     default_ignore_patterns = [
@@ -425,7 +426,7 @@ def print_char_count(count):
     token_estimate = count // 4
     print(f"\rCurrent prompt size: {count} characters (~ {token_estimate} tokens)", flush=True)
 
-def select_files_in_directory(directory, ignore_patterns, current_char_count=0):
+def select_files_in_directory(directory: str, ignore_patterns: List[str], current_char_count: int = 0) -> Tuple[List[FileTuple], int]:
     files = [f for f in os.listdir(directory)
              if os.path.isfile(os.path.join(directory, f)) and not is_ignored(os.path.join(directory, f), ignore_patterns) and not is_binary(os.path.join(directory, f))]
 
@@ -445,8 +446,8 @@ def select_files_in_directory(directory, ignore_patterns, current_char_count=0):
     while True:
         print_char_count(current_char_count)
         choice = input("(y)es add all / (n)o ignore all / (s)elect individually / (q)uit? ").lower()
+        selected_files: List[FileTuple] = []
         if choice == 'y':
-            selected_files = []
             for file in files:
                 file_path = os.path.join(directory, file)
                 if is_large_file(file_path):
@@ -456,13 +457,13 @@ def select_files_in_directory(directory, ignore_patterns, current_char_count=0):
                             break
                         print("Invalid choice. Please enter 'f' or 's'.")
                     if snippet_choice == 's':
-                        selected_files.append((file, True))
+                        selected_files.append((file, True, None, get_language_for_file(file)))
                         current_char_count += len(get_file_snippet(file_path))
                     else:
-                        selected_files.append((file, False))
+                        selected_files.append((file, False, None, get_language_for_file(file)))
                         current_char_count += os.path.getsize(file_path)
                 else:
-                    selected_files.append((file, False))
+                    selected_files.append((file, False, None, get_language_for_file(file)))
                     current_char_count += os.path.getsize(file_path)
             print(f"Added all files from {directory}")
             return selected_files, current_char_count
@@ -470,7 +471,6 @@ def select_files_in_directory(directory, ignore_patterns, current_char_count=0):
             print(f"Ignored all files from {directory}")
             return [], current_char_count
         elif choice == 's':
-            selected_files = []
             for file in files:
                 file_path = os.path.join(directory, file)
                 file_size = os.path.getsize(file_path)
@@ -489,13 +489,13 @@ def select_files_in_directory(directory, ignore_patterns, current_char_count=0):
                                     break
                                 print("Invalid choice. Please enter 'f' or 's'.")
                             if snippet_choice == 's':
-                                selected_files.append((file, True))
+                                selected_files.append((file, True, None, get_language_for_file(file_path)))
                                 current_char_count += len(get_file_snippet(file_path))
                             else:
-                                selected_files.append((file, False))
+                                selected_files.append((file, False, None, get_language_for_file(file_path)))
                                 current_char_count += file_char_estimate
                         else:
-                            selected_files.append((file, False))
+                            selected_files.append((file, False, None, get_language_for_file(file_path)))
                             current_char_count += file_char_estimate
                         break
                     elif file_choice == 'n':
@@ -503,7 +503,7 @@ def select_files_in_directory(directory, ignore_patterns, current_char_count=0):
                     elif file_choice == 'p':
                         chunks, char_count = select_file_patches(file_path)
                         if chunks:
-                            selected_files.append((file_path, False, chunks))
+                            selected_files.append((file_path, False, chunks, get_language_for_file(file_path)))
                             current_char_count += char_count
                         break
                     elif file_choice == 'q':
@@ -520,7 +520,7 @@ def select_files_in_directory(directory, ignore_patterns, current_char_count=0):
             print("Invalid choice. Please try again.")
 
 def process_directory(directory, ignore_patterns, current_char_count=0):
-    files_to_include = []
+    files_to_include: List[FileTuple] = []
     processed_dirs = set()
 
     for root, dirs, files in os.walk(directory):
@@ -670,30 +670,29 @@ def handle_env_variables(content, env_vars):
 
     return content
 
-def generate_prompt(files_to_include, ignore_patterns, web_contents, env_vars):
+def generate_prompt(files_to_include: List[FileTuple], ignore_patterns: List[str], web_contents: Dict[str, Tuple[str, str]], env_vars: Dict[str, str]) -> str:
     prompt = "# Project Overview\n\n"
     prompt += "## Project Structure\n\n"
     prompt += "```\n"
     prompt += get_project_structure(ignore_patterns)
     prompt += "\n```\n\n"
     prompt += "## File Contents\n\n"
-    for file_tuple in files_to_include:
-        if len(file_tuple) == 4:
-            file, content, is_snippet, content_type = file_tuple
-            chunks = None
-        else:
-            file, content, is_snippet, content_type, chunks = file_tuple
+    for file, use_snippet, chunks, content_type in files_to_include:
         relative_path = get_relative_path(file)
-        language = get_language_for_file(file) if content_type == 'text' else content_type
+        language = content_type if content_type else get_language_for_file(file)
 
         if chunks is not None:
             prompt += f"### {relative_path} (selected patches)\n\n```{language}\n"
             for chunk in chunks:
                 prompt += f"{chunk}\n"
             prompt += "```\n\n"
+        elif use_snippet:
+            file_content = get_file_snippet(file)
+            prompt += f"### {relative_path} (snippet)\n\n```{language}\n{file_content}\n```\n\n"
         else:
-            content = handle_env_variables(content, env_vars)
-            prompt += f"### {relative_path}{' (snippet)' if is_snippet else ''}\n\n```{language}\n{content}\n```\n\n"
+            file_content = read_file_contents(file)
+            file_content = handle_env_variables(file_content, env_vars)
+            prompt += f"### {relative_path}\n\n```{language}\n{file_content}\n```\n\n"
     
     if web_contents:
         prompt += "## Web Content\n\n"
@@ -722,7 +721,7 @@ def main():
     ignore_patterns = read_gitignore()
     env_vars = read_env_file()
 
-    files_to_include = []
+    files_to_include:List[FileTuple] = []
     processed_dirs = set()
     web_contents = {}
     current_char_count = 0
@@ -740,7 +739,7 @@ def main():
                     file_choice = input(f"{input_path} (y)es include / (n)o skip / (p)atches / (q)uit? ").lower()
                     if file_choice == 'y':
                         use_snippet = is_large_file(input_path)
-                        files_to_include.append((input_path, use_snippet))
+                        files_to_include.append((input_path, use_snippet, None, get_language_for_file(input_path)))
                         if use_snippet:
                             current_char_count += len(get_file_snippet(input_path))
                         else:
@@ -752,7 +751,7 @@ def main():
                     elif file_choice == 'p':
                         chunks, char_count = select_file_patches(input_path)
                         if chunks:
-                            files_to_include.append((input_path, False, chunks))
+                            files_to_include.append((input_path, False, chunks, get_language_for_file(input_path)))
                             current_char_count += char_count
                         break
                     elif file_choice == 'q':

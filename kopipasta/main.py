@@ -530,15 +530,26 @@ def process_directory(directory, ignore_patterns, current_char_count=0):
         if root in processed_dirs:
             continue
 
-        selected_files, current_char_count = select_files_in_directory(root, ignore_patterns, current_char_count)
-        for file_tuple in selected_files:
-            if len(file_tuple) == 3:
-                f, use_snippet, chunks = file_tuple
-                files_to_include.append((os.path.join(root, f), use_snippet, chunks))
-            else:
-                f, use_snippet = file_tuple
-                files_to_include.append((os.path.join(root, f), use_snippet))
-        processed_dirs.add(root)
+        print(f"\nExploring directory: {root}")
+        choice = input("(y)es explore / (n)o skip / (q)uit? ").lower()
+        if choice == 'y':
+            selected_files, current_char_count = select_files_in_directory(root, ignore_patterns, current_char_count)
+            for file_tuple in selected_files:
+                if len(file_tuple) == 3:
+                    f, use_snippet, chunks = file_tuple
+                    files_to_include.append((os.path.join(root, f), use_snippet, chunks))
+                else:
+                    f, use_snippet = file_tuple
+                    files_to_include.append((os.path.join(root, f), use_snippet))
+            processed_dirs.add(root)
+        elif choice == 'n':
+            dirs[:] = []  # Skip all subdirectories
+            continue
+        elif choice == 'q':
+            break
+        else:
+            print("Invalid choice. Skipping this directory.")
+            continue
 
     return files_to_include, processed_dirs, current_char_count
 
@@ -712,78 +723,37 @@ def main():
     env_vars = read_env_file()
 
     files_to_include = []
+    processed_dirs = set()
     web_contents = {}
-
-    def process_directory(directory):
-        files = [f for f in os.listdir(directory)
-                 if os.path.isfile(os.path.join(directory, f)) and not is_ignored(os.path.join(directory, f), ignore_patterns) and not is_binary(os.path.join(directory, f))]
-
-        if not files:
-            return []
-
-        print(f"\nDirectory: {directory}")
-        print("Files:")
-        for file in files:
-            file_path = os.path.join(directory, file)
-            file_size = os.path.getsize(file_path)
-            file_size_readable = get_human_readable_size(file_size)
-            print(f"- {file} ({file_size_readable})")
-
-        while True:
-            choice = input("(y)es add all / (n)o ignore all / (s)elect individually / (q)uit? ").lower()
-            if choice == 'y':
-                return [(os.path.join(directory, f), False) for f in files]
-            elif choice == 'n':
-                return []
-            elif choice == 's':
-                selected_files = []
-                for file in files:
-                    file_path = os.path.join(directory, file)
-                    while True:
-                        file_choice = input(f"{file} (y/n/p/q)? ").lower()
-                        if file_choice == 'y':
-                            selected_files.append((file_path, False))
-                            break
-                        elif file_choice == 'n':
-                            break
-                        elif file_choice == 'p':
-                            chunks, _ = select_file_patches(file_path)
-                            if chunks:
-                                selected_files.append((file_path, True, chunks))
-                            break
-                        elif file_choice == 'q':
-                            return selected_files
-                        else:
-                            print("Invalid choice. Please enter 'y', 'n', 'p', or 'q'.")
-                return selected_files
-            elif choice == 'q':
-                return []
-            else:
-                print("Invalid choice. Please try again.")
+    current_char_count = 0
 
     for input_path in args.inputs:
         if input_path.startswith(('http://', 'https://')):
-            content, content_type = fetch_web_content(input_path)
-            if content:
-                content, is_snippet = handle_content(content, content_type, input_path)
-                web_contents[input_path] = (content, is_snippet, content_type)
+            full_content, snippet = fetch_web_content(input_path)
+            if full_content:
+                web_contents[input_path] = (full_content, snippet)
+                current_char_count += len(snippet if len(full_content) > 10000 else full_content)
                 print(f"Added web content from: {input_path}")
         elif os.path.isfile(input_path):
             if not is_ignored(input_path, ignore_patterns) and not is_binary(input_path):
                 while True:
                     file_choice = input(f"{input_path} (y)es include / (n)o skip / (p)atches / (q)uit? ").lower()
                     if file_choice == 'y':
-                        content, content_type = read_file_content(input_path)
-                        content, is_snippet = handle_content(content, content_type, input_path)
-                        files_to_include.append((input_path, content, is_snippet, content_type))
-                        print(f"Added file: {input_path}{' (snippet)' if is_snippet else ''}")
+                        use_snippet = is_large_file(input_path)
+                        files_to_include.append((input_path, use_snippet))
+                        if use_snippet:
+                            current_char_count += len(get_file_snippet(input_path))
+                        else:
+                            current_char_count += os.path.getsize(input_path)
+                        print(f"Added file: {input_path}{' (snippet)' if use_snippet else ''}")
                         break
                     elif file_choice == 'n':
                         break
                     elif file_choice == 'p':
-                        chunks, _ = select_file_patches(input_path)
+                        chunks, char_count = select_file_patches(input_path)
                         if chunks:
-                            files_to_include.append((input_path, None, False, 'text', chunks))
+                            files_to_include.append((input_path, False, chunks))
+                            current_char_count += char_count
                         break
                     elif file_choice == 'q':
                         print("Quitting.")
@@ -793,16 +763,9 @@ def main():
             else:
                 print(f"Ignored file: {input_path}")
         elif os.path.isdir(input_path):
-            selected_files = process_directory(input_path)
-            for file_info in selected_files:
-                if len(file_info) == 2:
-                    file_path, use_snippet = file_info
-                    content, content_type = read_file_content(file_path)
-                    content, is_snippet = handle_content(content, content_type, file_path)
-                    files_to_include.append((file_path, content, is_snippet, content_type))
-                else:
-                    file_path, _, chunks = file_info
-                    files_to_include.append((file_path, None, False, 'text', chunks))
+            dir_files, dir_processed, current_char_count = process_directory(input_path, ignore_patterns, current_char_count)
+            files_to_include.extend(dir_files)
+            processed_dirs.update(dir_processed)
         else:
             print(f"Warning: {input_path} is not a valid file, directory, or URL. Skipping.")
 
@@ -811,7 +774,8 @@ def main():
         return
 
     print("\nFile and web content selection complete.")
-    print(f"Summary: Added {len(files_to_include)} files and {len(web_contents)} web sources.")
+    print_char_count(current_char_count)
+    print(f"Summary: Added {len(files_to_include)} files from {len(processed_dirs)} directories and {len(web_contents)} web sources.")
 
     prompt = generate_prompt(files_to_include, ignore_patterns, web_contents, env_vars)
     print("\n\nGenerated prompt:")

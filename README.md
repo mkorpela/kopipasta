@@ -59,8 +59,8 @@ Context:
 I had a bug that setup.py did not have all the dependencies. I wanted to make things easier:
 
 1. `kopipasta -t "setup.py should take requirements from requirements.txt" requirements.txt setup.py`
-2. Moved to the most service that provides the best LLM currently.
-3. Pasted the prompt to the chat.
+2. Opened the service that provides the best LLM currently.
+3. Pasted the prompt to their chat.
 4. Reviewed the first message and typed "Proceed".
 5. Got back the code that fixed the issue.
 

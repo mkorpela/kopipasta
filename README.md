@@ -27,7 +27,7 @@ kopipasta [files_or_directories_or_urls]
 
 Replace `[files_or_directories_or_urls]` with the paths to the files or directories you want to include in the prompt, as well as any web URLs you want to fetch content from.
 
-Example:
+Example input:
 ```bash
 kopipasta src/ config.json https://example.com/api-docs
 ```
@@ -52,3 +52,16 @@ The generated prompt will be displayed in the console and automatically copied t
 - Allows interactive selection of files to include
 - Supports various file types with syntax highlighting in the selection process
 - Automatically copies the generated prompt to the clipboard
+
+## Real life example
+
+Context:
+I had a bug that setup.py did not have all the dependencies. I wanted to make things easier:
+
+1. `kopipasta -t "setup.py should take requirements from requirements.txt" requirements.txt setup.py`
+2. Moved to the most service that provides the best LLM currently.
+3. Pasted the prompt to the chat.
+4. Reviewed the first message and typed "Proceed".
+5. Got back the code that fixed the issue.
+
+

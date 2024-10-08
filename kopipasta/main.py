@@ -5,6 +5,8 @@ import json
 import os
 import argparse
 import re
+import subprocess
+import tempfile
 from typing import Dict, List, Optional, Set, Tuple
 import pyperclip
 import fnmatch
@@ -687,7 +689,7 @@ def handle_env_variables(content, env_vars):
 
     return content
 
-def generate_prompt(files_to_include: List[FileTuple], ignore_patterns: List[str], web_contents: Dict[str, Tuple[FileTuple, str]], env_vars: Dict[str, str]) -> str:
+def generate_prompt_template(files_to_include: List[FileTuple], ignore_patterns: List[str], web_contents: Dict[str, Tuple[FileTuple, str]], env_vars: Dict[str, str]) -> Tuple[str, int]:
     prompt = "# Project Overview\n\n"
     prompt += "## Project Structure\n\n"
     prompt += "```\n"
@@ -720,8 +722,8 @@ def generate_prompt(files_to_include: List[FileTuple], ignore_patterns: List[str
             prompt += f"### {url}{' (snippet)' if is_snippet else ''}\n\n```{language}\n{content}\n```\n\n"
     
     prompt += "## Task Instructions\n\n"
-    task_instructions = input("Enter the task instructions: ")
-    prompt += f"{task_instructions}\n\n"
+    cursor_position = len(prompt)
+    prompt += "\n\n"
     prompt += "## Instructions for Achieving the Task\n\n"
     analysis_text = (
         "1. **Confirm and Understand the Task**:\n"
@@ -749,12 +751,38 @@ def generate_prompt(files_to_include: List[FileTuple], ignore_patterns: List[str
         "   - Request the user to share any error messages or outputs from debugging to assist further.\n"
     )
     prompt += analysis_text
-    return prompt
+    return prompt, cursor_position
 
+def open_editor_for_input(template: str, cursor_position: int) -> str:
+    editor = os.environ.get('EDITOR', 'vim')
+    with tempfile.NamedTemporaryFile(mode='w+', suffix='.md', delete=False) as temp_file:
+        temp_file.write(template)
+        temp_file.flush()
+        temp_file_path = temp_file.name
+
+    try:
+        cursor_line = template[:cursor_position].count('\n') + 1
+        cursor_column = cursor_position - template.rfind('\n', 0, cursor_position)
+
+        if 'vim' in editor or 'nvim' in editor:
+            subprocess.call([editor, f'+call cursor({cursor_line}, {cursor_column})', '+startinsert', temp_file_path])
+        elif 'emacs' in editor:
+            subprocess.call([editor, f'+{cursor_line}:{cursor_column}', temp_file_path])
+        elif 'nano' in editor:
+            subprocess.call([editor, f'+{cursor_line},{cursor_column}', temp_file_path])
+        else:
+            subprocess.call([editor, temp_file_path])
+
+        with open(temp_file_path, 'r') as file:
+            content = file.read()
+        return content
+    finally:
+        os.unlink(temp_file_path)
 
 def main():
     parser = argparse.ArgumentParser(description="Generate a prompt with project structure, file contents, and web content.")
     parser.add_argument('inputs', nargs='+', help='Files, directories, or URLs to include in the prompt')
+    parser.add_argument('-t', '--task', help='Task description for the AI prompt')
     args = parser.parse_args()
 
     ignore_patterns = read_gitignore()
@@ -844,16 +872,23 @@ def main():
     print_char_count(current_char_count)
     print(f"Summary: Added {len(files_to_include)} files from {len(processed_dirs)} directories and {len(web_contents)} web sources.")
 
-    prompt = generate_prompt(files_to_include, ignore_patterns, web_contents, env_vars)
+    prompt_template, cursor_position = generate_prompt_template(files_to_include, ignore_patterns, web_contents, env_vars)
+
+    if args.task:
+        task_description = args.task
+        final_prompt = prompt_template[:cursor_position] + task_description + prompt_template[cursor_position:]
+    else:
+        final_prompt = open_editor_for_input(prompt_template, cursor_position)
+
     print("\n\nGenerated prompt:")
-    print(prompt)
+    print(final_prompt)
 
     # Copy the prompt to clipboard
     try:
-        pyperclip.copy(prompt)
+        pyperclip.copy(final_prompt)
         separator = "\n" + "=" * 40 + "\n☕🍝       Kopipasta Complete!       🍝☕\n" + "=" * 40 + "\n"
         print(separator)
-        final_char_count = len(prompt)
+        final_char_count = len(final_prompt)
         final_token_estimate = final_char_count // 4
         print(f"Prompt has been copied to clipboard. Final size: {final_char_count} characters (~ {final_token_estimate} tokens)")
     except pyperclip.PyperclipException as e:

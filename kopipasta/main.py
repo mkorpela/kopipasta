@@ -706,14 +706,35 @@ def generate_prompt(files_to_include: List[FileTuple], ignore_patterns: List[str
     prompt += "## Task Instructions\n\n"
     task_instructions = input("Enter the task instructions: ")
     prompt += f"{task_instructions}\n\n"
-    prompt += "## Task Analysis and Planning\n\n"
+    prompt += "## Instructions for Achieving the Task\n\n"
     analysis_text = (
-        "Before starting, explain the task back to me in your own words. "
-        "Ask for any clarifications if needed. Once you're clear, ask to proceed.\n\n"
-        "Then, outline a plan for the task. Finally, use your plan to complete the task."
+        "1. **Confirm and Understand the Task**:\n"
+        "   - Rephrase the task in your own words to ensure understanding.\n"
+        "   - Ask for any necessary clarifications.\n"
+        "   - Once everything is clear, ask to proceed.\n\n"
+        "2. **Outline a Plan**:\n"
+        "   - Provide a brief plan on how to approach the task.\n"
+        "   - Make minimal incremental changes to maintain a working codebase at each step.\n"
+        "   - This is an iterative process aimed at achieving the task step by step.\n\n"
+        "3. **Implement Changes Iteratively**:\n"
+        "   - Apply changes in small, manageable increments.\n"
+        "   - Ensure the codebase remains functional after each change.\n"
+        "   - After each increment, verify stability before proceeding to the next step.\n\n"
+        "4. **Present Code Changes Clearly**:\n"
+        "   - Specify the file being modified at the beginning of each code block.\n"
+        "   - Format changes for clarity:\n"
+        "     - For small changes: Show only the changed lines with clear comments.\n"
+        "     - For larger changes: Provide the full new implementation of changed parts, using placeholders like `'// ... (rest of the function)'` for unchanged code.\n"
+        "   - Provide context by including important unchanged parts as needed.\n"
+        "   - Use clear comments to explain the changes and reference old code if helpful.\n\n"
+        "5. **Encourage User Testing and Collaboration**:\n"
+        "   - Ask the user to test the code on their machine after each change.\n"
+        "   - If debugging is needed, include debugging messages in the code.\n"
+        "   - Request the user to share any error messages or outputs from debugging to assist further.\n"
     )
     prompt += analysis_text
     return prompt
+
 
 def main():
     parser = argparse.ArgumentParser(description="Generate a prompt with project structure, file contents, and web content.")

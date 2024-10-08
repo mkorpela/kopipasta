@@ -1,11 +1,16 @@
 from setuptools import setup, find_packages
 
+# Read the contents of README.md
 with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
+# Read the contents of requirements.txt
+with open("requirements.txt", "r", encoding="utf-8") as f:
+    requirements = f.read().splitlines()
+
 setup(
     name="kopipasta",
-    version="0.19.0",
+    version="0.20.0",
     author="Mikko Korpela",
     author_email="mikko.korpela@gmail.com",
     description="A CLI tool to generate prompts with project structure and file contents",
@@ -13,10 +18,7 @@ setup(
     long_description_content_type="text/markdown",
     url="https://github.com/mkorpela/kopipasta",
     packages=find_packages(),
-    install_requires=[
-        "pyperclip==1.9.0",
-        "requests==2.32.3",
-    ],
+    install_requires=requirements,
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Developers",

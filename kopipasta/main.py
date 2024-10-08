@@ -8,10 +8,21 @@ import re
 from typing import Dict, List, Optional, Set, Tuple
 import pyperclip
 import fnmatch
+from pygments import highlight
+from pygments.lexers import get_lexer_for_filename, TextLexer
+from pygments.formatters import TerminalFormatter
+import pygments.util
 
 import requests
 
 FileTuple = Tuple[str, bool, Optional[List[str]], str]
+
+def get_colored_code(file_path, code):
+     try:
+         lexer = get_lexer_for_filename(file_path)
+     except pygments.util.ClassNotFound:
+         lexer = TextLexer()
+     return highlight(code, lexer, TerminalFormatter())
 
 def read_gitignore():
     default_ignore_patterns = [
@@ -375,7 +386,8 @@ def select_file_patches(file_path):
     print(f"\nSelecting patches for {file_path}")
     for index, (chunk_code, start_line, end_line) in enumerate(code_chunks):
         print(f"\nChunk {index + 1} (Lines {start_line + 1}-{end_line}):")
-        print(f"```{language}\n{chunk_code}\n```")
+        colored_chunk = get_colored_code(file_path, chunk_code)
+        print(colored_chunk)
         while True:
             choice = input("(y)es include / (n)o skip / (q)uit rest of file? ").lower()
             if choice == 'y':

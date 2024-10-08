@@ -434,6 +434,10 @@ def get_file_snippet(file_path, max_lines=50, max_bytes=4096):
             byte_count += len(line.encode('utf-8'))
     return snippet
 
+def get_colored_file_snippet(file_path, max_lines=50, max_bytes=4096):
+    snippet = get_file_snippet(file_path, max_lines, max_bytes)
+    return get_colored_code(file_path, snippet)
+
 def print_char_count(count):
     token_estimate = count // 4
     print(f"\rCurrent prompt size: {count} characters (~ {token_estimate} tokens)", flush=True)
@@ -803,7 +807,9 @@ def main():
                         use_snippet = is_large_file(input_path)
                         files_to_include.append((input_path, use_snippet, None, get_language_for_file(input_path)))
                         if use_snippet:
-                            current_char_count += len(get_file_snippet(input_path))
+                            snippet = get_file_snippet(input_path)
+                            current_char_count += len(snippet)
+                            print(get_colored_code(input_path, snippet))
                         else:
                             current_char_count += os.path.getsize(input_path)
                         print(f"Added file: {input_path}{' (snippet)' if use_snippet else ''}")

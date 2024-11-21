@@ -3,6 +3,8 @@
 [![Version](https://img.shields.io/pypi/v/kopipasta.svg)](https://pypi.python.org/pypi/kopipasta)
 [![Downloads](http://pepy.tech/badge/kopipasta)](http://pepy.tech/project/kopipasta)
 
+Beyond TAB TAB TAB.
+
 A CLI tool for generating code task prompts with project structure and file contents, using an interactive editor-based workflow. OR a very easy way to give a large context to an LLM.
 
 <img src="kopipasta.jpg" alt="kopipasta" width="300">

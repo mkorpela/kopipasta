@@ -4,6 +4,7 @@ import io
 import json
 import os
 import argparse
+import sys
 import re
 import subprocess
 import tempfile
@@ -17,7 +18,57 @@ import pygments.util
 
 import requests
 
+from pydantic import BaseModel, Field
+from google import genai
+from google.genai.types import Schema, GenerateContentConfig
+
 FileTuple = Tuple[str, bool, Optional[List[str]], str]
+
+class PatchArgs(BaseModel):
+    """Arguments required for the apply_code_patch function."""
+    reasoning: str = Field(..., description="A clear explanation of the proposed code changes and why they are necessary based on the conversation.")
+    diff: str = Field(..., description="The code changes formatted strictly as a unified diff (diff -u). The diff should be relative to the project root to be applicable with 'patch -p1'.")
+
+def apply_diff_patch(diff_content: str):
+    """Attempts to apply a given diff patch using the 'patch' command."""
+    print("\n🤖 Gemini: Attempting to apply the patch locally...")
+    try:
+        # Use patch -p1 which is common for git diffs relative to repo root.
+        # --input=- reads the patch content from stdin.
+        command = ["patch", "-p1", "--input=-"]
+        process = subprocess.run(
+            command,
+            input=diff_content,
+            capture_output=True,
+            text=True,
+            check=False  # Don't raise exception on non-zero exit code
+        )
+
+        print("-" * 20)
+        if process.returncode == 0:
+            print("✅ Patch applied successfully.")
+            if process.stdout:
+                print("Patch Output (stdout):")
+                print(process.stdout)
+        else:
+            print(f"⚠️ Patch command finished with exit code {process.returncode}.")
+            print("   This might indicate failure, warnings, or fuzz.")
+            if process.stdout:
+                print("Patch Output (stdout):")
+                print(process.stdout)
+            if process.stderr:
+                print("Patch Output (stderr):")
+                print(process.stderr)
+            print("   Please review the changes and the output above.")
+        print("-" * 20)
+
+    except FileNotFoundError:
+        print("❌ Error: The 'patch' command was not found.")
+        print("   Please install it on your system (e.g., 'sudo apt install patch' or 'brew install patch').")
+        print("-" * 20)
+    except Exception as e:
+        print(f"❌ An unexpected error occurred while running 'patch': {e}")
+        print("-" * 20)
 
 def get_colored_code(file_path, code):
      try:
@@ -779,10 +830,156 @@ def open_editor_for_input(template: str, cursor_position: int) -> str:
     finally:
         os.unlink(temp_file_path)
 
+def start_chat_session(initial_prompt: str):
+    """Starts an interactive chat session with the Gemini API using google-genai."""
+    if not genai:
+        # Error message already printed during import if it failed
+        sys.exit(1)
+
+    # The google-genai library automatically uses GOOGLE_API_KEY env var if set
+    # We still check if it's set to provide a clearer error message upfront
+    if not os.environ.get('GOOGLE_API_KEY'):
+        print("Error: GOOGLE_API_KEY environment variable not set.")
+        print("Please set the GOOGLE_API_KEY environment variable with your API key.")
+        sys.exit(1)
+
+    try:
+        # Create the client - it will use the env var automatically
+        client = genai.Client()
+        print("Google GenAI Client created (using GOOGLE_API_KEY).")
+        # You could add a check here like listing models to verify the key early
+        # print("Available models:", [m.name for m in client.models.list()])
+    except Exception as e:
+        print(f"Error creating Google GenAI client: {e}")
+        print("Please ensure your GOOGLE_API_KEY is valid and has permissions.")
+        sys.exit(1)
+
+    model_name = 'gemini-2.5-pro-exp-03-25'
+    print(f"Using model: {model_name}")
+
+    try:
+        # Create a chat session using the client
+        chat = client.chats.create(model=model_name)
+        # Note: History is managed by the chat object itself
+
+        print("\n--- Starting Interactive Chat with Gemini ---")
+        print("Type /q to quit, /help or /? for help, /patch to request a diff patch.")
+
+        # Send the initial prompt using send_message_stream
+        print("\n🤖 Gemini:")
+        full_response_text = ""
+        # Use send_message_stream for streaming responses
+        response_stream = chat.send_message_stream(initial_prompt)
+        for chunk in response_stream:
+            print(chunk.text, end="", flush=True)
+            full_response_text += chunk.text
+        print("\n" + "-"*20)
+
+        while True:
+            try:
+                user_input = input("👤 You: ")
+            except EOFError: # Handle Ctrl+D
+                 print("\nExiting...")
+                 break
+            except KeyboardInterrupt: # Handle Ctrl+C
+                 print("\nExiting...")
+                 break
+
+            if user_input.lower() == '/q':
+                break
+            elif user_input.strip() == '/patch':
+                print("\n🤖 Gemini: Thinking... (requesting patch to apply)")
+                # Prompt instructing the model to use the tool if appropriate
+                patch_request_prompt = (
+                    "Based on our conversation so far, if code changes are needed to fulfill my request, "
+                    "response in JSON { reasoning: string, diff: string }."
+                )
+
+                try:
+                    response = chat.send_message(patch_request_prompt, config=GenerateContentConfig(
+                        response_schema=PatchArgs.model_json_schema(),
+                        response_mime_type='application/json'
+                    ))
+
+                    print("🤖 Gemini: Received function call to apply patch.")
+                    try:
+                        # Validate and parse args using the Pydantic model
+                        patch_data = response.parsed
+
+                        reasoning = patch_data["reasoning"]
+                        diff_content = patch_data["diff"]
+
+                        print("\n🤖 Gemini Reasoning:")
+                        print(reasoning)
+                        print("-" * 20)
+                        print("Extracted Diff Content:")
+                        print(diff_content)
+                        print("-" * 20)
+
+                        confirm = input("Apply this patch? (y/N): ").lower()
+                        if confirm == 'y':
+                            apply_diff_patch(diff_content)
+                        else:
+                            print("🤖 Gemini: Patch not applied.")
+
+                    except Exception as e: # Catch Pydantic validation errors etc.
+                        print(f"❌ Error processing function call arguments: {e}")
+                        print(f"   Received args: {response.parsed}")
+
+                    else:
+                        # --- Handle Text Response (No Function Call) ---
+                        print("🤖 Gemini: (No patch function call received, showing text response)")
+                        # Extract and print text part if no function call was made
+                        text_response = ""
+                        if response.parts:
+                            text_response = "".join(part.text for part in response.parts if hasattr(part, 'text'))
+                        elif hasattr(response, 'text'): # Fallback
+                            text_response = response.text
+
+                        if text_response:
+                            print(text_response)
+                        else:
+                            print("(No text content found in response either)")
+                    # --- End Function Call / Text Response Handling ---
+
+                except Exception as e:
+                    print(f"\n❌ An error occurred while requesting the patch function call from Gemini: {e}")
+                    print("   Please check your connection, API key, and model permissions/capabilities.")
+
+                print("-" * 20)
+                continue # Go to next loop iteration
+            elif user_input.strip() in ['/help', '/?']:
+                print("🤖 Gemini: Available commands:")
+                print("  /q          - Quit the chat session.")
+                print("  /patch      - Request a diff patch (not fully implemented yet).")
+                print("  /help or /? - Show this help message.")
+                print("-" * 20)
+                continue
+            elif not user_input.strip(): # Ignore empty input
+                continue
+
+            print("\n🤖 Gemini:")
+            full_response_text = ""
+            try:
+                # Use send_message_stream for subsequent messages
+                response_stream = chat.send_message_stream(user_input)
+                for chunk in response_stream:
+                    print(chunk.text, end="", flush=True)
+                    full_response_text += chunk.text
+                print("\n" + "-"*20)
+            except Exception as e:
+                 print(f"\nAn unexpected error occurred: {e}")
+                 print("Try again or type 'exit'.")
+
+    except Exception as e:
+        # Catch other potential errors
+        print(f"\nAn error occurred setting up the chat session: {e}")
+
 def main():
     parser = argparse.ArgumentParser(description="Generate a prompt with project structure, file contents, and web content.")
     parser.add_argument('inputs', nargs='+', help='Files, directories, or URLs to include in the prompt')
     parser.add_argument('-t', '--task', help='Task description for the AI prompt')
+    parser.add_argument('-I', '--interactive', action='store_true', help='Start an interactive chat session after generating the prompt.')
     args = parser.parse_args()
 
     ignore_patterns = read_gitignore()
@@ -801,7 +998,7 @@ def main():
                 is_large = len(full_content) > 10000
                 if is_large:
                     print(f"\nContent from {input_path} is large. Here's a snippet:\n")
-                    print(snippet)
+                    print(get_colored_code(input_path, snippet))
                     print("\n" + "-"*40 + "\n")
                     
                     while True:
@@ -870,29 +1067,57 @@ def main():
 
     print("\nFile and web content selection complete.")
     print_char_count(current_char_count)
-    print(f"Summary: Added {len(files_to_include)} files from {len(processed_dirs)} directories and {len(web_contents)} web sources.")
 
+    added_files_count = len(files_to_include)
+    added_dirs_count = len(processed_dirs) # Count unique processed directories
+    added_web_count = len(web_contents)
+    print(f"Summary: Added {added_files_count} files/patches from {added_dirs_count} directories and {added_web_count} web sources.")
+    
     prompt_template, cursor_position = generate_prompt_template(files_to_include, ignore_patterns, web_contents, env_vars)
 
-    if args.task:
-        task_description = args.task
-        final_prompt = prompt_template[:cursor_position] + task_description + prompt_template[cursor_position:]
+    # Logic branching for interactive mode vs. clipboard mode
+    if args.interactive:
+        print("\nPreparing initial prompt for editing...")
+        # Determine the initial content for the editor
+        if args.task:
+            # Pre-populate the task section if --task was provided
+            editor_initial_content = prompt_template[:cursor_position] + args.task + prompt_template[cursor_position:]
+            print("Pre-populating editor with task provided via --task argument.")
+        else:
+            # Use the template as is (user will add task in the editor)
+            editor_initial_content = prompt_template
+            print("Opening editor for you to add the task instructions.")
+        
+        # Always open the editor in interactive mode
+        initial_chat_prompt = open_editor_for_input(editor_initial_content, cursor_position)
+        print("Editor closed. Starting interactive chat session...")
+        start_chat_session(initial_chat_prompt) # Start the chat with the edited prompt    else:
     else:
-        final_prompt = open_editor_for_input(prompt_template, cursor_position)
+        # Original non-interactive behavior
+        if args.task:
+            task_description = args.task
+            final_prompt = prompt_template[:cursor_position] + task_description + prompt_template[cursor_position:]
+        else:
+            # Open editor only if not interactive and no task provided
+            final_prompt = open_editor_for_input(prompt_template, cursor_position)
 
-    print("\n\nGenerated prompt:")
-    print(final_prompt)
+        print("\n\nGenerated prompt:")
+        print(final_prompt)
 
-    # Copy the prompt to clipboard
-    try:
-        pyperclip.copy(final_prompt)
-        separator = "\n" + "=" * 40 + "\n☕🍝       Kopipasta Complete!       🍝☕\n" + "=" * 40 + "\n"
-        print(separator)
-        final_char_count = len(final_prompt)
-        final_token_estimate = final_char_count // 4
-        print(f"Prompt has been copied to clipboard. Final size: {final_char_count} characters (~ {final_token_estimate} tokens)")
-    except pyperclip.PyperclipException as e:
-        print(f"Failed to copy to clipboard: {e}")
+        # Copy the prompt to clipboard
+        try:
+            pyperclip.copy(final_prompt)
+            separator = "\n" + "=" * 40 + "\n☕🍝       Kopipasta Complete!       🍝☕\n" + "=" * 40 + "\n"
+            print(separator)
+            final_char_count = len(final_prompt)
+            final_token_estimate = final_char_count // 4
+            print(f"Prompt has been copied to clipboard. Final size: {final_char_count} characters (~ {final_token_estimate} tokens)")
+        except pyperclip.PyperclipException as e:
+            print(f"\nFailed to copy to clipboard: {e}")
+            print("You can still manually copy the prompt above.")
+        except Exception as e: # Catch potential other clipboard errors
+             print(f"\nAn unexpected error occurred with the clipboard: {e}")
+             print("You can still manually copy the prompt above.")
 
 if __name__ == "__main__":
     main()

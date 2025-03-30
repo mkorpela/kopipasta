@@ -19,8 +19,10 @@ import pygments.util
 import requests
 
 from pydantic import BaseModel, Field
+import traceback
 from google import genai
-from google.genai.types import Schema, GenerateContentConfig
+from google.genai.types import GenerateContentConfig
+from .diff import Hunk, parse_unified_diff, find_hunk_position_fuzzy, apply_hunk_at
 
 FileTuple = Tuple[str, bool, Optional[List[str]], str]
 
@@ -29,46 +31,190 @@ class PatchArgs(BaseModel):
     reasoning: str = Field(..., description="A clear explanation of the proposed code changes and why they are necessary based on the conversation.")
     diff: str = Field(..., description="The code changes formatted strictly as a unified diff (diff -u). The diff should be relative to the project root to be applicable with 'patch -p1'.")
 
-def apply_diff_patch(diff_content: str):
-    """Attempts to apply a given diff patch using the 'patch' command."""
-    print("\n🤖 Gemini: Attempting to apply the patch locally...")
-    try:
-        # Use patch -p1 which is common for git diffs relative to repo root.
-        # --input=- reads the patch content from stdin.
-        command = ["patch", "-p1", "--input=-"]
-        process = subprocess.run(
-            command,
-            input=diff_content,
-            capture_output=True,
-            text=True,
-            check=False  # Don't raise exception on non-zero exit code
-        )
+# Function to extract target filename from diff headers
+def _extract_filename_from_diff(diff_text: str) -> Optional[str]:
+    """Extracts the target filename from unified diff headers."""
+    # Prioritize the '+++' line
+    for line in diff_text.splitlines():
+        if line.startswith('+++ '):
+            # Remove '+++ ' prefix and potential 'b/' if using git diff format
+            path = line[4:].strip()
+            if path.startswith('b/'):
+                path = path[2:]
+            # Handle cases like '+++ /dev/null' for new files (less common for patches we apply)
+            # or '--- a/file' '+++ b/file'
+            # We assume the path given is the one to modify relative to root
+            # Handle cases like '+++ b/some/file.py\t(date)'
+            return path.split('\t')[0].strip()
+    # Fallback to '---' line if '+++' not found (less likely for modifications)
+    for line in diff_text.splitlines():
+        if line.startswith('--- '):
+            path = line[4:].strip()
+            if path.startswith('a/'):
+                path = path[2:]
+            if path != '/dev/null': # Ignore deletion markers
+                 # Handle cases like '--- a/some/file.py\t(date)'
+                 return path.split('\t')[0].strip()
+    return None
 
+def apply_diff_patch(diff_content: str):
+    """
+    Attempts to apply a given diff patch using the internal fuzzy patching logic.
+    """
+    print("\n🤖 Gemini: Attempting to apply the patch locally using fuzzy logic...")
+    print("-" * 20)
+
+    target_filename = _extract_filename_from_diff(diff_content)
+
+    if not target_filename:
+        print("❌ Error: Could not determine the target filename from the diff headers.")
+        print("   Please ensure the diff includes '--- a/path/to/file' or '+++ b/path/to/file' lines.")
         print("-" * 20)
-        if process.returncode == 0:
-            print("✅ Patch applied successfully.")
-            if process.stdout:
-                print("Patch Output (stdout):")
-                print(process.stdout)
+        return
+
+    if not os.path.exists(target_filename):
+        # TODO: Handle file creation case? Diff might be for a new file.
+        # For now, we only support patching existing files.
+        print(f"❌ Error: Target file '{target_filename}' not found in the project.")
+        print("-" * 20)
+        return
+
+    original_lines_raw = []
+    try:
+        # Read the target file content, preserving original line endings somewhat
+        with open(target_filename, 'r', encoding='utf-8', newline='') as f:
+            original_lines_raw = f.readlines() # Keep original line endings for later use
+
+        # Work with lines normalized for internal processing (no trailing whitespace/newlines)
+        file_lines_processed = [line.rstrip() for line in original_lines_raw]
+
+        # Parse the diff into hunks
+        hunks = parse_unified_diff(diff_content)
+        if not hunks:
+            print("⚠️ Warning: No changes (hunks) found in the provided diff.")
+            print("-" * 20)
+            return
+
+        applied_count = 0
+        failed_count = 0
+        apply_details = []
+
+        # Apply hunks one by one using fuzzy matching
+        for i, hunk in enumerate(hunks):
+            hunk_num = i + 1
+            # Find position using the processed lines
+            pos = find_hunk_position_fuzzy(file_lines_processed, hunk)
+
+            if pos is not None:
+                # Prepare hunk data without trailing newlines for apply_hunk_at compatibility
+                hunk_removals_no_newlines = [line.rstrip('\n\r') for line in hunk.removals]
+                hunk_additions_no_newlines = [line.rstrip('\n\r') for line in hunk.additions]
+
+                # Create a temporary hunk object for apply_hunk_at
+                temp_hunk = Hunk(
+                    context_before=[], # Context isn't used by apply_hunk_at for matching
+                    removals=hunk_removals_no_newlines,
+                    additions=hunk_additions_no_newlines,
+                    context_after=[]
+                )
+
+                # Run apply_hunk_at on the list that will become the new file content
+                # This function MUTATES file_lines_processed in place if successful
+                apply_success = apply_hunk_at(file_lines_processed, temp_hunk, pos)
+
+                if apply_success:
+                    applied_count += 1
+                    apply_details.append(f"  ✅ Hunk {hunk_num}: Applied successfully near line {pos + 1}.")
+                else:
+                    # This case means fuzzy find worked, but exact line removal failed
+                    failed_count += 1
+                    apply_details.append(f"  ❌ Hunk {hunk_num}: Found position near line {pos + 1}, but failed to apply (lines to remove didn't match exactly).")
+
+            else:
+                # Fuzzy finding failed
+                failed_count += 1
+                apply_details.append(f"  ❌ Hunk {hunk_num}: Could not find a suitable position to apply (context match failed).")
+
+        # --- Report detailed results ---
+        print(f"Patch application results for '{target_filename}':")
+        for detail in apply_details:
+            print(detail)
+
+        if applied_count > 0 and failed_count == 0:
+            print(f"✅ All {applied_count} hunks applied successfully.")
+        elif applied_count > 0 and failed_count > 0:
+            print(f"⚠️ Partially applied: {applied_count} hunks succeeded, {failed_count} failed.")
+        elif applied_count == 0 and failed_count > 0:
+            print(f"❌ Patch failed: All {failed_count} hunks could not be applied.")
+        else: # applied == 0 and failed == 0 (shouldn't happen if hunks exist)
+            print("⚪ No changes were applied.")
+
+        # --- Write back if changes were made ---
+        if applied_count > 0:
+            try:
+                # Heuristic: Determine original line ending from the first line if possible
+                original_newline = os.linesep # Default to system newline
+                if original_lines_raw:
+                    first_line = original_lines_raw[0]
+                    if first_line.endswith('\r\n'):
+                        original_newline = '\r\n'
+                    elif first_line.endswith('\n'):
+                        original_newline = '\n'
+                    elif first_line.endswith('\r'): # Less common but possible
+                         original_newline = '\r'
+
+                # Join processed lines using the detected or default newline
+                # Note: This adds a newline *after* every line.
+                patched_content = original_newline.join(file_lines_processed)
+
+                # Add final newline if the original file likely ended with one
+                # or if there's content and the join didn't add one at the very end.
+                original_ends_with_newline = False
+                if original_lines_raw:
+                   # More robust check using raw bytes
+                   try:
+                       with open(target_filename, 'rb') as f_read_bytes:
+                            f_read_bytes.seek(0, os.SEEK_END)
+                            if f_read_bytes.tell() > 0: # Check if file is not empty
+                                f_read_bytes.seek(-1, os.SEEK_END)
+                                last_byte = f_read_bytes.read(1)
+                                original_ends_with_newline = last_byte in (b'\n', b'\r')
+                            # Handle case of empty original file (arguably shouldn't end with newline)
+                   except Exception: pass # Ignore errors reading bytes
+
+                if file_lines_processed and not patched_content.endswith(original_newline) and original_ends_with_newline:
+                     patched_content += original_newline
+                elif not file_lines_processed and original_ends_with_newline: # Handle case where file becomes empty but original had newline
+                     patched_content = original_newline
+                # If original didn't end with newline, ensure patched doesn't either unless empty
+                elif patched_content and patched_content.endswith(original_newline) and not original_ends_with_newline:
+                     patched_content = patched_content.rstrip(original_newline)
+
+
+                # Write using 'w' mode which uses os.linesep by default, but we've constructed the string manually
+                # Using 'wb' and encoding manually gives more control over line endings if needed.
+                with open(target_filename, 'w', encoding='utf-8', newline='') as f: # newline='' prevents translation
+                    f.write(patched_content)
+                print(f"💾 File '{target_filename}' updated successfully.")
+            except IOError as e:
+                print(f"❌ Error writing updated content to '{target_filename}': {e}")
+                print("   The file may be partially modified or unchanged.")
         else:
-            print(f"⚠️ Patch command finished with exit code {process.returncode}.")
-            print("   This might indicate failure, warnings, or fuzz.")
-            if process.stdout:
-                print("Patch Output (stdout):")
-                print(process.stdout)
-            if process.stderr:
-                print("Patch Output (stderr):")
-                print(process.stderr)
-            print("   Please review the changes and the output above.")
-        print("-" * 20)
+            print(f"💾 File '{target_filename}' remains unchanged.")
 
     except FileNotFoundError:
-        print("❌ Error: The 'patch' command was not found.")
-        print("   Please install it on your system (e.g., 'sudo apt install patch' or 'brew install patch').")
-        print("-" * 20)
+        # This case should ideally be caught earlier, but handle defensively
+        print(f"❌ Error: Target file '{target_filename}' not found during read attempt.")
     except Exception as e:
-        print(f"❌ An unexpected error occurred while running 'patch': {e}")
-        print("-" * 20)
+        print(f"❌ An unexpected error occurred during fuzzy patch application: {e}")
+        traceback.print_exc() # Print stack trace for debugging
+
+    print("-" * 20)
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 
 def get_colored_code(file_path, code):
      try:
@@ -221,7 +367,7 @@ def split_python_file(file_content):
             code = get_code(prev_end, chunk_start)
             if code.strip():
                 chunks.append((code, prev_end, chunk_start))
-        
+
         # Add the merged chunk
         code = get_code(chunk_start, chunk_end)
         chunks.append((code, chunk_start, chunk_end))
@@ -625,14 +771,14 @@ def fetch_web_content(url: str) -> Tuple[Optional[FileTuple], Optional[str], Opt
         content_type = response.headers.get('content-type', '').lower()
         full_content = response.text
         snippet = full_content[:10000] + "..." if len(full_content) > 10000 else full_content
-        
+
         if 'json' in content_type:
             content_type = 'json'
         elif 'csv' in content_type:
             content_type = 'csv'
         else:
             content_type = 'text'
-        
+
         return (url, False, None, content_type), full_content, snippet
     except requests.RequestException as e:
         print(f"Error fetching content from {url}: {e}")
@@ -724,14 +870,14 @@ def handle_env_variables(content, env_vars):
     print("Detected environment variables:")
     for key, value in detected_vars:
         print(f"- {key}={value}")
-    
+
     for key, value in detected_vars:
         while True:
             choice = input(f"How would you like to handle {key}? (m)ask / (s)kip / (k)eep: ").lower()
             if choice in ['m', 's', 'k']:
                 break
             print("Invalid choice. Please enter 'm', 's', or 'k'.")
-        
+
         if choice == 'm':
             content = content.replace(value, '*' * len(value))
         elif choice == 's':
@@ -763,7 +909,7 @@ def generate_prompt_template(files_to_include: List[FileTuple], ignore_patterns:
             file_content = read_file_contents(file)
             file_content = handle_env_variables(file_content, env_vars)
             prompt += f"### {relative_path}\n\n```{language}\n{file_content}\n```\n\n"
-    
+
     if web_contents:
         prompt += "## Web Content\n\n"
         for url, (file_tuple, content) in web_contents.items():
@@ -771,7 +917,7 @@ def generate_prompt_template(files_to_include: List[FileTuple], ignore_patterns:
             content = handle_env_variables(content, env_vars)
             language = content_type if content_type in ['json', 'csv'] else ''
             prompt += f"### {url}{' (snippet)' if is_snippet else ''}\n\n```{language}\n{content}\n```\n\n"
-    
+
     prompt += "## Task Instructions\n\n"
     cursor_position = len(prompt)
     prompt += "\n\n"
@@ -845,7 +991,7 @@ def start_chat_session(initial_prompt: str):
 
     try:
         # Create the client - it will use the env var automatically
-        client = genai.Client()
+        # client = genai.Client() # Deprecated or less direct way? SDK recommends configure
         print("Google GenAI Client created (using GOOGLE_API_KEY).")
         # You could add a check here like listing models to verify the key early
         # print("Available models:", [m.name for m in client.models.list()])
@@ -1000,13 +1146,13 @@ def main():
                     print(f"\nContent from {input_path} is large. Here's a snippet:\n")
                     print(get_colored_code(input_path, snippet))
                     print("\n" + "-"*40 + "\n")
-                    
+
                     while True:
                         choice = input("Use (f)ull content or (s)nippet? ").lower()
                         if choice in ['f', 's']:
                             break
                         print("Invalid choice. Please enter 'f' or 's'.")
-                    
+
                     if choice == 'f':
                         content = full_content
                         is_snippet = False
@@ -1019,7 +1165,7 @@ def main():
                     content = full_content
                     is_snippet = False
                     print(f"Content from {input_path} is not large. Using full content.")
-                
+
                 file_tuple = (file_tuple[0], is_snippet, file_tuple[2], file_tuple[3])
                 web_contents[input_path] = (file_tuple, content)
                 current_char_count += len(content)
@@ -1072,7 +1218,7 @@ def main():
     added_dirs_count = len(processed_dirs) # Count unique processed directories
     added_web_count = len(web_contents)
     print(f"Summary: Added {added_files_count} files/patches from {added_dirs_count} directories and {added_web_count} web sources.")
-    
+
     prompt_template, cursor_position = generate_prompt_template(files_to_include, ignore_patterns, web_contents, env_vars)
 
     # Logic branching for interactive mode vs. clipboard mode
@@ -1087,7 +1233,7 @@ def main():
             # Use the template as is (user will add task in the editor)
             editor_initial_content = prompt_template
             print("Opening editor for you to add the task instructions.")
-        
+
         # Always open the editor in interactive mode
         initial_chat_prompt = open_editor_for_input(editor_initial_content, cursor_position)
         print("Editor closed. Starting interactive chat session...")

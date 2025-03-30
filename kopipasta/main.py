@@ -21,6 +21,7 @@ import requests
 from pydantic import BaseModel, Field
 import traceback
 from google import genai
+from google.genai import GenerateContentConfig
 
 FileTuple = Tuple[str, bool, Optional[List[str]], str]
 
@@ -888,7 +889,7 @@ def start_chat_session(initial_prompt: str):
 
     try:
         # Create the client - it will use the env var automatically
-        # client = genai.Client() # Deprecated or less direct way? SDK recommends configure
+        client = genai.Client()
         print("Google GenAI Client created (using GOOGLE_API_KEY).")
         # You could add a check here like listing models to verify the key early
         # print("Available models:", [m.name for m in client.models.list()])

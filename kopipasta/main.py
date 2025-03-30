@@ -21,200 +21,97 @@ import requests
 from pydantic import BaseModel, Field
 import traceback
 from google import genai
-from google.genai.types import GenerateContentConfig
-from .diff import Hunk, parse_unified_diff, find_hunk_position_fuzzy, apply_hunk_at
 
 FileTuple = Tuple[str, bool, Optional[List[str]], str]
 
-class PatchArgs(BaseModel):
-    """Arguments required for the apply_code_patch function."""
-    reasoning: str = Field(..., description="A clear explanation of the proposed code changes and why they are necessary based on the conversation.")
-    diff: str = Field(..., description="The code changes formatted strictly as a unified diff (diff -u). The diff should be relative to the project root to be applicable with 'patch -p1'.")
+class SimplePatchItem(BaseModel):
+    """A single change described by reasoning, file path, original text, and new text."""
+    reasoning: str = Field(..., description="Explanation for why this specific change is proposed.")
+    file_path: str = Field(..., description="Relative path to the file to be modified.")
+    original_text: str = Field(..., description="The exact, unique block of text to be replaced.")
+    new_text: str = Field(..., description="The text to replace the original_text with.")
 
-# Function to extract target filename from diff headers
-def _extract_filename_from_diff(diff_text: str) -> Optional[str]:
-    """Extracts the target filename from unified diff headers."""
-    # Prioritize the '+++' line
-    for line in diff_text.splitlines():
-        if line.startswith('+++ '):
-            # Remove '+++ ' prefix and potential 'b/' if using git diff format
-            path = line[4:].strip()
-            if path.startswith('b/'):
-                path = path[2:]
-            # Handle cases like '+++ /dev/null' for new files (less common for patches we apply)
-            # or '--- a/file' '+++ b/file'
-            # We assume the path given is the one to modify relative to root
-            # Handle cases like '+++ b/some/file.py\t(date)'
-            return path.split('\t')[0].strip()
-    # Fallback to '---' line if '+++' not found (less likely for modifications)
-    for line in diff_text.splitlines():
-        if line.startswith('--- '):
-            path = line[4:].strip()
-            if path.startswith('a/'):
-                path = path[2:]
-            if path != '/dev/null': # Ignore deletion markers
-                 # Handle cases like '--- a/some/file.py\t(date)'
-                 return path.split('\t')[0].strip()
-    return None
+class SimplePatchArgs(BaseModel):
+    """A list of proposed code changes."""
+    patches: List[SimplePatchItem] = Field(..., description="A list of patches to apply.")
 
-def apply_diff_patch(diff_content: str):
+def apply_simple_patch(patch_item: SimplePatchItem) -> bool:
     """
-    Attempts to apply a given diff patch using the internal fuzzy patching logic.
+    Applies a single patch defined by replacing original_text with new_text in file_path.
+
+    Validates that the file exists and the original_text is unique.
     """
-    print("\n🤖 Gemini: Attempting to apply the patch locally using fuzzy logic...")
+    print(f"\nApplying patch to: {patch_item.file_path}")
+    print(f"Reasoning: {patch_item.reasoning}")
     print("-" * 20)
 
-    target_filename = _extract_filename_from_diff(diff_content)
+    file_path = patch_item.file_path
+    original_text = patch_item.original_text
+    new_text = patch_item.new_text
 
-    if not target_filename:
-        print("❌ Error: Could not determine the target filename from the diff headers.")
-        print("   Please ensure the diff includes '--- a/path/to/file' or '+++ b/path/to/file' lines.")
+    # --- Validation ---
+    if not os.path.exists(file_path):
+        print(f"❌ Error: File not found: {file_path}")
         print("-" * 20)
-        return
+        return False
 
-    if not os.path.exists(target_filename):
-        # TODO: Handle file creation case? Diff might be for a new file.
-        # For now, we only support patching existing files.
-        print(f"❌ Error: Target file '{target_filename}' not found in the project.")
-        print("-" * 20)
-        return
-
-    original_lines_raw = []
     try:
-        # Read the target file content, preserving original line endings somewhat
-        with open(target_filename, 'r', encoding='utf-8', newline='') as f:
-            original_lines_raw = f.readlines() # Keep original line endings for later use
+        # Read the file content, attempting to preserve line endings implicitly
+        with open(file_path, 'r', encoding='utf-8', newline='') as f:
+            content = f.read()
 
-        # Work with lines normalized for internal processing (no trailing whitespace/newlines)
-        file_lines_processed = [line.rstrip() for line in original_lines_raw]
-
-        # Parse the diff into hunks
-        hunks = parse_unified_diff(diff_content)
-        if not hunks:
-            print("⚠️ Warning: No changes (hunks) found in the provided diff.")
+        # Check for unique occurrence of original_text
+        occurrences = content.count(original_text)
+        if occurrences == 0:
+            print(f"❌ Error: Original text not found in {file_path}.")
+            # Optional: print a snippet of the expected text for debugging
+            # print(f"   Expected original text snippet: '{original_text[:100]}...'")
             print("-" * 20)
-            return
+            return False
+        elif occurrences > 1:
+            print(f"❌ Error: Original text is not unique in {file_path} (found {occurrences} times).")
+            print(f"   Patch cannot be applied automatically due to ambiguity.")
+            # print(f"   Ambiguous original text snippet: '{original_text[:100]}...'")
+            print("-" * 20)
+            return False
 
-        applied_count = 0
-        failed_count = 0
-        apply_details = []
+        # --- Application ---
+        # Replace the single unique occurrence
+        new_content = content.replace(original_text, new_text, 1)
 
-        # Apply hunks one by one using fuzzy matching
-        for i, hunk in enumerate(hunks):
-            hunk_num = i + 1
-            # Find position using the processed lines
-            pos = find_hunk_position_fuzzy(file_lines_processed, hunk)
+        # Heuristic to check if a newline might be needed at the end
+        original_ends_with_newline = content.endswith(('\n', '\r'))
+        new_ends_with_newline = new_content.endswith(('\n', '\r'))
 
-            if pos is not None:
-                # Prepare hunk data without trailing newlines for apply_hunk_at compatibility
-                hunk_removals_no_newlines = [line.rstrip('\n\r') for line in hunk.removals]
-                hunk_additions_no_newlines = [line.rstrip('\n\r') for line in hunk.additions]
-
-                # Create a temporary hunk object for apply_hunk_at
-                temp_hunk = Hunk(
-                    context_before=[], # Context isn't used by apply_hunk_at for matching
-                    removals=hunk_removals_no_newlines,
-                    additions=hunk_additions_no_newlines,
-                    context_after=[]
-                )
-
-                # Run apply_hunk_at on the list that will become the new file content
-                # This function MUTATES file_lines_processed in place if successful
-                apply_success = apply_hunk_at(file_lines_processed, temp_hunk, pos)
-
-                if apply_success:
-                    applied_count += 1
-                    apply_details.append(f"  ✅ Hunk {hunk_num}: Applied successfully near line {pos + 1}.")
-                else:
-                    # This case means fuzzy find worked, but exact line removal failed
-                    failed_count += 1
-                    apply_details.append(f"  ❌ Hunk {hunk_num}: Found position near line {pos + 1}, but failed to apply (lines to remove didn't match exactly).")
-
-            else:
-                # Fuzzy finding failed
-                failed_count += 1
-                apply_details.append(f"  ❌ Hunk {hunk_num}: Could not find a suitable position to apply (context match failed).")
-
-        # --- Report detailed results ---
-        print(f"Patch application results for '{target_filename}':")
-        for detail in apply_details:
-            print(detail)
-
-        if applied_count > 0 and failed_count == 0:
-            print(f"✅ All {applied_count} hunks applied successfully.")
-        elif applied_count > 0 and failed_count > 0:
-            print(f"⚠️ Partially applied: {applied_count} hunks succeeded, {failed_count} failed.")
-        elif applied_count == 0 and failed_count > 0:
-            print(f"❌ Patch failed: All {failed_count} hunks could not be applied.")
-        else: # applied == 0 and failed == 0 (shouldn't happen if hunks exist)
-            print("⚪ No changes were applied.")
-
-        # --- Write back if changes were made ---
-        if applied_count > 0:
-            try:
-                # Heuristic: Determine original line ending from the first line if possible
-                original_newline = os.linesep # Default to system newline
-                if original_lines_raw:
-                    first_line = original_lines_raw[0]
-                    if first_line.endswith('\r\n'):
-                        original_newline = '\r\n'
-                    elif first_line.endswith('\n'):
-                        original_newline = '\n'
-                    elif first_line.endswith('\r'): # Less common but possible
-                         original_newline = '\r'
-
-                # Join processed lines using the detected or default newline
-                # Note: This adds a newline *after* every line.
-                patched_content = original_newline.join(file_lines_processed)
-
-                # Add final newline if the original file likely ended with one
-                # or if there's content and the join didn't add one at the very end.
-                original_ends_with_newline = False
-                if original_lines_raw:
-                   # More robust check using raw bytes
-                   try:
-                       with open(target_filename, 'rb') as f_read_bytes:
-                            f_read_bytes.seek(0, os.SEEK_END)
-                            if f_read_bytes.tell() > 0: # Check if file is not empty
-                                f_read_bytes.seek(-1, os.SEEK_END)
-                                last_byte = f_read_bytes.read(1)
-                                original_ends_with_newline = last_byte in (b'\n', b'\r')
-                            # Handle case of empty original file (arguably shouldn't end with newline)
-                   except Exception: pass # Ignore errors reading bytes
-
-                if file_lines_processed and not patched_content.endswith(original_newline) and original_ends_with_newline:
-                     patched_content += original_newline
-                elif not file_lines_processed and original_ends_with_newline: # Handle case where file becomes empty but original had newline
-                     patched_content = original_newline
-                # If original didn't end with newline, ensure patched doesn't either unless empty
-                elif patched_content and patched_content.endswith(original_newline) and not original_ends_with_newline:
-                     patched_content = patched_content.rstrip(original_newline)
+        if original_ends_with_newline and not new_ends_with_newline and new_content:
+             # Try to determine the original newline type
+             if content.endswith('\r\n'):
+                 new_content += '\r\n'
+             else: # Assume '\n' otherwise
+                 new_content += '\n'
+        elif not original_ends_with_newline and new_ends_with_newline:
+             # If original didn't end with newline, remove the one added by replacement
+             # This is less common but possible if new_text ends with \n and original_text didn't
+             new_content = new_content.rstrip('\r\n')
 
 
-                # Write using 'w' mode which uses os.linesep by default, but we've constructed the string manually
-                # Using 'wb' and encoding manually gives more control over line endings if needed.
-                with open(target_filename, 'w', encoding='utf-8', newline='') as f: # newline='' prevents translation
-                    f.write(patched_content)
-                print(f"💾 File '{target_filename}' updated successfully.")
-            except IOError as e:
-                print(f"❌ Error writing updated content to '{target_filename}': {e}")
-                print("   The file may be partially modified or unchanged.")
-        else:
-            print(f"💾 File '{target_filename}' remains unchanged.")
+        # Write the modified content back
+        with open(file_path, 'w', encoding='utf-8', newline='') as f:
+            f.write(new_content)
 
-    except FileNotFoundError:
-        # This case should ideally be caught earlier, but handle defensively
-        print(f"❌ Error: Target file '{target_filename}' not found during read attempt.")
+        print(f"✅ Patch applied successfully to {file_path}.")
+        print("-" * 20)
+        return True
+
+    except IOError as e:
+        print(f"❌ Error reading or writing file {file_path}: {e}")
+        print("-" * 20)
+        return False
     except Exception as e:
-        print(f"❌ An unexpected error occurred during fuzzy patch application: {e}")
-        traceback.print_exc() # Print stack trace for debugging
-
-    print("-" * 20)
-
-# Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
+        print(f"❌ An unexpected error occurred during patch application: {e}")
+        traceback.print_exc()
+        print("-" * 20)
+        return False
 
 def get_colored_code(file_path, code):
      try:
@@ -1034,66 +931,98 @@ def start_chat_session(initial_prompt: str):
             if user_input.lower() == '/q':
                 break
             elif user_input.strip() == '/patch':
-                print("\n🤖 Gemini: Thinking... (requesting patch to apply)")
-                # Prompt instructing the model to use the tool if appropriate
+                print("\n🤖 Gemini: Thinking... (requesting code changes)")
+                # Prompt instructing the model to use the new JSON format
                 patch_request_prompt = (
-                    "Based on our conversation so far, if code changes are needed to fulfill my request, "
-                    "response in JSON { reasoning: string, diff: string }."
+                    "Based on our conversation, generate the necessary code changes "
+                    "to fulfill my request. Provide the changes as a JSON list, where each item "
+                    "is an object with the following keys:\n"
+                    "- 'reasoning': Explain why this specific change is needed.\n"
+                    "- 'file_path': The relative path to the file to modify.\n"
+                    "- 'original_text': The exact, unique block of text to replace.\n"
+                    "- 'new_text': The text to replace original_text with.\n"
+                    "Ensure 'original_text' is unique within the specified 'file_path'. "
+                    "Format the response strictly as: { \"patches\": [ { patch_item_1 }, { patch_item_2 }, ... ] }"
                 )
 
                 try:
-                    response = chat.send_message(patch_request_prompt, config=GenerateContentConfig(
-                        response_schema=PatchArgs.model_json_schema(),
-                        response_mime_type='application/json'
-                    ))
+                    # Request the response using the new schema
+                    response = chat.send_message(
+                        patch_request_prompt,
+                        config=GenerateContentConfig(
+                            response_schema=SimplePatchArgs.model_json_schema(),
+                            response_mime_type='application/json'
+                        )
+                    )
 
-                    print("🤖 Gemini: Received function call to apply patch.")
+                    print("🤖 Gemini: Received potential patches.")
                     try:
                         # Validate and parse args using the Pydantic model
-                        patch_data = response.parsed
+                        # response.parsed should contain an instance of SimplePatchArgs
+                        patch_args: SimplePatchArgs = response.parsed
 
-                        reasoning = patch_data["reasoning"]
-                        diff_content = patch_data["diff"]
+                        if not patch_args or not patch_args.patches:
+                            print("🤖 Gemini: No patches were proposed in the response.")
+                            print("-" * 20)
+                            continue
 
-                        print("\n🤖 Gemini Reasoning:")
-                        print(reasoning)
-                        print("-" * 20)
-                        print("Extracted Diff Content:")
-                        print(diff_content)
-                        print("-" * 20)
+                        print("\nProposed Patches:")
+                        print("=" * 30)
+                        for i, patch_item in enumerate(patch_args.patches):
+                            print(f"Patch {i+1}/{len(patch_args.patches)}:")
+                            print(f"  File: {patch_item.file_path}")
+                            print(f"  Reasoning: {patch_item.reasoning}")
+                            # Optionally show snippets of original/new text for review
+                            print(f"  Original (snippet): '{patch_item.original_text[:80].strip()}...'")
+                            print(f"  New (snippet):      '{patch_item.new_text[:80].strip()}...'")
+                            print("-" * 20)
 
-                        confirm = input("Apply this patch? (y/N): ").lower()
+                        confirm = input(f"Apply these {len(patch_args.patches)} patches? (y/N): ").lower()
                         if confirm == 'y':
-                            apply_diff_patch(diff_content)
+                            applied_count = 0
+                            failed_count = 0
+                            for patch_item in patch_args.patches:
+                                # Call the new apply function for each patch
+                                success = apply_simple_patch(patch_item)
+                                if success:
+                                    applied_count += 1
+                                else:
+                                    failed_count += 1
+
+                            print("\nPatch Application Summary:")
+                            if applied_count > 0:
+                                print(f"✅ Successfully applied {applied_count} patches.")
+                            if failed_count > 0:
+                                print(f"❌ Failed to apply {failed_count} patches.")
+                            if applied_count == 0 and failed_count == 0: # Should not happen if list wasn't empty
+                                 print("⚪ No patches were applied.")
+                            print("=" * 30)
                         else:
-                            print("🤖 Gemini: Patch not applied.")
+                            print("🤖 Gemini: Patches not applied by user.")
+                            print("-" * 20)
 
-                    except Exception as e: # Catch Pydantic validation errors etc.
-                        print(f"❌ Error processing function call arguments: {e}")
-                        print(f"   Received args: {response.parsed}")
-
-                    else:
-                        # --- Handle Text Response (No Function Call) ---
-                        print("🤖 Gemini: (No patch function call received, showing text response)")
-                        # Extract and print text part if no function call was made
-                        text_response = ""
-                        if response.parts:
-                            text_response = "".join(part.text for part in response.parts if hasattr(part, 'text'))
-                        elif hasattr(response, 'text'): # Fallback
-                            text_response = response.text
-
-                        if text_response:
-                            print(text_response)
+                    except Exception as e: # Catch Pydantic validation errors or other issues
+                        print(f"❌ Error processing patch response: {e}")
+                        # Attempt to show the raw response text if parsing failed
+                        raw_text = ""
+                        try:
+                            if response.parts:
+                                raw_text = "".join(part.text for part in response.parts if hasattr(part, 'text'))
+                            elif hasattr(response, 'text'):
+                                raw_text = response.text
+                        except Exception:
+                            pass # Ignore errors getting raw text
+                        if raw_text:
+                           print(f"   Received response text:\n{raw_text}")
                         else:
-                            print("(No text content found in response either)")
-                    # --- End Function Call / Text Response Handling ---
+                           print(f"   Received response content: {response}") # Fallback representation
 
                 except Exception as e:
-                    print(f"\n❌ An error occurred while requesting the patch function call from Gemini: {e}")
+                    print(f"\n❌ An error occurred while requesting patches from Gemini: {e}")
                     print("   Please check your connection, API key, and model permissions/capabilities.")
+                    print("-" * 20)
 
-                print("-" * 20)
-                continue # Go to next loop iteration
+                continue # Go to next loop iteration after handling /patch
             elif user_input.strip() in ['/help', '/?']:
                 print("🤖 Gemini: Available commands:")
                 print("  /q          - Quit the chat session.")

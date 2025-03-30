@@ -959,8 +959,14 @@ def start_chat_session(initial_prompt: str):
                     print("🤖 Gemini: Received potential patches.")
                     try:
                         # Validate and parse args using the Pydantic model
-                        # response.parsed should contain an instance of SimplePatchArgs
-                        patch_args: SimplePatchArgs = response.parsed
+                        # Explicitly validate the dictionary returned by response.parsed
+                        if isinstance(response.parsed, dict):
+                            patch_args = SimplePatchArgs.model_validate(response.parsed)
+                        else:
+                            # Handle unexpected type if response.parsed isn't a dict
+                            print(f"❌ Error: Expected a dictionary for patches, but got type {type(response.parsed)}")
+                            print(f"   Content: {response.parsed}")
+                            continue # Skip further processing for this response
 
                         if not patch_args or not patch_args.patches:
                             print("🤖 Gemini: No patches were proposed in the response.")

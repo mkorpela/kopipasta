@@ -827,37 +827,66 @@ def main():
                 web_contents[input_path] = (file_tuple, content)
                 current_char_count += len(content)
                 print(f"Added {'snippet of ' if is_snippet else ''}web content from: {input_path}")
+                print_char_count(current_char_count)
         elif os.path.isfile(input_path):
+            # Handle files provided directly via command line
             if not is_ignored(input_path, ignore_patterns) and not is_binary(input_path):
-                while True:
-                    file_choice = input(f"{input_path} (y)es include / (n)o skip / (p)atches / (q)uit? ").lower()
-                    if file_choice == 'y':
-                        use_snippet = is_large_file(input_path)
-                        files_to_include.append((input_path, use_snippet, None, get_language_for_file(input_path)))
-                        if use_snippet:
-                            snippet = get_file_snippet(input_path)
-                            current_char_count += len(snippet)
-                            print(get_colored_code(input_path, snippet))
+                file_size = os.path.getsize(input_path)
+                file_size_readable = get_human_readable_size(file_size)
+                file_char_estimate = file_size
+                language = get_language_for_file(input_path)
+
+                if is_large_file(input_path):
+                    print(f"\nFile {input_path} ({file_size_readable}, ~{file_char_estimate} chars) is large.")
+                    print("Preview (first ~50 lines or 4KB):")
+                    print(get_colored_file_snippet(input_path))
+                    print("-" * 40)
+                    while True:
+                        print_char_count(current_char_count)
+                        choice = input(f"How to include large file {input_path}? (f)ull / (s)nippet / (p)atches / (n)o skip: ").lower()
+                        if choice == 'f':
+                            files_to_include.append((input_path, False, None, language))
+                            current_char_count += file_char_estimate
+                            print(f"Added full file: {input_path}")
+                            break
+                        elif choice == 's':
+                            snippet_content = get_file_snippet(input_path)
+                            files_to_include.append((input_path, True, None, language))
+                            current_char_count += len(snippet_content)
+                            print(f"Added snippet of file: {input_path}")
+                            break
+                        elif choice == 'p':
+                            chunks, char_count = select_file_patches(input_path)
+                            if chunks:
+                                files_to_include.append((input_path, False, chunks, language))
+                                current_char_count += char_count
+                                print(f"Added selected patches from file: {input_path}")
+                            else:
+                                print(f"No patches selected for {input_path}. Skipping file.")
+                            break
+                        elif choice == 'n':
+                            print(f"Skipped large file: {input_path}")
+                            break
                         else:
-                            current_char_count += os.path.getsize(input_path)
-                        print(f"Added file: {input_path}{' (snippet)' if use_snippet else ''}")
-                        break
-                    elif file_choice == 'n':
-                        break
-                    elif file_choice == 'p':
-                        chunks, char_count = select_file_patches(input_path)
-                        if chunks:
-                            files_to_include.append((input_path, False, chunks, get_language_for_file(input_path)))
-                            current_char_count += char_count
-                        break
-                    elif file_choice == 'q':
-                        print("Quitting.")
-                        return
-                    else:
-                        print("Invalid choice. Please enter 'y', 'n', 'p', or 'q'.")
+                            print("Invalid choice. Please enter 'f', 's', 'p', or 'n'.")
+                else:
+                    # Automatically include non-large files
+                    files_to_include.append((input_path, False, None, language))
+                    current_char_count += file_char_estimate
+                    print(f"Added file: {input_path} ({file_size_readable})")
+
+                # Display current count after processing the file
+                print_char_count(current_char_count)
+
             else:
-                print(f"Ignored file: {input_path}")
+                if is_ignored(input_path, ignore_patterns):
+                    print(f"Ignoring file based on ignore patterns: {input_path}")
+                elif is_binary(input_path):
+                     print(f"Ignoring binary file: {input_path}")
+                else:
+                     print(f"Ignoring file: {input_path}") # Should not happen if logic is correct, but fallback.
         elif os.path.isdir(input_path):
+            print(f"\nProcessing directory specified directly: {input_path}")
             dir_files, dir_processed, current_char_count = process_directory(input_path, ignore_patterns, current_char_count)
             files_to_include.extend(dir_files)
             processed_dirs.update(dir_processed)
@@ -869,19 +898,29 @@ def main():
         return
 
     print("\nFile and web content selection complete.")
-    print_char_count(current_char_count)
-    print(f"Summary: Added {len(files_to_include)} files from {len(processed_dirs)} directories and {len(web_contents)} web sources.")
+    print_char_count(current_char_count) # Print final count before prompt generation
+    print(f"Summary: Added {len(files_to_include)} files and {len(web_contents)} web sources.")
 
     prompt_template, cursor_position = generate_prompt_template(files_to_include, ignore_patterns, web_contents, env_vars)
 
     if args.task:
         task_description = args.task
-        final_prompt = prompt_template[:cursor_position] + task_description + prompt_template[cursor_position:]
+        # Insert task description before "## Task Instructions"
+        task_marker = "## Task Instructions\n\n"
+        insertion_point = prompt_template.find(task_marker)
+        if insertion_point != -1:
+             final_prompt = prompt_template[:insertion_point + len(task_marker)] + task_description + "\n\n" + prompt_template[insertion_point + len(task_marker):]
+        else: # Fallback if marker not found
+             final_prompt = prompt_template[:cursor_position] + task_description + prompt_template[cursor_position:]
+        print("\nUsing task description from -t argument.")
     else:
+        print("\nOpening editor for task instructions...")
         final_prompt = open_editor_for_input(prompt_template, cursor_position)
 
     print("\n\nGenerated prompt:")
+    print("-" * 80)
     print(final_prompt)
+    print("-" * 80)
 
     # Copy the prompt to clipboard
     try:
@@ -892,7 +931,8 @@ def main():
         final_token_estimate = final_char_count // 4
         print(f"Prompt has been copied to clipboard. Final size: {final_char_count} characters (~ {final_token_estimate} tokens)")
     except pyperclip.PyperclipException as e:
-        print(f"Failed to copy to clipboard: {e}")
+        print(f"\nWarning: Failed to copy to clipboard: {e}")
+        print("You can manually copy the prompt above.")
 
 if __name__ == "__main__":
     main()

@@ -21,7 +21,7 @@ import requests
 from pydantic import BaseModel, Field
 import traceback
 from google import genai
-from google.genai import GenerateContentConfig
+from google.genai.types import GenerateContentConfig
 
 FileTuple = Tuple[str, bool, Optional[List[str]], str]
 

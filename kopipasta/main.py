@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 import traceback
 from google import genai
 from google.genai.types import GenerateContentConfig
+from prompt_toolkit import prompt # Added for multiline input
 
 FileTuple = Tuple[str, bool, Optional[List[str]], str]
 
@@ -682,65 +683,6 @@ def fetch_web_content(url: str) -> Tuple[Optional[FileTuple], Optional[str], Opt
         print(f"Error fetching content from {url}: {e}")
         return None, None, None
 
-def read_file_content(file_path):
-    _, ext = os.path.splitext(file_path)
-    if ext.lower() == '.json':
-        with open(file_path, 'r') as f:
-            return json.load(f), 'json'
-    elif ext.lower() == '.csv':
-        with open(file_path, 'r') as f:
-            return f.read(), 'csv'
-    else:
-        with open(file_path, 'r') as f:
-            return f.read(), 'text'
-
-def get_content_snippet(content, content_type, max_lines=50, max_chars=4096):
-    if content_type == 'json':
-        return json.dumps(content, indent=2)[:max_chars]
-    elif content_type == 'csv':
-        csv_content = content if isinstance(content, str) else content.getvalue()
-        csv_reader = csv.reader(io.StringIO(csv_content))
-        rows = list(csv_reader)[:max_lines]
-        output = io.StringIO()
-        csv.writer(output).writerows(rows)
-        return output.getvalue()[:max_chars]
-    else:
-        return '\n'.join(content.split('\n')[:max_lines])[:max_chars]
-
-def handle_content(content, content_type, file_or_url):
-    is_large = len(json.dumps(content)) > 102400 if content_type == 'json' else len(content) > 102400
-
-    if is_large:
-        while True:
-            choice = input(f"{file_or_url} is large. View (f)ull content, (s)nippet, or (p)review? ").lower()
-            if choice in ['f', 's', 'p']:
-                break
-            print("Invalid choice. Please enter 'f', 's', or 'p'.")
-
-        if choice == 'f':
-            return content, False
-        elif choice == 's':
-            return get_content_snippet(content, content_type), True
-        else:  # preview
-            preview = get_content_preview(content, content_type)
-            print(f"\nPreview of {file_or_url}:\n{preview}\n")
-            return handle_content(content, content_type, file_or_url)
-    else:
-        return content, False
-
-
-def get_content_preview(content, content_type):
-    if content_type == 'json':
-        return json.dumps(content, indent=2)[:1000] + "\n..."
-    elif content_type == 'csv':
-        csv_content = content if isinstance(content, str) else content.getvalue()
-        csv_reader = csv.reader(io.StringIO(csv_content))
-        rows = list(csv_reader)[:10]
-        output = io.StringIO()
-        csv.writer(output).writerows(rows)
-        return output.getvalue() + "\n..."
-    else:
-        return '\n'.join(content.split('\n')[:20]) + "\n..."
 
 def read_env_file():
     env_vars = {}
@@ -921,8 +863,10 @@ def start_chat_session(initial_prompt: str):
 
         while True:
             try:
-                user_input = input("👤 You: ")
-            except EOFError: # Handle Ctrl+D
+                # Replace standard input with prompt_toolkit for multiline support
+                user_input = prompt("👤 You (Submit with Esc+Enter or Alt+Enter): ", multiline=True)
+                 # prompt_toolkit raises EOFError on Ctrl+D, so this handler remains correct.
+            except EOFError:
                  print("\nExiting...")
                  break
             except KeyboardInterrupt: # Handle Ctrl+C

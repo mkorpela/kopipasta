@@ -862,9 +862,12 @@ def start_chat_session(initial_prompt: str):
         print("\n" + "-"*20)
 
         while True:
+            is_patch_request = False
             try:
-                # Replace standard input with prompt_toolkit for multiline support
-                user_input = prompt("👤 You (Submit with Esc+Enter or Alt+Enter): ", multiline=True)
+                # Print the header on a separate line
+                print("👤 You (Submit with Esc+Enter):")
+                # Get input using prompt_toolkit with a minimal indicator
+                user_input = prompt(">> ", multiline=True)
                  # prompt_toolkit raises EOFError on Ctrl+D, so this handler remains correct.
             except EOFError:
                  print("\nExiting...")
@@ -875,19 +878,33 @@ def start_chat_session(initial_prompt: str):
 
             if user_input.lower() == '/q':
                 break
-            elif user_input.strip() == '/patch':
-                print("\n🤖 Gemini: Thinking... (requesting code changes)")
-                # Prompt instructing the model to use the new JSON format
+            elif user_input.endswith('/patch'):
+                is_patch_request = True
+                # Extract message before /patch
+                user_message = user_input[:-len('/patch')].strip()
+                print(f"\n🛠️ Requesting patches... (Context: '{user_message}' if provided)")
+            elif not user_input:
+                continue # Ignore empty input
+            else:
+                user_message = user_input # Regular message
+
+
+            # --- Handle Patch Request ---
+            if is_patch_request:
+                print("🤖 Gemini: Thinking... (generating code changes)")
+                # Include user message part if it exists
+                patch_context = f"Based on our conversation and specifically: \"{user_message}\"\n\n" if user_message else "Based on our conversation,\n\n"
+
                 patch_request_prompt = (
-                    "Based on our conversation, generate the necessary code changes "
-                    "to fulfill my request. Provide the changes as a JSON list, where each item "
+                    patch_context +
+                    "Generate the necessary code changes to fulfill the request. Provide the changes as a JSON list, where each item "
                     "is an object with the following keys:\n"
                     "- 'reasoning': Explain why this specific change is needed.\n"
                     "- 'file_path': The relative path to the file to modify.\n"
                     "- 'original_text': The exact, unique block of text to replace.\n"
-                    "- 'new_text': The text to replace original_text with.\n"
+                    "- 'new_text': The text to replace original_text with. Do not include any temporary comments like '// CHANGE BEGINS' or '/* PATCH START */'.\n"
                     "Ensure 'original_text' is unique within the specified 'file_path'. "
-                    "Format the response strictly as: { \"patches\": [ { patch_item_1 }, { patch_item_2 }, ... ] }"
+                    "Respond ONLY with the JSON object conforming to this structure: { \"patches\": [ { patch_item_1 }, { patch_item_2 }, ... ] }"
                 )
 
                 try:

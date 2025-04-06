@@ -841,21 +841,22 @@ def start_chat_session(initial_prompt: str):
         sys.exit(1)
 
     model_name = 'gemini-2.5-pro-exp-03-25'
+    config = GenerateContentConfig(temperature=0.0)
     print(f"Using model: {model_name}")
 
     try:
         # Create a chat session using the client
-        chat = client.chats.create(model=model_name)
+        chat = client.chats.create(model=model_name, config=config)
         # Note: History is managed by the chat object itself
 
         print("\n--- Starting Interactive Chat with Gemini ---")
-        print("Type /q to quit, /help or /? for help, /patch to request a diff patch.")
+        print("Type /q to quit, /help or /? for help, /review to make clear summary, /patch to request a diff patch.")
 
         # Send the initial prompt using send_message_stream
         print("\n🤖 Gemini:")
         full_response_text = ""
         # Use send_message_stream for streaming responses
-        response_stream = chat.send_message_stream(initial_prompt)
+        response_stream = chat.send_message_stream(initial_prompt, config=config)
         for chunk in response_stream:
             print(chunk.text, end="", flush=True)
             full_response_text += chunk.text
@@ -883,6 +884,8 @@ def start_chat_session(initial_prompt: str):
                 # Extract message before /patch
                 user_message = user_input[:-len('/patch')].strip()
                 print(f"\n🛠️ Requesting patches... (Context: '{user_message}' if provided)")
+            elif user_input.lower() == '/review':
+                user_message = user_input = "Review and reflect on the solution. Summarize and write a minimal, complete set of changes needed for the solution. Do not use + and - style diff. Instead use comments to point where to place the code. Make it easy to copy and paste the solution."
             elif not user_input:
                 continue # Ignore empty input
             else:
@@ -913,7 +916,8 @@ def start_chat_session(initial_prompt: str):
                         patch_request_prompt,
                         config=GenerateContentConfig(
                             response_schema=SimplePatchArgs.model_json_schema(),
-                            response_mime_type='application/json'
+                            response_mime_type='application/json',
+                            temperature=0.0
                         )
                     )
 
@@ -995,6 +999,7 @@ def start_chat_session(initial_prompt: str):
                 print("🤖 Gemini: Available commands:")
                 print("  /q          - Quit the chat session.")
                 print("  /patch      - Request a diff patch (not fully implemented yet).")
+                print("  /review      - Pre-fill input with a review/summary prompt template.")
                 print("  /help or /? - Show this help message.")
                 print("-" * 20)
                 continue
@@ -1005,7 +1010,7 @@ def start_chat_session(initial_prompt: str):
             full_response_text = ""
             try:
                 # Use send_message_stream for subsequent messages
-                response_stream = chat.send_message_stream(user_input)
+                response_stream = chat.send_message_stream(user_input, config=config)
                 for chunk in response_stream:
                     print(chunk.text, end="", flush=True)
                     full_response_text += chunk.text

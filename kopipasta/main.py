@@ -24,6 +24,8 @@ from google import genai
 from google.genai.types import GenerateContentConfig
 from prompt_toolkit import prompt # Added for multiline input
 
+import kopipasta.import_parser as import_parser
+
 FileTuple = Tuple[str, bool, Optional[List[str]], str]
 
 class SimplePatchItem(BaseModel):
@@ -114,6 +116,109 @@ def apply_simple_patch(patch_item: SimplePatchItem) -> bool:
         traceback.print_exc()
         print("-" * 20)
         return False
+
+def _propose_and_add_dependencies(
+    file_just_added: str,
+    project_root_abs: str,
+    files_to_include: List[FileTuple],
+    current_char_count: int
+) -> Tuple[List[FileTuple], int]:
+    """
+    Analyzes a file for local dependencies and interactively asks the user to add them.
+    """
+    language = get_language_for_file(file_just_added)
+    if language not in ['python', 'typescript', 'javascript', 'tsx', 'jsx']:
+        return [], 0 # Only analyze languages we can parse
+
+    print(f"Analyzing {get_relative_path(file_just_added)} for local dependencies...")
+
+    try:
+        file_content = read_file_contents(file_just_added)
+        if not file_content:
+            return [], 0
+
+        resolved_deps_abs: Set[str] = set()
+        if language == 'python':
+            resolved_deps_abs = import_parser.parse_python_imports(file_content, file_just_added, project_root_abs)
+        elif language in ['typescript', 'javascript', 'tsx', 'jsx']:
+            resolved_deps_abs = import_parser.parse_typescript_imports(file_content, file_just_added, project_root_abs)
+
+        # Filter out dependencies that are already in the context
+        included_paths = {os.path.abspath(f[0]) for f in files_to_include}
+        suggested_deps = sorted([
+            dep for dep in resolved_deps_abs
+            if os.path.abspath(dep) not in included_paths and os.path.abspath(dep) != os.path.abspath(file_just_added)
+        ])
+
+        if not suggested_deps:
+            print("No new local dependencies found.")
+            return [], 0
+
+        print(f"\nFound {len(suggested_deps)} new local {'dependency' if len(suggested_deps) == 1 else 'dependencies'}:")
+        for i, dep_path in enumerate(suggested_deps):
+            print(f"  ({i+1}) {get_relative_path(dep_path)}")
+
+        while True:
+            choice = input("\nAdd dependencies? (a)ll, (n)one, or enter numbers (e.g. 1, 3-4): ").lower()
+            
+            deps_to_add_paths = None
+            if choice == 'a':
+                deps_to_add_paths = suggested_deps
+                break
+            if choice == 'n':
+                deps_to_add_paths = []
+                print(f"Skipped {len(suggested_deps)} dependencies.")
+                break
+
+            # Try to parse the input as numbers directly.
+            try:
+                selected_indices = set()
+                parts = choice.replace(' ', '').split(',')
+                if all(p.strip() for p in parts): # Ensure no empty parts like in "1,"
+                    for part in parts:
+                        if '-' in part:
+                            start_str, end_str = part.split('-', 1)
+                            start = int(start_str)
+                            end = int(end_str)
+                            if start > end:
+                                start, end = end, start
+                            selected_indices.update(range(start - 1, end))
+                        else:
+                            selected_indices.add(int(part) - 1)
+
+                    # Validate that all selected numbers are within the valid range
+                    if all(0 <= i < len(suggested_deps) for i in selected_indices):
+                        deps_to_add_paths = [
+                            suggested_deps[i] for i in sorted(list(selected_indices))
+                        ]
+                        break # Success! Exit the loop.
+                    else:
+                        print(f"Error: Invalid number selection. Please choose numbers between 1 and {len(suggested_deps)}.")
+                else:
+                    raise ValueError("Empty part detected in input.")
+
+
+            except ValueError:
+                # This will catch any input that isn't 'a', 'n', or a valid number/range.
+                print("Invalid choice. Please enter 'a', 'n', or a list/range of numbers (e.g., '1,3' or '2-4').")
+        
+        if not deps_to_add_paths:
+            return [], 0 # No dependencies were selected
+
+        newly_added_files: List[FileTuple] = []
+        char_count_delta = 0
+        for dep_path in deps_to_add_paths:
+            # Assume non-large for now for simplicity, can be enhanced later
+            file_size = os.path.getsize(dep_path)
+            newly_added_files.append((dep_path, False, None, get_language_for_file(dep_path)))
+            char_count_delta += file_size
+            print(f"Added dependency: {get_relative_path(dep_path)} ({get_human_readable_size(file_size)})")
+
+        return newly_added_files, char_count_delta
+
+    except Exception as e:
+        print(f"Warning: Could not analyze dependencies for {get_relative_path(file_just_added)}: {e}")
+        return [], 0
 
 def get_colored_code(file_path, code):
      try:
@@ -540,7 +645,7 @@ def print_char_count(count):
     token_estimate = count // 4
     print(f"\rCurrent prompt size: {count} characters (~ {token_estimate} tokens)", flush=True)
 
-def select_files_in_directory(directory: str, ignore_patterns: List[str], current_char_count: int = 0) -> Tuple[List[FileTuple], int]:
+def select_files_in_directory(directory: str, ignore_patterns: List[str], project_root_abs: str, current_char_count: int = 0) -> Tuple[List[FileTuple], int]:
     files = [f for f in os.listdir(directory)
              if os.path.isfile(os.path.join(directory, f)) and not is_ignored(os.path.join(directory, f), ignore_patterns) and not is_binary(os.path.join(directory, f))]
 
@@ -561,7 +666,9 @@ def select_files_in_directory(directory: str, ignore_patterns: List[str], curren
         print_char_count(current_char_count)
         choice = input("(y)es add all / (n)o ignore all / (s)elect individually / (q)uit? ").lower()
         selected_files: List[FileTuple] = []
+        char_count_delta = 0
         if choice == 'y':
+            files_to_add_after_loop = []
             for file in files:
                 file_path = os.path.join(directory, file)
                 if is_large_file(file_path):
@@ -571,14 +678,23 @@ def select_files_in_directory(directory: str, ignore_patterns: List[str], curren
                             break
                         print("Invalid choice. Please enter 'f' or 's'.")
                     if snippet_choice == 's':
-                        selected_files.append((file, True, None, get_language_for_file(file)))
-                        current_char_count += len(get_file_snippet(file_path))
+                        selected_files.append((file_path, True, None, get_language_for_file(file_path)))
+                        char_count_delta += len(get_file_snippet(file_path))
                     else:
-                        selected_files.append((file, False, None, get_language_for_file(file)))
-                        current_char_count += os.path.getsize(file_path)
+                        selected_files.append((file_path, False, None, get_language_for_file(file_path)))
+                        char_count_delta += os.path.getsize(file_path)
                 else:
-                    selected_files.append((file, False, None, get_language_for_file(file)))
-                    current_char_count += os.path.getsize(file_path)
+                    selected_files.append((file_path, False, None, get_language_for_file(file_path)))
+                    char_count_delta += os.path.getsize(file_path)
+                files_to_add_after_loop.append(file_path)
+
+            # Analyze dependencies after the loop
+            current_char_count += char_count_delta
+            for file_path in files_to_add_after_loop:
+                 new_deps, deps_char_count = _propose_and_add_dependencies(file_path, project_root_abs, selected_files, current_char_count)
+                 selected_files.extend(new_deps)
+                 current_char_count += deps_char_count
+
             print(f"Added all files from {directory}")
             return selected_files, current_char_count
         elif choice == 'n':
@@ -596,6 +712,7 @@ def select_files_in_directory(directory: str, ignore_patterns: List[str], curren
                         print_char_count(current_char_count)
                     file_choice = input(f"{file} ({file_size_readable}, ~{file_char_estimate} chars, ~{file_token_estimate} tokens) (y/n/p/q)? ").lower()
                     if file_choice == 'y':
+                        file_to_add = None
                         if is_large_file(file_path):
                             while True:
                                 snippet_choice = input(f"{file} is large. Use (f)ull content or (s)nippet? ").lower()
@@ -603,14 +720,21 @@ def select_files_in_directory(directory: str, ignore_patterns: List[str], curren
                                     break
                                 print("Invalid choice. Please enter 'f' or 's'.")
                             if snippet_choice == 's':
-                                selected_files.append((file, True, None, get_language_for_file(file_path)))
+                                file_to_add = (file_path, True, None, get_language_for_file(file_path))
                                 current_char_count += len(get_file_snippet(file_path))
                             else:
-                                selected_files.append((file, False, None, get_language_for_file(file_path)))
+                                file_to_add = (file_path, False, None, get_language_for_file(file_path))
                                 current_char_count += file_char_estimate
                         else:
-                            selected_files.append((file, False, None, get_language_for_file(file_path)))
+                            file_to_add = (file_path, False, None, get_language_for_file(file_path))
                             current_char_count += file_char_estimate
+                        
+                        if file_to_add:
+                            selected_files.append(file_to_add)
+                            # Analyze dependencies immediately after adding
+                            new_deps, deps_char_count = _propose_and_add_dependencies(file_path, project_root_abs, selected_files, current_char_count)
+                            selected_files.extend(new_deps)
+                            current_char_count += deps_char_count
                         break
                     elif file_choice == 'n':
                         break
@@ -633,7 +757,7 @@ def select_files_in_directory(directory: str, ignore_patterns: List[str], curren
         else:
             print("Invalid choice. Please try again.")
 
-def process_directory(directory: str, ignore_patterns: List[str], current_char_count: int = 0) -> Tuple[List[FileTuple], Set[str], int]:
+def process_directory(directory: str, ignore_patterns: List[str], project_root_abs: str, current_char_count: int = 0) -> Tuple[List[FileTuple], Set[str], int]:
     files_to_include: List[FileTuple] = []
     processed_dirs: Set[str] = set()
 
@@ -647,10 +771,10 @@ def process_directory(directory: str, ignore_patterns: List[str], current_char_c
         print(f"\nExploring directory: {root}")
         choice = input("(y)es explore / (n)o skip / (q)uit? ").lower()
         if choice == 'y':
-            selected_files, current_char_count = select_files_in_directory(root, ignore_patterns, current_char_count)
-            for file_tuple in selected_files:
-                full_path = os.path.join(root, file_tuple[0])
-                files_to_include.append((full_path, file_tuple[1], file_tuple[2], file_tuple[3]))
+            # Pass project_root_abs down
+            selected_files, current_char_count = select_files_in_directory(root, ignore_patterns, project_root_abs, current_char_count)
+            # The paths in selected_files are already absolute now
+            files_to_include.extend(selected_files)
             processed_dirs.add(root)
         elif choice == 'n':
             dirs[:] = []  # Skip all subdirectories
@@ -763,47 +887,50 @@ def generate_prompt_template(files_to_include: List[FileTuple], ignore_patterns:
     prompt += "\n\n"
     prompt += "## Instructions for Achieving the Task\n\n"
     analysis_text = (
-        "### Core Principles\n"
-        "- Mark uncertainties with [UNCERTAIN] and request clarification instead of guessing\n"
-        "- Request missing files immediately - never write placeholder code\n"
-        "- After 3 failed attempts, summarize learnings and request specific diagnostic info\n"
-        "- Ask me to test code, external services, APIs, databases, and integrations frequently\n\n"
-        "### Development Workflow\n"
-        "**Phase 1: E2E Draft** - Build complete solution incrementally. I may comment but won't test until draft is complete.\n"
-        "- Signal completion: [E2E DRAFT COMPLETE]\n"
-        "- If fundamental blockers found, pause and discuss\n\n"
-        "**Phase 2: Final Review** - When I request consolidation:\n"
-        "- Provide complete, copy-paste ready code (no diffs)\n"
-        "- Group related changes together\n"
-        "- Order files by dependency\n\n"
-        "### Task Execution\n\n"
-        "1. **Understand**: Rephrase task, identify missing files, mark assumptions ([UNCERTAIN]/[MISSING]/[CONFIRMED])\n\n"
-        "2. **Plan**: Provide 2-3 approaches when feasible, identify risks, list required files\n\n"
-        "3. **Implement**: Small increments, track attempts with learnings:\n"
-        "   ```\n"
-        "   1.[FAILED] X→Y error (learned: not type issue)\n"
-        "   2.[FAILED] Z→same (learned: runtime error)\n"
-        "   3.[CURRENT] Need: full stack trace + value of param\n"
-        "   ```\n\n"
-        "4. **Present Code**: \n"
-        "   - **Phase 1 (Incremental)**:\n" 
-        "     - Small changes: Show only modified lines with context\n"
-        "     - Large changes: Show changed functions/classes with `// ... existing code ...` for unchanged parts\n"
-        "     - Always specify filename at start of code block\n"
-        "   - **Phase 2 (Consolidation)**: Show complete final code for easy copying\n"
-        "   - **Missing files**: Never write placeholders:\n"
-        "     ```\n"
-        "     # MISSING: utils.py - need process_data implementation\n"
-        "     # REQUEST: Please provide utils.py\n"
-        "     ```\n\n"
-        "5. **Debug**: Include strategic outputs, request specific diagnostics, admit uncertainty early\n\n"
-        "### You Have Permission To\n"
-        "- Request any file shown in tree but not provided\n"
-        "- Ask me to run code and share outputs\n"
-        "- Test external dependencies: APIs, databases, services, integration points\n"
-        "- Request specific diagnostic information\n"
-        "- Suggest pausing when blocked\n"
-        "- Ask me to verify assumptions about external systems\n"
+        "### Your Operating Model: The Expert Council\n\n"
+        "You will operate as a council of expert personas in a direct, collaborative partnership with me, the user. Your entire thinking process should be externalized as a dialogue between these personas. Any persona can and should interact directly with me.\n\n"
+        "#### Core Personas\n"
+        "- **Facilitator**: The lead coordinator. You summarize discussions, ensure the team stays on track, and are responsible for presenting the final, consolidated plans and code to me.\n"
+        "- **Architect**: Focuses on high-level design, system structure, dependencies, scalability, and long-term maintainability. Asks 'Is this well-designed?'\n"
+        "- **Builder**: The hands-on engineer. Focuses on implementation details, writing clean and functional code, and debugging. Asks 'How do we build this?' **When presenting code obey Rules for Presenting Code**\n"
+        "- **Critique**: The quality advocate. Focuses on identifying edge cases, potential bugs, and security vulnerabilities. Asks 'What could go wrong?' and provides constructive critique on both the team's proposals and my (the user's) requests.\n\n"
+        "#### Dynamic Personas\n"
+        "When the task requires it, introduce other specialist personas. For example: UX Designer, DevOps Engineer, Data Scientist, etc.\n\n"
+        "### Development Workflow: A Structured Dialogue\n\n"
+        "Follow this conversational workflow. Prefix direct communication to me with the persona's name (e.g., 'Critique to User: ...').\n\n"
+        "1.  **Understand & Clarify (Dialogue)**\n"
+        "    - **Facilitator**: Start by stating the goal as you understand it.\n"
+        "    - **All**: Discuss the requirements. Any persona can directly ask me for clarification. Identify and list any missing information ([MISSING]) or assumptions ([ASSUMPTION]).\n"
+        "    - **Critique**: Directly challenge any part of my request that seems ambiguous, risky, or suboptimal.\n\n"
+        "2.  **Plan (Dialogue)**\n"
+        "    - **Architect**: Propose one or more high-level plans. Directly ask me for input on tradeoffs if necessary.\n"
+        "    - **Critique**: Challenge the plans. Point out risks or edge cases.\n"
+        "    - **Builder**: Comment on the implementation feasibility.\n"
+        "    - **Facilitator**: Synthesize the discussion, select the best plan, and present a clear, step-by-step summary to me for approval.\n\n"
+        "3.  **Implement (Code & Dialogue)**\n"
+        "    - **Facilitator**: State which step of the plan is being implemented.\n"
+        "    - **Builder**: Write the code. If you encounter an issue, you can ask me directly for more context.\n"
+        "    - **Critique**: Review the code and the underlying assumptions.\n"
+        "    - **Facilitator**: Present the final, reviewed code for that step. Ask me to test it if appropriate.\n\n"
+        "4.  **Present E2E Draft (Consolidation)**\n"
+        "    - When I ask you to consolidate, your goal is to provide a clear, unambiguous set of changes that I can directly copy and paste into my editor.\n"
+        "    - **Present changes grouped by file.** For each change, provide the **entire updated function, class, or logical block** to make replacement easy.\n"
+        "    - Use context comments to show where the new code block fits.\n"
+        "    - **Do not use a diff format (`+` or `-` lines).** Provide the final, clean code.\n\n"
+        "5.  **Validate & Iterate (Feedback Loop)**\n"
+        "    - After presenting the consolidated draft, you will explicitly prompt me for testing and wait for my feedback.\n"
+        "    - Upon receiving my feedback, the **Facilitator** will announce the next step.\n"
+        "    - If the feedback indicates a minor bug, you will return to **Step 3 (Implement)** to fix it.\n"
+        "    - If the feedback reveals a fundamental design flaw or misunderstanding, you will return to **Step 2 (Plan)** or even **Step 1 (Understand)** to re-evaluate the approach.\n\n"
+        "### Rules for Presenting Code\n\n"
+        "- **Always specify the filename** at the start of a code block (e.g., `// FILE: kopipasta/main.py`).\n"
+        "- **Incremental Changes**: During implementation, show only the changed functions or classes. Use comments like `// ... existing code ...` to represent unchanged parts.\n"
+        "- **Missing Files**: Never write placeholder code. Instead, state it's missing and request it.\n\n"
+        "### Your Permissions\n\n"
+        "- **You are empowered to interact with me directly.** Any persona can ask me questions or provide constructive feedback on my requests, assumptions, or the provided context.\n"
+        "- You MUST request any file shown in the project tree that you need but was not provided.\n"
+        "- You MUST ask me to run code, test integrations (APIs, databases), and share the output.\n"
+        "- You MUST ask for clarification instead of making risky assumptions.\n"
     )
     prompt += analysis_text
     return prompt, cursor_position
@@ -1050,6 +1177,8 @@ def main():
 
     ignore_patterns = read_gitignore()
     env_vars = read_env_file()
+    project_root_abs = os.path.abspath(os.getcwd())
+
 
     files_to_include: List[FileTuple] = []
     processed_dirs = set()
@@ -1092,53 +1221,59 @@ def main():
                 print(f"Added {'snippet of ' if is_snippet else ''}web content from: {input_path}")
                 print_char_count(current_char_count)
         elif os.path.isfile(input_path):
-            # Handle files provided directly via command line
-            if not is_ignored(input_path, ignore_patterns) and not is_binary(input_path):
-                file_size = os.path.getsize(input_path)
+            abs_input_path = os.path.abspath(input_path)
+            if not is_ignored(abs_input_path, ignore_patterns) and not is_binary(abs_input_path):
+                file_size = os.path.getsize(abs_input_path)
                 file_size_readable = get_human_readable_size(file_size)
                 file_char_estimate = file_size
-                language = get_language_for_file(input_path)
+                language = get_language_for_file(abs_input_path)
+                file_to_add = None
 
-                if is_large_file(input_path):
-                    print(f"\nFile {input_path} ({file_size_readable}, ~{file_char_estimate} chars) is large.")
+                if is_large_file(abs_input_path):
+                    print(f"\nFile {get_relative_path(abs_input_path)} ({file_size_readable}, ~{file_char_estimate} chars) is large.")
                     print("Preview (first ~50 lines or 4KB):")
-                    print(get_colored_file_snippet(input_path))
+                    print(get_colored_file_snippet(abs_input_path))
                     print("-" * 40)
                     while True:
                         print_char_count(current_char_count)
-                        choice = input(f"How to include large file {input_path}? (f)ull / (s)nippet / (p)atches / (n)o skip: ").lower()
+                        choice = input(f"How to include large file {get_relative_path(abs_input_path)}? (f)ull / (s)nippet / (p)atches / (n)o skip: ").lower()
                         if choice == 'f':
-                            files_to_include.append((input_path, False, None, language))
+                            file_to_add = (abs_input_path, False, None, language)
                             current_char_count += file_char_estimate
-                            print(f"Added full file: {input_path}")
+                            print(f"Added full file: {get_relative_path(abs_input_path)}")
                             break
                         elif choice == 's':
-                            snippet_content = get_file_snippet(input_path)
-                            files_to_include.append((input_path, True, None, language))
+                            snippet_content = get_file_snippet(abs_input_path)
+                            file_to_add = (abs_input_path, True, None, language)
                             current_char_count += len(snippet_content)
-                            print(f"Added snippet of file: {input_path}")
+                            print(f"Added snippet of file: {get_relative_path(abs_input_path)}")
                             break
                         elif choice == 'p':
-                            chunks, char_count = select_file_patches(input_path)
+                            chunks, char_count = select_file_patches(abs_input_path)
                             if chunks:
-                                files_to_include.append((input_path, False, chunks, language))
+                                file_to_add = (abs_input_path, False, chunks, language)
                                 current_char_count += char_count
-                                print(f"Added selected patches from file: {input_path}")
+                                print(f"Added selected patches from file: {get_relative_path(abs_input_path)}")
                             else:
-                                print(f"No patches selected for {input_path}. Skipping file.")
+                                print(f"No patches selected for {get_relative_path(abs_input_path)}. Skipping file.")
                             break
                         elif choice == 'n':
-                            print(f"Skipped large file: {input_path}")
+                            print(f"Skipped large file: {get_relative_path(abs_input_path)}")
                             break
                         else:
                             print("Invalid choice. Please enter 'f', 's', 'p', or 'n'.")
                 else:
-                    # Automatically include non-large files
-                    files_to_include.append((input_path, False, None, language))
+                    file_to_add = (abs_input_path, False, None, language)
                     current_char_count += file_char_estimate
-                    print(f"Added file: {input_path} ({file_size_readable})")
+                    print(f"Added file: {get_relative_path(abs_input_path)} ({file_size_readable})")
 
-                # Display current count after processing the file
+                if file_to_add:
+                    files_to_include.append(file_to_add)
+                    # --- NEW: Call dependency analysis ---
+                    new_deps, deps_char_count = _propose_and_add_dependencies(abs_input_path, project_root_abs, files_to_include, current_char_count)
+                    files_to_include.extend(new_deps)
+                    current_char_count += deps_char_count
+                
                 print_char_count(current_char_count)
 
             else:
@@ -1147,10 +1282,11 @@ def main():
                 elif is_binary(input_path):
                      print(f"Ignoring binary file: {input_path}")
                 else:
-                     print(f"Ignoring file: {input_path}") # Should not happen if logic is correct, but fallback.
+                     print(f"Ignoring file: {input_path}")
         elif os.path.isdir(input_path):
             print(f"\nProcessing directory specified directly: {input_path}")
-            dir_files, dir_processed, current_char_count = process_directory(input_path, ignore_patterns, current_char_count)
+            # Pass project_root_abs to process_directory
+            dir_files, dir_processed, current_char_count = process_directory(input_path, ignore_patterns, project_root_abs, current_char_count)
             files_to_include.extend(dir_files)
             processed_dirs.update(dir_processed)
         else:
@@ -1162,42 +1298,34 @@ def main():
 
     print("\nFile and web content selection complete.")
     print_char_count(current_char_count) # Print final count before prompt generation
-    print(f"Summary: Added {len(files_to_include)} files and {len(web_contents)} web sources.")
 
     added_files_count = len(files_to_include)
-    added_dirs_count = len(processed_dirs) # Count unique processed directories
+    added_dirs_count = len(processed_dirs)
     added_web_count = len(web_contents)
     print(f"Summary: Added {added_files_count} files/patches from {added_dirs_count} directories and {added_web_count} web sources.")
 
     prompt_template, cursor_position = generate_prompt_template(files_to_include, ignore_patterns, web_contents, env_vars)
 
-    # Logic branching for interactive mode vs. clipboard mode
     if args.interactive:
         print("\nPreparing initial prompt for editing...")
-        # Determine the initial content for the editor
         if args.task:
-            # Pre-populate the task section if --task was provided
             editor_initial_content = prompt_template[:cursor_position] + args.task + prompt_template[cursor_position:]
             print("Pre-populating editor with task provided via --task argument.")
         else:
-            # Use the template as is (user will add task in the editor)
             editor_initial_content = prompt_template
             print("Opening editor for you to add the task instructions.")
 
-        # Always open the editor in interactive mode
         initial_chat_prompt = open_editor_for_input(editor_initial_content, cursor_position)
         print("Editor closed. Starting interactive chat session...")
-        start_chat_session(initial_chat_prompt) # Start the chat with the edited prompt    else:
+        start_chat_session(initial_chat_prompt)
     else:
-        # Original non-interactive behavior
         if args.task:
             task_description = args.task
-            # Insert task description before "## Task Instructions"
             task_marker = "## Task Instructions\n\n"
             insertion_point = prompt_template.find(task_marker)
             if insertion_point != -1:
                 final_prompt = prompt_template[:insertion_point + len(task_marker)] + task_description + "\n\n" + prompt_template[insertion_point + len(task_marker):]
-            else: # Fallback if marker not found
+            else:
                 final_prompt = prompt_template[:cursor_position] + task_description + prompt_template[cursor_position:]
             print("\nUsing task description from -t argument.")
         else:
@@ -1209,7 +1337,6 @@ def main():
         print(final_prompt)
         print("-" * 80)
 
-        # Copy the prompt to clipboard
         try:
             pyperclip.copy(final_prompt)
             separator = "\n" + "=" * 40 + "\n☕🍝       Kopipasta Complete!       🍝☕\n" + "=" * 40 + "\n"

@@ -4,6 +4,7 @@ import argparse
 import re
 import subprocess
 import tempfile
+import shutil
 from typing import Dict, List, Optional, Set, Tuple
 import pyperclip
 from pygments import highlight
@@ -464,7 +465,206 @@ def print_char_count(count):
     token_estimate = count // 4
     print(f"\rCurrent prompt size: {count} characters (~ {token_estimate} tokens)", flush=True)
 
-def select_files_in_directory(directory: str, ignore_patterns: List[str], project_root_abs: str, current_char_count: int = 0) -> Tuple[List[FileTuple], int]:
+def grep_files_in_directory(pattern: str, directory: str, ignore_patterns: List[str]) -> List[Tuple[str, List[str], int]]:
+    """
+    Search for files containing a pattern using ag (silver searcher).
+    Returns list of (filepath, preview_lines, match_count).
+    """
+    # Check if ag is available
+    if not shutil.which('ag'):
+        print("Silver Searcher (ag) not found. Install it for grep functionality:")
+        print("  - Mac: brew install the_silver_searcher")
+        print("  - Ubuntu/Debian: apt-get install silversearcher-ag")
+        print("  - Other: https://github.com/ggreer/the_silver_searcher")
+        return []
+    
+    try:
+        # First get files with matches
+        cmd = [
+            'ag',
+            '--files-with-matches',
+            '--nocolor',
+            '--ignore-case',
+            pattern,
+            directory
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0 or not result.stdout.strip():
+            return []
+        
+        files = result.stdout.strip().split('\n')
+        grep_results = []
+        
+        for file in files:
+            if is_ignored(file, ignore_patterns) or is_binary(file):
+                continue
+                
+            # Get match count and preview lines
+            count_cmd = ['ag', '--count', '--nocolor', pattern, file]
+            count_result = subprocess.run(count_cmd, capture_output=True, text=True)
+            match_count = 0
+            if count_result.stdout:
+                # Parse "filename:count" format
+                parts = count_result.stdout.strip().split(':')
+                if len(parts) >= 2:
+                    try:
+                        match_count = int(parts[-1])
+                    except ValueError:
+                        match_count = 1
+            
+            # Get preview of matches (up to 3 lines)
+            preview_cmd = [
+                'ag',
+                '--max-count=3',
+                '--nocolor',
+                '--noheading',
+                '--numbers',
+                pattern,
+                file
+            ]
+            preview_result = subprocess.run(preview_cmd, capture_output=True, text=True)
+            preview_lines = []
+            if preview_result.stdout:
+                for line in preview_result.stdout.strip().split('\n')[:3]:
+                    # Format: "line_num:content"
+                    if ':' in line:
+                        line_num, content = line.split(':', 1)
+                        preview_lines.append(f"   {line_num}: {content.strip()}")
+                    else:
+                        preview_lines.append(f"   {line.strip()}")
+            
+            grep_results.append((file, preview_lines, match_count))
+        
+        return sorted(grep_results)
+        
+    except Exception as e:
+        print(f"Error running ag: {e}")
+        return []
+
+def select_from_grep_results(
+    grep_results: List[Tuple[str, List[str], int]], 
+    current_char_count: int
+) -> Tuple[List[FileTuple], int]:
+    """
+    Let user select from grep results.
+    Returns (selected_files, new_char_count).
+    """
+    if not grep_results:
+        return [], current_char_count
+    
+    print(f"\nFound {len(grep_results)} files:")
+    for i, (file_path, preview_lines, match_count) in enumerate(grep_results):
+        file_size = os.path.getsize(file_path)
+        file_size_readable = get_human_readable_size(file_size)
+        print(f"\n{i+1}. {os.path.relpath(file_path)} ({file_size_readable}) - {match_count} {'match' if match_count == 1 else 'matches'}")
+        for preview_line in preview_lines[:3]:
+            print(preview_line)
+        if match_count > 3:
+            print(f"   ... and {match_count - 3} more matches")
+    
+    while True:
+        print_char_count(current_char_count)
+        choice = input("\nSelect grep results: (a)ll / (n)one / (s)elect individually / numbers (e.g. 1,3-4) / (q)uit? ").lower()
+        
+        selected_files: List[FileTuple] = []
+        char_count_delta = 0
+        
+        if choice == 'a':
+            for file_path, _, _ in grep_results:
+                file_size = os.path.getsize(file_path)
+                selected_files.append((file_path, False, None, get_language_for_file(file_path)))
+                char_count_delta += file_size
+            print(f"Added all {len(grep_results)} files from grep results.")
+            return selected_files, current_char_count + char_count_delta
+            
+        elif choice == 'n':
+            print("Skipped all grep results.")
+            return [], current_char_count
+            
+        elif choice == 'q':
+            print("Cancelled grep selection.")
+            return [], current_char_count
+            
+        elif choice == 's':
+            for i, (file_path, preview_lines, match_count) in enumerate(grep_results):
+                file_size = os.path.getsize(file_path)
+                file_size_readable = get_human_readable_size(file_size)
+                file_char_estimate = file_size
+                file_token_estimate = file_char_estimate // 4
+                
+                print(f"\n{os.path.relpath(file_path)} ({file_size_readable}, ~{file_char_estimate} chars, ~{file_token_estimate} tokens)")
+                print(f"{match_count} {'match' if match_count == 1 else 'matches'} for search pattern")
+                
+                while True:
+                    print_char_count(current_char_count + char_count_delta)
+                    file_choice = input("(y)es / (n)o / (q)uit? ").lower()
+                    
+                    if file_choice == 'y':
+                        if is_large_file(file_path):
+                            while True:
+                                snippet_choice = input(f"File is large. Use (f)ull content or (s)nippet? ").lower()
+                                if snippet_choice in ['f', 's']:
+                                    break
+                                print("Invalid choice. Please enter 'f' or 's'.")
+                            if snippet_choice == 's':
+                                selected_files.append((file_path, True, None, get_language_for_file(file_path)))
+                                char_count_delta += len(get_file_snippet(file_path))
+                            else:
+                                selected_files.append((file_path, False, None, get_language_for_file(file_path)))
+                                char_count_delta += file_size
+                        else:
+                            selected_files.append((file_path, False, None, get_language_for_file(file_path)))
+                            char_count_delta += file_size
+                        print(f"Added: {os.path.relpath(file_path)}")
+                        break
+                    elif file_choice == 'n':
+                        break
+                    elif file_choice == 'q':
+                        print(f"Added {len(selected_files)} files from grep results.")
+                        return selected_files, current_char_count + char_count_delta
+                    else:
+                        print("Invalid choice. Please enter 'y', 'n', or 'q'.")
+            
+            print(f"Added {len(selected_files)} files from grep results.")
+            return selected_files, current_char_count + char_count_delta
+            
+        else:
+            # Try to parse number selection
+            try:
+                selected_indices = set()
+                parts = choice.replace(' ', '').split(',')
+                if all(p.strip() for p in parts):
+                    for part in parts:
+                        if '-' in part:
+                            start_str, end_str = part.split('-', 1)
+                            start = int(start_str)
+                            end = int(end_str)
+                            if start > end:
+                                start, end = end, start
+                            selected_indices.update(range(start - 1, end))
+                        else:
+                            selected_indices.add(int(part) - 1)
+                    
+                    if all(0 <= i < len(grep_results) for i in selected_indices):
+                        for i in sorted(selected_indices):
+                            file_path, _, _ = grep_results[i]
+                            file_size = os.path.getsize(file_path)
+                            selected_files.append((file_path, False, None, get_language_for_file(file_path)))
+                            char_count_delta += file_size
+                        print(f"Added {len(selected_files)} files from grep results.")
+                        return selected_files, current_char_count + char_count_delta
+                    else:
+                        print(f"Error: Invalid number selection. Please choose numbers between 1 and {len(grep_results)}.")
+                else:
+                    raise ValueError("Empty part detected in input.")
+            except ValueError:
+                print("Invalid choice. Please enter 'a', 'n', 's', 'q', or a list/range of numbers.")
+
+def select_files_in_directory(directory: str, ignore_patterns: List[str], project_root_abs: str, current_char_count: int = 0, selected_files_set: Optional[Set[str]] = None) -> Tuple[List[FileTuple], int]:
+    if selected_files_set is None:
+        selected_files_set = set()
+    
     files = [f for f in os.listdir(directory)
              if os.path.isfile(os.path.join(directory, f)) and not is_ignored(os.path.join(directory, f), ignore_patterns) and not is_binary(os.path.join(directory, f))]
 
@@ -479,17 +679,129 @@ def select_files_in_directory(directory: str, ignore_patterns: List[str], projec
         file_size_readable = get_human_readable_size(file_size)
         file_char_estimate = file_size  # Assuming 1 byte ≈ 1 character for text files
         file_token_estimate = file_char_estimate // 4
-        print(f"- {file} ({file_size_readable}, ~{file_char_estimate} chars, ~{file_token_estimate} tokens)")
+        
+        # Show if already selected
+        if os.path.abspath(file_path) in selected_files_set:
+            print(f"✓ {file} ({file_size_readable}, ~{file_char_estimate} chars, ~{file_token_estimate} tokens) [already selected]")
+        else:
+            print(f"- {file} ({file_size_readable}, ~{file_char_estimate} chars, ~{file_token_estimate} tokens)")
 
     while True:
         print_char_count(current_char_count)
-        choice = input("(y)es add all / (n)o ignore all / (s)elect individually / (q)uit? ").lower()
+        choice = input("(y)es add all / (n)o ignore all / (s)elect individually / (g)rep / (q)uit? ").lower()
         selected_files: List[FileTuple] = []
         char_count_delta = 0
+        
+        if choice == 'g':
+            # Grep functionality
+            pattern = input("\nEnter search pattern: ")
+            if pattern:
+                print(f"\nSearching in {directory} for '{pattern}'...")
+                grep_results = grep_files_in_directory(pattern, directory, ignore_patterns)
+                
+                if not grep_results:
+                    print(f"No files found matching '{pattern}'")
+                    continue
+                
+                grep_selected, new_char_count = select_from_grep_results(grep_results, current_char_count)
+                
+                if grep_selected:
+                    selected_files.extend(grep_selected)
+                    current_char_count = new_char_count
+                    
+                    # Update selected files set
+                    for file_tuple in grep_selected:
+                        selected_files_set.add(os.path.abspath(file_tuple[0]))
+                    
+                    # Analyze dependencies for grep-selected files
+                    files_to_analyze = [f[0] for f in grep_selected]
+                    for file_path in files_to_analyze:
+                        new_deps, deps_char_count = _propose_and_add_dependencies(
+                            file_path, project_root_abs, selected_files, current_char_count
+                        )
+                        selected_files.extend(new_deps)
+                        current_char_count += deps_char_count
+                        
+                        # Update selected files set with dependencies
+                        for dep_tuple in new_deps:
+                            selected_files_set.add(os.path.abspath(dep_tuple[0]))
+                    
+                    print(f"\nReturning to directory: {directory}")
+                    # Re-show the directory with updated selections
+                    print("Files:")
+                    for file in files:
+                        file_path = os.path.join(directory, file)
+                        file_size = os.path.getsize(file_path)
+                        file_size_readable = get_human_readable_size(file_size)
+                        if os.path.abspath(file_path) in selected_files_set:
+                            print(f"✓ {file} ({file_size_readable}) [already selected]")
+                        else:
+                            print(f"- {file} ({file_size_readable})")
+                    
+                    # Ask what to do with remaining files
+                    remaining_files = [f for f in files if os.path.abspath(os.path.join(directory, f)) not in selected_files_set]
+                    if remaining_files:
+                        while True:
+                            print_char_count(current_char_count)
+                            remaining_choice = input("(y)es add remaining / (n)o skip remaining / (s)elect more / (g)rep again / (q)uit? ").lower()
+                            if remaining_choice == 'y':
+                                # Add all remaining files
+                                for file in remaining_files:
+                                    file_path = os.path.join(directory, file)
+                                    file_size = os.path.getsize(file_path)
+                                    selected_files.append((file_path, False, None, get_language_for_file(file_path)))
+                                    current_char_count += file_size
+                                    selected_files_set.add(os.path.abspath(file_path))
+                                
+                                # Analyze dependencies for remaining files
+                                for file in remaining_files:
+                                    file_path = os.path.join(directory, file)
+                                    new_deps, deps_char_count = _propose_and_add_dependencies(
+                                        file_path, project_root_abs, selected_files, current_char_count
+                                    )
+                                    selected_files.extend(new_deps)
+                                    current_char_count += deps_char_count
+                                
+                                print(f"Added all remaining files from {directory}")
+                                return selected_files, current_char_count
+                            elif remaining_choice == 'n':
+                                print(f"Skipped remaining files from {directory}")
+                                return selected_files, current_char_count
+                            elif remaining_choice == 's':
+                                # Continue to individual selection
+                                choice = 's'
+                                break
+                            elif remaining_choice == 'g':
+                                # Continue to grep again
+                                choice = 'g'
+                                break
+                            elif remaining_choice == 'q':
+                                return selected_files, current_char_count
+                            else:
+                                print("Invalid choice. Please try again.")
+                        
+                        if choice == 's':
+                            # Fall through to individual selection
+                            pass
+                        elif choice == 'g':
+                            # Loop back to grep
+                            continue
+                    else:
+                        # No remaining files
+                        return selected_files, current_char_count
+                else:
+                    # No files selected from grep, continue
+                    continue
+            else:
+                continue
+                
         if choice == 'y':
             files_to_add_after_loop = []
             for file in files:
                 file_path = os.path.join(directory, file)
+                if os.path.abspath(file_path) in selected_files_set:
+                    continue  # Skip already selected files
+                    
                 if is_large_file(file_path):
                     while True:
                         snippet_choice = input(f"{file} is large. Use (f)ull content or (s)nippet? ").lower()
@@ -516,12 +828,17 @@ def select_files_in_directory(directory: str, ignore_patterns: List[str], projec
 
             print(f"Added all files from {directory}")
             return selected_files, current_char_count
+            
         elif choice == 'n':
             print(f"Ignored all files from {directory}")
             return [], current_char_count
+            
         elif choice == 's':
             for file in files:
                 file_path = os.path.join(directory, file)
+                if os.path.abspath(file_path) in selected_files_set:
+                    continue  # Skip already selected files
+                    
                 file_size = os.path.getsize(file_path)
                 file_size_readable = get_human_readable_size(file_size)
                 file_char_estimate = file_size
@@ -550,6 +867,7 @@ def select_files_in_directory(directory: str, ignore_patterns: List[str], projec
                         
                         if file_to_add:
                             selected_files.append(file_to_add)
+                            selected_files_set.add(os.path.abspath(file_path))
                             # Analyze dependencies immediately after adding
                             new_deps, deps_char_count = _propose_and_add_dependencies(file_path, project_root_abs, selected_files, current_char_count)
                             selected_files.extend(new_deps)
@@ -562,6 +880,7 @@ def select_files_in_directory(directory: str, ignore_patterns: List[str], projec
                         if chunks:
                             selected_files.append((file_path, False, chunks, get_language_for_file(file_path)))
                             current_char_count += char_count
+                            selected_files_set.add(os.path.abspath(file_path))
                         break
                     elif file_choice == 'q':
                         print(f"Quitting selection for {directory}")
@@ -570,13 +889,18 @@ def select_files_in_directory(directory: str, ignore_patterns: List[str], projec
                         print("Invalid choice. Please enter 'y', 'n', 'p', or 'q'.")
             print(f"Added {len(selected_files)} files from {directory}")
             return selected_files, current_char_count
+            
         elif choice == 'q':
             print(f"Quitting selection for {directory}")
             return [], current_char_count
         else:
             print("Invalid choice. Please try again.")
 
-def process_directory(directory: str, ignore_patterns: List[str], project_root_abs: str, current_char_count: int = 0) -> Tuple[List[FileTuple], Set[str], int]:
+
+def process_directory(directory: str, ignore_patterns: List[str], project_root_abs: str, current_char_count: int = 0, selected_files_set: Optional[Set[str]] = None) -> Tuple[List[FileTuple], Set[str], int]:
+    if selected_files_set is None:
+        selected_files_set = set()
+        
     files_to_include: List[FileTuple] = []
     processed_dirs: Set[str] = set()
 
@@ -590,10 +914,16 @@ def process_directory(directory: str, ignore_patterns: List[str], project_root_a
         print(f"\nExploring directory: {root}")
         choice = input("(y)es explore / (n)o skip / (q)uit? ").lower()
         if choice == 'y':
-            # Pass project_root_abs down
-            selected_files, current_char_count = select_files_in_directory(root, ignore_patterns, project_root_abs, current_char_count)
-            # The paths in selected_files are already absolute now
+            # Pass selected_files_set to track already selected files
+            selected_files, current_char_count = select_files_in_directory(
+                root, ignore_patterns, project_root_abs, current_char_count, selected_files_set
+            )
             files_to_include.extend(selected_files)
+            
+            # Update selected_files_set
+            for file_tuple in selected_files:
+                selected_files_set.add(os.path.abspath(file_tuple[0]))
+                
             processed_dirs.add(root)
         elif choice == 'n':
             dirs[:] = []  # Skip all subdirectories
@@ -673,6 +1003,7 @@ def main():
     ignore_patterns = read_gitignore()
     env_vars = read_env_file()
     project_root_abs = os.path.abspath(os.getcwd())
+    selected_files_set: Set[str] = set()
 
 
     files_to_include: List[FileTuple] = []
@@ -764,10 +1095,14 @@ def main():
 
                 if file_to_add:
                     files_to_include.append(file_to_add)
+                    selected_files_set.add(abs_input_path)
                     # --- NEW: Call dependency analysis ---
                     new_deps, deps_char_count = _propose_and_add_dependencies(abs_input_path, project_root_abs, files_to_include, current_char_count)
                     files_to_include.extend(new_deps)
                     current_char_count += deps_char_count
+                    # Update selected files set with dependencies
+                    for dep_tuple in new_deps:
+                        selected_files_set.add(os.path.abspath(dep_tuple[0]))
                 
                 print_char_count(current_char_count)
 
@@ -780,8 +1115,10 @@ def main():
                      print(f"Ignoring file: {input_path}")
         elif os.path.isdir(input_path):
             print(f"\nProcessing directory specified directly: {input_path}")
-            # Pass project_root_abs to process_directory
-            dir_files, dir_processed, current_char_count = process_directory(input_path, ignore_patterns, project_root_abs, current_char_count)
+            # Pass selected_files_set to process_directory
+            dir_files, dir_processed, current_char_count = process_directory(
+                input_path, ignore_patterns, project_root_abs, current_char_count, selected_files_set
+            )
             files_to_include.extend(dir_files)
             processed_dirs.update(dir_processed)
         else:

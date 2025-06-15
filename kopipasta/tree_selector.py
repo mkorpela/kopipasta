@@ -1,12 +1,10 @@
 import os
+import shutil
 from typing import Dict, List, Optional, Tuple
 from rich.console import Console
 from rich.tree import Tree
 from rich.panel import Panel
-from rich.table import Table
 from rich.text import Text
-from rich.live import Live
-from rich.layout import Layout
 import click
 
 from kopipasta.file import FileTuple, is_binary, is_ignored, get_human_readable_size
@@ -52,6 +50,7 @@ class TreeSelector:
         self.visible_nodes: List[FileNode] = []
         self.char_count = 0
         self.quit_selection = False
+        self.viewport_offset = 0  # First visible item index
         
     def build_tree(self, paths: List[str]) -> FileNode:
         """Build tree structure from given paths"""
@@ -154,17 +153,49 @@ class TreeSelector:
         return result
     
     def _build_display_tree(self) -> Tree:
-        """Build Rich tree for display"""
-        tree = Tree("📁 Project Files", guide_style="dim")
+        """Build Rich tree for display with viewport"""
+        # Get terminal size
+        term_width, term_height = shutil.get_terminal_size()
         
-        # Flatten tree and rebuild visible nodes list
+        # Reserve space for header, help panel, and status
+        available_height = term_height - 15  # Adjust based on your UI
+        available_height = max(5, available_height)  # Minimum height
+        
+        # Flatten tree to get all visible nodes
         flat_tree = self._flatten_tree(self.root)
         self.visible_nodes = [node for node, _ in flat_tree]
         
-        # Build tree structure - we'll map absolute paths to tree nodes
-        node_map = {}
+        # Calculate viewport
+        if self.visible_nodes:
+            # Ensure current selection is visible
+            if self.current_index < self.viewport_offset:
+                self.viewport_offset = self.current_index
+            elif self.current_index >= self.viewport_offset + available_height:
+                self.viewport_offset = self.current_index - available_height + 1
+                
+            # Clamp viewport to valid range
+            max_offset = max(0, len(self.visible_nodes) - available_height)
+            self.viewport_offset = max(0, min(self.viewport_offset, max_offset))
+        else:
+            self.viewport_offset = 0
         
-        for i, (node, level) in enumerate(flat_tree):
+        # Create tree with scroll indicators
+        tree_title = "📁 Project Files"
+        if self.viewport_offset > 0:
+            tree_title += f" ↑ ({self.viewport_offset} more)"
+        
+        tree = Tree(tree_title, guide_style="dim")
+        
+        # Build tree structure - only for visible portion
+        node_map = {}
+        viewport_end = min(len(flat_tree), self.viewport_offset + available_height)
+        
+        # Track what level each visible item is at for proper tree structure
+        level_stacks = {}  # level -> stack of tree nodes
+        
+        for i in range(self.viewport_offset, viewport_end):
+            node, level = flat_tree[i]
+            
             # Determine style and icon
             is_current = i == self.current_index
             style = "bold cyan" if is_current else ""
@@ -193,40 +224,44 @@ class TreeSelector:
             label.append(f"{selection} ", style="dim")
             label.append(f"{icon} {node.name}{size_str}", style=style)
             
-            # Add to tree at correct position
-            # For root-level items, add directly to tree
-            if node.parent and node.parent.path == os.path.abspath("."):
+            # Add to tree at correct level
+            if level == 0:
                 tree_node = tree.add(label)
-                node_map[abs_path] = tree_node
+                level_stacks[0] = tree_node
             else:
-                # Find parent node in map
-                parent_abs_path = os.path.abspath(node.parent.path) if node.parent else None
-                if parent_abs_path and parent_abs_path in node_map:
-                    parent_tree = node_map[parent_abs_path]
+                # Find parent at previous level
+                parent_level = level - 1
+                if parent_level in level_stacks:
+                    parent_tree = level_stacks[parent_level]
                     tree_node = parent_tree.add(label)
-                    node_map[abs_path] = tree_node
+                    level_stacks[level] = tree_node
                 else:
-                    # Fallback - add to root
-                    tree_node = tree.add(label)
-                    node_map[abs_path] = tree_node
+                    # Fallback - add to root with indentation indicator
+                    indent_label = Text()
+                    indent_label.append("  " * level + f"{selection} ", style="dim")
+                    indent_label.append(f"{icon} {node.name}{size_str}", style=style)
+                    tree_node = tree.add(indent_label)
+                    level_stacks[level] = tree_node
+        
+        # Add scroll indicator at bottom if needed
+        if viewport_end < len(self.visible_nodes):
+            remaining = len(self.visible_nodes) - viewport_end
+            tree.add(Text(f"↓ ({remaining} more items)", style="dim italic"))
             
         return tree
-    
+
     def _show_help(self) -> Panel:
         """Create help panel"""
         help_text = """[bold]Navigation:[/bold]
-↑/k: Move up     ↓/j: Move down     →/l/Enter: Expand dir     ←/h: Collapse dir
+↑/k: Up  ↓/j: Down  →/l/Enter: Expand  ←/h: Collapse  PgUp/PgDn: Page  G/End: Bottom
 
 [bold]Selection:[/bold]  
 Space: Toggle file/dir     a: Add all in dir     s: Snippet mode
 
 [bold]Actions:[/bold]
-g: Grep in directory     d: Show dependencies     q: Quit selection
-
-[bold]Status:[/bold]
-Selected: [green]● Full[/green]  [yellow]◐ Snippet[/yellow]  ○ Not selected"""
+g: Grep in directory     d: Show dependencies     q: Quit selection"""
         
-        return Panel(help_text, title="Keyboard Shortcuts", border_style="dim", expand=False)
+        return Panel(help_text, title="Keys", border_style="dim", expand=False)
     
     def _get_status_bar(self) -> str:
         """Create status bar with selection info"""
@@ -456,6 +491,20 @@ Selected: [green]● Full[/green]  [yellow]◐ Snippet[/yellow]  ○ Not selecte
                     self.current_index = max(0, self.current_index - 1)
                 elif key in ['\x1b[B', 'j']:  # Down arrow or j  
                     self.current_index = min(len(self.visible_nodes) - 1, self.current_index + 1)
+                elif key == '\x1b[5~':  # Page Up
+                    term_width, term_height = shutil.get_terminal_size()
+                    page_size = max(1, term_height - 15)
+                    self.current_index = max(0, self.current_index - page_size)
+                elif key == '\x1b[6~':  # Page Down
+                    term_width, term_height = shutil.get_terminal_size()
+                    page_size = max(1, term_height - 15)
+                    self.current_index = min(len(self.visible_nodes) - 1, self.current_index + page_size)
+                elif key == '\x1b[H':  # Home - go to top
+                    self.current_index = 0
+                elif key == '\x1b[F':  # End - go to bottom
+                    self.current_index = len(self.visible_nodes) - 1
+                elif key == 'G':  # Shift+G - go to bottom (vim style)
+                    self.current_index = len(self.visible_nodes) - 1
                 elif key in ['\x1b[C', 'l', '\r']:  # Right arrow, l, or Enter
                     if current_node.is_dir:
                         current_node.expanded = True

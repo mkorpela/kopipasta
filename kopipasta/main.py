@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-import csv
-import io
 import os
 import argparse
 import re
@@ -8,7 +6,6 @@ import subprocess
 import tempfile
 from typing import Dict, List, Optional, Set, Tuple
 import pyperclip
-import fnmatch
 from pygments import highlight
 from pygments.lexers import get_lexer_for_filename, TextLexer
 from pygments.formatters import TerminalFormatter
@@ -16,9 +13,9 @@ import pygments.util
 
 import requests
 
+from kopipasta.file import FileTuple, is_binary, is_ignored, read_file_contents
 import kopipasta.import_parser as import_parser
-
-FileTuple = Tuple[str, bool, Optional[List[str]], str]
+from kopipasta.prompt import generate_prompt_template, get_file_snippet, get_language_for_file
 
 def _propose_and_add_dependencies(
     file_just_added: str,
@@ -33,7 +30,7 @@ def _propose_and_add_dependencies(
     if language not in ['python', 'typescript', 'javascript', 'tsx', 'jsx']:
         return [], 0 # Only analyze languages we can parse
 
-    print(f"Analyzing {get_relative_path(file_just_added)} for local dependencies...")
+    print(f"Analyzing {os.path.relpath(file_just_added)} for local dependencies...")
 
     try:
         file_content = read_file_contents(file_just_added)
@@ -59,7 +56,7 @@ def _propose_and_add_dependencies(
 
         print(f"\nFound {len(suggested_deps)} new local {'dependency' if len(suggested_deps) == 1 else 'dependencies'}:")
         for i, dep_path in enumerate(suggested_deps):
-            print(f"  ({i+1}) {get_relative_path(dep_path)}")
+            print(f"  ({i+1}) {os.path.relpath(dep_path)}")
 
         while True:
             choice = input("\nAdd dependencies? (a)ll, (n)one, or enter numbers (e.g. 1, 3-4): ").lower()
@@ -115,12 +112,12 @@ def _propose_and_add_dependencies(
             file_size = os.path.getsize(dep_path)
             newly_added_files.append((dep_path, False, None, get_language_for_file(dep_path)))
             char_count_delta += file_size
-            print(f"Added dependency: {get_relative_path(dep_path)} ({get_human_readable_size(file_size)})")
+            print(f"Added dependency: {os.path.relpath(dep_path)} ({get_human_readable_size(file_size)})")
 
         return newly_added_files, char_count_delta
 
     except Exception as e:
-        print(f"Warning: Could not analyze dependencies for {get_relative_path(file_just_added)}: {e}")
+        print(f"Warning: Could not analyze dependencies for {os.path.relpath(file_just_added)}: {e}")
         return [], 0
 
 def get_colored_code(file_path, code):
@@ -155,25 +152,6 @@ def read_gitignore():
                     gitignore_patterns.append(line)
     return gitignore_patterns
 
-def is_ignored(path, ignore_patterns):
-    path = os.path.normpath(path)
-    for pattern in ignore_patterns:
-        if fnmatch.fnmatch(os.path.basename(path), pattern) or fnmatch.fnmatch(path, pattern):
-            return True
-    return False
-
-def is_binary(file_path):
-    try:
-        with open(file_path, 'rb') as file:
-            chunk = file.read(1024)
-            if b'\0' in chunk:  # null bytes indicate binary file
-                return True
-            if file_path.lower().endswith(('.json', '.csv')):
-                return False
-            return False
-    except IOError:
-        return False
-
 def get_human_readable_size(size):
     for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
         if size < 1024.0:
@@ -182,57 +160,6 @@ def get_human_readable_size(size):
 
 def is_large_file(file_path, threshold=102400):  # 100 KB threshold
     return os.path.getsize(file_path) > threshold
-
-def get_project_structure(ignore_patterns):
-    tree = []
-    for root, dirs, files in os.walk('.'):
-        dirs[:] = [d for d in dirs if not is_ignored(os.path.join(root, d), ignore_patterns)]
-        files = [f for f in files if not is_ignored(os.path.join(root, f), ignore_patterns)]
-        level = root.replace('.', '').count(os.sep)
-        indent = ' ' * 4 * level + '|-- '
-        tree.append(f"{indent}{os.path.basename(root)}/")
-        subindent = ' ' * 4 * (level + 1) + '|-- '
-        for f in files:
-            tree.append(f"{subindent}{f}")
-    return '\n'.join(tree)
-
-def read_file_contents(file_path):
-    try:
-        with open(file_path, 'r') as file:
-            return file.read()
-    except Exception as e:
-        print(f"Error reading {file_path}: {e}")
-        return ""
-
-def get_relative_path(file_path):
-    return os.path.relpath(file_path)
-
-def get_language_for_file(file_path):
-    extension = os.path.splitext(file_path)[1].lower()
-    language_map = {
-        '.py': 'python',
-        '.js': 'javascript',
-        '.jsx': 'jsx',
-        '.ts': 'typescript',
-        '.tsx': 'tsx',
-        '.html': 'html',
-        '.htm': 'html',
-        '.css': 'css',
-        '.json': 'json',
-        '.md': 'markdown',
-        '.sql': 'sql',
-        '.sh': 'bash',
-        '.yml': 'yaml',
-        '.yaml': 'yaml',
-        '.go': 'go',
-        '.toml': 'toml',
-        '.c': 'c',
-        '.cpp': 'cpp',
-        '.cc': 'cpp',
-        '.h': 'cpp',
-        '.hpp': 'cpp',
-    }
-    return language_map.get(extension, '')
 
 def split_python_file(file_content):
     """
@@ -529,17 +456,6 @@ def get_placeholder_comment(language):
     }
     return comments.get(language, comments['default'])
 
-def get_file_snippet(file_path, max_lines=50, max_bytes=4096):
-    snippet = ""
-    byte_count = 0
-    with open(file_path, 'r') as file:
-        for i, line in enumerate(file):
-            if i >= max_lines or byte_count >= max_bytes:
-                break
-            snippet += line
-            byte_count += len(line.encode('utf-8'))
-    return snippet
-
 def get_colored_file_snippet(file_path, max_lines=50, max_bytes=4096):
     snippet = get_file_snippet(file_path, max_lines, max_bytes)
     return get_colored_code(file_path, snippet)
@@ -722,112 +638,6 @@ def read_env_file():
                     env_vars[key.strip()] = value.strip()
     return env_vars
 
-def detect_env_variables(content, env_vars):
-    detected_vars = []
-    for key, value in env_vars.items():
-        if value in content:
-            detected_vars.append((key, value))
-    return detected_vars
-
-def handle_env_variables(content, env_vars):
-    detected_vars = detect_env_variables(content, env_vars)
-    if not detected_vars:
-        return content
-
-    print("Detected environment variables:")
-    for key, value in detected_vars:
-        print(f"- {key}={value}")
-
-    for key, value in detected_vars:
-        while True:
-            choice = input(f"How would you like to handle {key}? (m)ask / (s)kip / (k)eep: ").lower()
-            if choice in ['m', 's', 'k']:
-                break
-            print("Invalid choice. Please enter 'm', 's', or 'k'.")
-
-        if choice == 'm':
-            content = content.replace(value, '*' * len(value))
-        elif choice == 's':
-            content = content.replace(value, "[REDACTED]")
-        # If 'k', we don't modify the content
-
-    return content
-
-def generate_prompt_template(files_to_include: List[FileTuple], ignore_patterns: List[str], web_contents: Dict[str, Tuple[FileTuple, str]], env_vars: Dict[str, str]) -> Tuple[str, int]:
-    prompt = "# Project Overview\n\n"
-    prompt += "## Project Structure\n\n"
-    prompt += "```\n"
-    prompt += get_project_structure(ignore_patterns)
-    prompt += "\n```\n\n"
-    prompt += "## File Contents\n\n"
-    for file, use_snippet, chunks, content_type in files_to_include:
-        relative_path = get_relative_path(file)
-        language = content_type if content_type else get_language_for_file(file)
-
-        if chunks is not None:
-            prompt += f"### {relative_path} (selected patches)\n\n```{language}\n"
-            for chunk in chunks:
-                prompt += f"{chunk}\n"
-            prompt += "```\n\n"
-        elif use_snippet:
-            file_content = get_file_snippet(file)
-            prompt += f"### {relative_path} (snippet)\n\n```{language}\n{file_content}\n```\n\n"
-        else:
-            file_content = read_file_contents(file)
-            file_content = handle_env_variables(file_content, env_vars)
-            prompt += f"### {relative_path}\n\n```{language}\n{file_content}\n```\n\n"
-
-    if web_contents:
-        prompt += "## Web Content\n\n"
-        for url, (file_tuple, content) in web_contents.items():
-            _, is_snippet, _, content_type = file_tuple
-            content = handle_env_variables(content, env_vars)
-            language = content_type if content_type in ['json', 'csv'] else ''
-            prompt += f"### {url}{' (snippet)' if is_snippet else ''}\n\n```{language}\n{content}\n```\n\n"
-
-    prompt += "## Task Instructions\n\n"
-    cursor_position = len(prompt)
-    prompt += "\n\n"
-    prompt += "## Instructions for Achieving the Task\n\n"
-    analysis_text = (
-        "### Partnership Principles\n\n"
-        "We work as collaborative partners. You provide technical expertise and critical thinking. "
-        "I have exclusive access to my codebase, real environment, external services, and actual users. "
-        "Never assume project file contents - always ask to see them.\n\n"
-        "**Critical Thinking**: Challenge poor approaches, identify risks, suggest better alternatives. Don't be a yes-man.\n\n"
-        "**Anti-Hallucination**: Never write placeholder code for files in ## Project Structure. Use [STOP - NEED FILE: filename] and wait.\n\n"
-        "**Hard Stops**: End with [AWAITING USER RESPONSE] when you need input. Don't continue with assumptions.\n\n"
-        "### Development Workflow\n\n"
-        "We work in two modes:\n"
-        "- **Iterative Mode**: Build incrementally, show only changes\n"
-        "- **Consolidation Mode**: When I request, provide clean final version\n\n"
-        "1. **Understand & Analyze**:\n"
-        "   - Rephrase task, identify issues, list needed files\n"
-        "   - Challenge problematic aspects\n"
-        "   - End: 'I need: [files]. Is this correct?' [AWAITING USER RESPONSE]\n\n"
-        "2. **Plan**:\n"
-        "   - Present 2-3 approaches with pros/cons\n"
-        "   - Recommend best approach\n"
-        "   - End: 'Which approach?' [AWAITING USER RESPONSE]\n\n"
-        "3. **Implement Iteratively**:\n"
-        "   - Small, testable increments\n"
-        "   - Track failed attempts: `Attempt 1: [FAILED] X→Y (learned: Z)`\n"
-        "   - After 3 failures, request diagnostics\n\n"
-        "4. **Code Presentation**:\n"
-        "   - Always: `// FILE: path/to/file.ext`\n"
-        "   - Iterative: Show only changes with context\n"
-        "   - Consolidation: Smart choice - minimal changes = show patches, extensive = full file\n\n"
-        "5. **Test & Validate**:\n"
-        "   - 'Test with: [command]. Share any errors.' [AWAITING USER RESPONSE]\n"
-        "   - Include debug outputs\n"
-        "   - May return to implementation based on results\n\n"
-        "### Permissions & Restrictions\n\n"
-        "**You MAY**: Request project files, ask me to test code/services, challenge my approach, refuse without info\n\n"
-        "**You MUST NOT**: Assume project file contents, continue past [AWAITING USER RESPONSE], be agreeable when you see problems\n"
-    )
-    prompt += analysis_text
-    return prompt, cursor_position
-
 def open_editor_for_input(template: str, cursor_position: int) -> str:
     editor = os.environ.get('EDITOR', 'vim')
     with tempfile.NamedTemporaryFile(mode='w+', suffix='.md', delete=False) as temp_file:
@@ -915,42 +725,42 @@ def main():
                 file_to_add = None
 
                 if is_large_file(abs_input_path):
-                    print(f"\nFile {get_relative_path(abs_input_path)} ({file_size_readable}, ~{file_char_estimate} chars) is large.")
+                    print(f"\nFile {os.path.relpath(abs_input_path)} ({file_size_readable}, ~{file_char_estimate} chars) is large.")
                     print("Preview (first ~50 lines or 4KB):")
                     print(get_colored_file_snippet(abs_input_path))
                     print("-" * 40)
                     while True:
                         print_char_count(current_char_count)
-                        choice = input(f"How to include large file {get_relative_path(abs_input_path)}? (f)ull / (s)nippet / (p)atches / (n)o skip: ").lower()
+                        choice = input(f"How to include large file {os.path.relpath(abs_input_path)}? (f)ull / (s)nippet / (p)atches / (n)o skip: ").lower()
                         if choice == 'f':
                             file_to_add = (abs_input_path, False, None, language)
                             current_char_count += file_char_estimate
-                            print(f"Added full file: {get_relative_path(abs_input_path)}")
+                            print(f"Added full file: {os.path.relpath(abs_input_path)}")
                             break
                         elif choice == 's':
                             snippet_content = get_file_snippet(abs_input_path)
                             file_to_add = (abs_input_path, True, None, language)
                             current_char_count += len(snippet_content)
-                            print(f"Added snippet of file: {get_relative_path(abs_input_path)}")
+                            print(f"Added snippet of file: {os.path.relpath(abs_input_path)}")
                             break
                         elif choice == 'p':
                             chunks, char_count = select_file_patches(abs_input_path)
                             if chunks:
                                 file_to_add = (abs_input_path, False, chunks, language)
                                 current_char_count += char_count
-                                print(f"Added selected patches from file: {get_relative_path(abs_input_path)}")
+                                print(f"Added selected patches from file: {os.path.relpath(abs_input_path)}")
                             else:
-                                print(f"No patches selected for {get_relative_path(abs_input_path)}. Skipping file.")
+                                print(f"No patches selected for {os.path.relpath(abs_input_path)}. Skipping file.")
                             break
                         elif choice == 'n':
-                            print(f"Skipped large file: {get_relative_path(abs_input_path)}")
+                            print(f"Skipped large file: {os.path.relpath(abs_input_path)}")
                             break
                         else:
                             print("Invalid choice. Please enter 'f', 's', 'p', or 'n'.")
                 else:
                     file_to_add = (abs_input_path, False, None, language)
                     current_char_count += file_char_estimate
-                    print(f"Added file: {get_relative_path(abs_input_path)} ({file_size_readable})")
+                    print(f"Added file: {os.path.relpath(abs_input_path)} ({file_size_readable})")
 
                 if file_to_add:
                     files_to_include.append(file_to_add)

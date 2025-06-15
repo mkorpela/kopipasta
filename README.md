@@ -3,21 +3,36 @@
 [![Version](https://img.shields.io/pypi/v/kopipasta.svg)](https://pypi.python.org/pypi/kopipasta)
 [![Downloads](http://pepy.tech/badge/kopipasta)](http://pepy.tech/project/kopipasta)
 
-Streamline your interaction with LLMs for coding tasks. `kopipasta` helps you provide comprehensive context (project structure, file contents, web content) and facilitates an interactive, patch-based workflow. Go beyond TAB TAB TAB and take control of your LLM context.
+A CLI tool for taking **full, transparent control** of your LLM context. No black boxes.
 
 <img src="kopipasta.jpg" alt="kopipasta" width="300">
 
-- An LLM told me that kopi means Coffee in some languages.. and a Diffusion model then made this delicious soup.
+- An LLM told me that "kopi" means Coffee in some languages... and a Diffusion model then made this delicious soup.
+
+## The Philosophy: You Control the Context
+
+Many AI coding assistants use Retrieval-Augmented Generation (RAG) to automatically find what *they think* is relevant context. This is a black box. When the LLM gives a bad answer, you can't debug it because you don't know what context it was actually given.
+
+**`kopipasta` is the opposite.** I built it for myself on the principle of **explicit context control**. You are in the driver's seat. You decide *exactly* what files, functions, and snippets go into the prompt. This transparency is the key to getting reliable, debuggable results from an LLM.
+
+It's a "smart copy" command for your project, not a magic wand.
+
+## How It Works
+
+The workflow is dead simple:
+
+1.  **Gather:** Run `kopipasta` and point it at the files, directories, and URLs that matter for your task.
+2.  **Select:** The tool interactively helps you choose what to include. For large files, you can send just a snippet or even hand-pick individual functions.
+3.  **Define:** Your default editor (`$EDITOR`) opens for you to write your instructions to the LLM.
+4.  **Paste:** The final, comprehensive prompt is now on your clipboard, ready to be pasted into ChatGPT, Gemini, Claude, or your LLM of choice.
 
 ## Installation
 
-You can install kopipasta using pipx (recommended) or pip:
-
 ```bash
-# Using pipx (recommended)
+# Using pipx (recommended for CLI tools)
 pipx install kopipasta
 
-# Or using pip
+# Or using standard pip
 pip install kopipasta
 ```
 
@@ -29,116 +44,41 @@ kopipasta [options] [files_or_directories_or_urls...]
 
 **Arguments:**
 
-*   `[files_or_directories_or_urls...]`: Paths to files, directories, or web URLs to include as context.
+*   `[files_or_directories_or_urls...]`: One or more paths to files, directories, or web URLs to use as the starting point for your context.
 
 **Options:**
 
-*   `-t TASK`, `--task TASK`: Provide the task description directly via the command line. If omitted (and not using `-I`), an editor will open for you to write the task.
-*   `-I`, `--interactive`: Start an interactive chat session with Google's Gemini model after preparing the context. Requires `GOOGLE_API_KEY` environment variable.
+*   `-t TASK`, `--task TASK`: Provide the task description directly on the command line, skipping the editor.
 
-**Examples:**
+## Key Features
 
-1.  **Generate prompt and copy to clipboard (classic mode):**
-    ```bash
-    # Interactively select files from src/, include config.json, fetch web content,
-    # then open editor for task input. Copy final prompt to clipboard.
-    kopipasta src/ config.json https://example.com/api-docs
+*   **Total Context Control:** Interactively select files, directories, snippets, or even individual functions. You see everything that goes into the prompt.
+*   **Transparent & Explicit:** No hidden RAG. You know exactly what's in the prompt because you built it. This makes debugging LLM failures possible.
+*   **Web-Aware:** Pulls in content directly from URLs—perfect for API documentation.
+*   **Safety First:**
+    *   Automatically respects your `.gitignore` rules.
+    *   Detects if you're about to include secrets from a `.env` file and asks what to do.
+*   **Context-Aware:** Keeps a running total of the prompt size (in characters and estimated tokens) so you don't overload the LLM's context window.
+*   **Developer-Friendly:**
+    *   Uses your familiar `$EDITOR` for writing task descriptions.
+    *   Copies the final prompt directly to your clipboard.
+    *   Provides syntax highlighting during chunk selection.
 
-    # Provide task directly, include specific files, copy final prompt.
-    kopipasta -t "Refactor setup.py to read deps from requirements.txt" setup.py requirements.txt
-    ```
+## A Real-World Example
 
-2.  **Start an interactive chat session:**
-    ```bash
-    # Interactively select files, provide task directly, then start chat.
-    kopipasta -I -t "Implement the apply_simple_patch function" kopipasta/main.py
+I had a bug where my `setup.py` didn't include all the dependencies from `requirements.txt`.
 
-    # Interactively select files, open editor for initial task, then start chat.
-    kopipasta -I kopipasta/ tests/
-    ```
+1.  I ran `kopipasta -t "Update setup.py to read dependencies dynamically from requirements.txt" setup.py requirements.txt`.
+2.  The tool confirmed the inclusion of both files and copied the complete prompt to my clipboard.
+3.  I pasted the prompt into my LLM chat window.
+4.  I copied the LLM's suggested code back into my local `setup.py`.
+5.  I tested the changes and committed.
 
-## Workflow
-
-`kopipasta` is designed to support the following workflow when working with LLMs (like Gemini, ChatGPT, Claude, etc.) for coding tasks:
-
-1.  **Gather Context:** Run `kopipasta` with the relevant files, directories, and URLs. Interactively select exactly what content (full files, snippets, or specific code chunks/patches) should be included.
-2.  **Define Task:** Provide your coding task instructions, either via the `-t` flag or through your default editor.
-3.  **Interact (if using `-I`):**
-    *   `kopipasta` prepares the context and your task as an initial prompt.
-    *   An interactive chat session starts (currently using Google Gemini via `google-genai`).
-    *   Discuss the task, clarify requirements, and ask the LLM to generate code.
-    *   The initial prompt includes instructions guiding the LLM to provide incremental changes and clear explanations.
-4.  **Request Patches (`-I` mode):**
-    *   During the chat, use the `/patch` command to ask the LLM to provide the proposed changes in a structured format.
-    *   `kopipasta` will prompt you to review the proposed patches (file, reasoning, code change).
-5.  **Apply Patches (`-I` mode):**
-    *   If you approve, `kopipasta` will attempt to automatically apply the patches to your local files. It validates that the original code exists and is unique before applying.
-6.  **Test & Iterate:** Test the changes locally. If further changes are needed, continue the chat, request new patches, or make manual edits.
-7.  **Commit:** Once satisfied, commit the changes.
-
-For non-interactive mode, `kopipasta` generates the complete prompt (context + task) and copies it to your clipboard (Step 1 & 2). You can then paste this into your preferred LLM interface and proceed manually from Step 3 onwards.
-
-## Features
-
-*   **Comprehensive Context Generation:** Creates structured prompts including:
-    *   Project directory tree overview.
-    *   Selected file contents.
-    *   Content fetched from web URLs.
-    *   Your specific task instructions.
-*   **Interactive File Selection:**
-    *   Guides you through selecting files and directories.
-    *   Option to include full file content, a snippet (first lines/bytes), or **select specific code chunks/patches** for large or complex files.
-    *   Syntax highlighting during chunk selection for supported languages.
-    *   Ignores files based on common `.gitignore` patterns and detects binary files.
-    *   Displays estimated character/token counts during selection.
-*   **Web Content Fetching:** Includes content directly from URLs. Handles JSON/CSV content types.
-*   **Editor Integration:** Opens your preferred editor (`$EDITOR`) to input task instructions (if not using `-t`).
-*   **Environment Variable Handling:** Detects potential secrets from a `.env` file in included content and prompts you to mask, skip, or keep them.
-*   **Clipboard Integration:** Automatically copies the generated prompt to the clipboard (non-interactive mode).
-*   **Interactive Chat Mode (`-I`, `--interactive`):**
-    *   Starts a chat session directly after context generation.
-    *   Uses the `google-genai` library to interact with Google's Gemini models.
-    *   Requires the `GOOGLE_API_KEY` environment variable to be set.
-    *   Includes built-in instructions for the LLM to encourage clear, iterative responses.
-*   **Patch Management (`-I` mode):**
-    *   `/patch` command to request structured code changes from the LLM.
-    *   Prompts user to review proposed patches (reasoning, file, original/new code snippets).
-    *   **Automatic patch application** to local files upon confirmation.
+No manual file reading, no clumsy copy-pasting, just a clean, context-rich prompt that I had full control over.
 
 ## Configuration
 
-*   **Editor:** Set the `EDITOR` environment variable to your preferred command-line editor (e.g., `vim`, `nvim`, `nano`, `emacs`, `code --wait`).
-*   **API Key (for `-I` mode):** Set the `GOOGLE_API_KEY` environment variable with your Google AI Studio API key to use the interactive chat feature.
-
-## Real life example (Non-Interactive)
-
-Context: I had a bug where `setup.py` didn't include all dependencies listed in `requirements.txt`.
-
-1.  `kopipasta -t "Update setup.py to read dependencies dynamically from requirements.txt" setup.py requirements.txt`
-2.  Paste the generated prompt (copied to clipboard) into my preferred LLM chat interface.
-3.  Review the LLM's proposed code.
-4.  Copy the code and update `setup.py` manually.
-5.  Test the changes.
-
-## Real life example (Interactive)
-
-Context: I want to refactor a function in `main.py`.
-
-1.  `export GOOGLE_API_KEY="YOUR_API_KEY_HERE"` (ensure key is set)
-2.  `kopipasta -I -t "Refactor the handle_content function in main.py to be more modular" module/main.py`
-3.  The tool gathers context, shows the file size, and confirms inclusion.
-4.  An interactive chat session starts with the context and task sent to Gemini.
-5.  Chat with the LLM:
-    *   *User:* "Proceed"
-    *   *LLM:* "Okay, I understand. My plan is to..."
-    *   *User:* "Looks good."
-    *   *LLM:* "Here's the first part of the refactoring..." (shows code)
-6.  Use the `/patch` command:
-    *   *User:* `/patch`
-    *   `kopipasta` asks the LLM for structured patches.
-    *   `kopipasta` displays proposed patches: "Apply 1 patch to module/main.py? (y/N):"
-7.  Apply the patch:
-    *   *User:* `y`
-    *   `kopipasta` applies the change to `module/main.py`.
-8.  Test locally. If it works, commit. If not, continue chatting, request more patches, or debug.
-
+Set your preferred command-line editor via the `EDITOR` environment variable.
+```bash
+export EDITOR=nvim  # or vim, nano, code --wait, etc.
+```

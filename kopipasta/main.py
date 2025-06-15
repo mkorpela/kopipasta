@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 import csv
 import io
-import json
 import os
 import argparse
-import sys
 import re
 import subprocess
 import tempfile
@@ -18,104 +16,9 @@ import pygments.util
 
 import requests
 
-from pydantic import BaseModel, Field
-import traceback
-from google import genai
-from google.genai.types import GenerateContentConfig
-from prompt_toolkit import prompt # Added for multiline input
-
 import kopipasta.import_parser as import_parser
 
 FileTuple = Tuple[str, bool, Optional[List[str]], str]
-
-class SimplePatchItem(BaseModel):
-    """A single change described by reasoning, file path, original text, and new text."""
-    reasoning: str = Field(..., description="Explanation for why this specific change is proposed.")
-    file_path: str = Field(..., description="Relative path to the file to be modified.")
-    original_text: str = Field(..., description="The exact, unique block of text to be replaced.")
-    new_text: str = Field(..., description="The text to replace the original_text with.")
-
-class SimplePatchArgs(BaseModel):
-    """A list of proposed code changes."""
-    patches: List[SimplePatchItem] = Field(..., description="A list of patches to apply.")
-
-def apply_simple_patch(patch_item: SimplePatchItem) -> bool:
-    """
-    Applies a single patch defined by replacing original_text with new_text in file_path.
-
-    Validates that the file exists and the original_text is unique.
-    """
-    print(f"\nApplying patch to: {patch_item.file_path}")
-    print(f"Reasoning: {patch_item.reasoning}")
-    print("-" * 20)
-
-    file_path = patch_item.file_path
-    original_text = patch_item.original_text
-    new_text = patch_item.new_text
-
-    # --- Validation ---
-    if not os.path.exists(file_path):
-        print(f"❌ Error: File not found: {file_path}")
-        print("-" * 20)
-        return False
-
-    try:
-        # Read the file content, attempting to preserve line endings implicitly
-        with open(file_path, 'r', encoding='utf-8', newline='') as f:
-            content = f.read()
-
-        # Check for unique occurrence of original_text
-        occurrences = content.count(original_text)
-        if occurrences == 0:
-            print(f"❌ Error: Original text not found in {file_path}.")
-            # Optional: print a snippet of the expected text for debugging
-            # print(f"   Expected original text snippet: '{original_text[:100]}...'")
-            print("-" * 20)
-            return False
-        elif occurrences > 1:
-            print(f"❌ Error: Original text is not unique in {file_path} (found {occurrences} times).")
-            print(f"   Patch cannot be applied automatically due to ambiguity.")
-            # print(f"   Ambiguous original text snippet: '{original_text[:100]}...'")
-            print("-" * 20)
-            return False
-
-        # --- Application ---
-        # Replace the single unique occurrence
-        new_content = content.replace(original_text, new_text, 1)
-
-        # Heuristic to check if a newline might be needed at the end
-        original_ends_with_newline = content.endswith(('\n', '\r'))
-        new_ends_with_newline = new_content.endswith(('\n', '\r'))
-
-        if original_ends_with_newline and not new_ends_with_newline and new_content:
-             # Try to determine the original newline type
-             if content.endswith('\r\n'):
-                 new_content += '\r\n'
-             else: # Assume '\n' otherwise
-                 new_content += '\n'
-        elif not original_ends_with_newline and new_ends_with_newline:
-             # If original didn't end with newline, remove the one added by replacement
-             # This is less common but possible if new_text ends with \n and original_text didn't
-             new_content = new_content.rstrip('\r\n')
-
-
-        # Write the modified content back
-        with open(file_path, 'w', encoding='utf-8', newline='') as f:
-            f.write(new_content)
-
-        print(f"✅ Patch applied successfully to {file_path}.")
-        print("-" * 20)
-        return True
-
-    except IOError as e:
-        print(f"❌ Error reading or writing file {file_path}: {e}")
-        print("-" * 20)
-        return False
-    except Exception as e:
-        print(f"❌ An unexpected error occurred during patch application: {e}")
-        traceback.print_exc()
-        print("-" * 20)
-        return False
 
 def _propose_and_add_dependencies(
     file_just_added: str,
@@ -951,218 +854,10 @@ def open_editor_for_input(template: str, cursor_position: int) -> str:
     finally:
         os.unlink(temp_file_path)
 
-def start_chat_session(initial_prompt: str):
-    """Starts an interactive chat session with the Gemini API using google-genai."""
-    if not genai:
-        # Error message already printed during import if it failed
-        sys.exit(1)
-
-    # The google-genai library automatically uses GOOGLE_API_KEY env var if set
-    # We still check if it's set to provide a clearer error message upfront
-    if not os.environ.get('GOOGLE_API_KEY'):
-        print("Error: GOOGLE_API_KEY environment variable not set.")
-        print("Please set the GOOGLE_API_KEY environment variable with your API key.")
-        sys.exit(1)
-
-    try:
-        # Create the client - it will use the env var automatically
-        client = genai.Client()
-        print("Google GenAI Client created (using GOOGLE_API_KEY).")
-        # You could add a check here like listing models to verify the key early
-        # print("Available models:", [m.name for m in client.models.list()])
-    except Exception as e:
-        print(f"Error creating Google GenAI client: {e}")
-        print("Please ensure your GOOGLE_API_KEY is valid and has permissions.")
-        sys.exit(1)
-
-    model_name = 'gemini-2.5-pro-exp-03-25'
-    config = GenerateContentConfig(temperature=0.0)
-    print(f"Using model: {model_name}")
-
-    try:
-        # Create a chat session using the client
-        chat = client.chats.create(model=model_name, config=config)
-        # Note: History is managed by the chat object itself
-
-        print("\n--- Starting Interactive Chat with Gemini ---")
-        print("Type /q to quit, /help or /? for help, /review to make clear summary, /patch to request a diff patch.")
-
-        # Send the initial prompt using send_message_stream
-        print("\n🤖 Gemini:")
-        full_response_text = ""
-        # Use send_message_stream for streaming responses
-        response_stream = chat.send_message_stream(initial_prompt, config=config)
-        for chunk in response_stream:
-            print(chunk.text, end="", flush=True)
-            full_response_text += chunk.text
-        print("\n" + "-"*20)
-
-        while True:
-            is_patch_request = False
-            try:
-                # Print the header on a separate line
-                print("👤 You (Submit with Esc+Enter):")
-                # Get input using prompt_toolkit with a minimal indicator
-                user_input = prompt(">> ", multiline=True)
-                 # prompt_toolkit raises EOFError on Ctrl+D, so this handler remains correct.
-            except EOFError:
-                 print("\nExiting...")
-                 break
-            except KeyboardInterrupt: # Handle Ctrl+C
-                 print("\nExiting...")
-                 break
-
-            if user_input.lower() == '/q':
-                break
-            elif user_input.endswith('/patch'):
-                is_patch_request = True
-                # Extract message before /patch
-                user_message = user_input[:-len('/patch')].strip()
-                print(f"\n🛠️ Requesting patches... (Context: '{user_message}' if provided)")
-            elif user_input.lower() == '/review':
-                user_message = user_input = "Review and reflect on the solution. Summarize and write a minimal, complete set of changes needed for the solution. Do not use + and - style diff. Instead use comments to point where to place the code. Make it easy to copy and paste the solution."
-            elif not user_input:
-                continue # Ignore empty input
-            else:
-                user_message = user_input # Regular message
-
-
-            # --- Handle Patch Request ---
-            if is_patch_request:
-                print("🤖 Gemini: Thinking... (generating code changes)")
-                # Include user message part if it exists
-                patch_context = f"Based on our conversation and specifically: \"{user_message}\"\n\n" if user_message else "Based on our conversation,\n\n"
-
-                patch_request_prompt = (
-                    patch_context +
-                    "Generate the necessary code changes to fulfill the request. Provide the changes as a JSON list, where each item "
-                    "is an object with the following keys:\n"
-                    "- 'reasoning': Explain why this specific change is needed.\n"
-                    "- 'file_path': The relative path to the file to modify.\n"
-                    "- 'original_text': The exact, unique block of text to replace.\n"
-                    "- 'new_text': The text to replace original_text with. Do not include any temporary comments like '// CHANGE BEGINS' or '/* PATCH START */'.\n"
-                    "Ensure 'original_text' is unique within the specified 'file_path'. "
-                    "Respond ONLY with the JSON object conforming to this structure: { \"patches\": [ { patch_item_1 }, { patch_item_2 }, ... ] }"
-                )
-
-                try:
-                    # Request the response using the new schema
-                    response = chat.send_message(
-                        patch_request_prompt,
-                        config=GenerateContentConfig(
-                            response_schema=SimplePatchArgs.model_json_schema(),
-                            response_mime_type='application/json',
-                            temperature=0.0
-                        )
-                    )
-
-                    print("🤖 Gemini: Received potential patches.")
-                    try:
-                        # Validate and parse args using the Pydantic model
-                        # Explicitly validate the dictionary returned by response.parsed
-                        if isinstance(response.parsed, dict):
-                            patch_args = SimplePatchArgs.model_validate(response.parsed)
-                        else:
-                            # Handle unexpected type if response.parsed isn't a dict
-                            print(f"❌ Error: Expected a dictionary for patches, but got type {type(response.parsed)}")
-                            print(f"   Content: {response.parsed}")
-                            continue # Skip further processing for this response
-
-                        if not patch_args or not patch_args.patches:
-                            print("🤖 Gemini: No patches were proposed in the response.")
-                            print("-" * 20)
-                            continue
-
-                        print("\nProposed Patches:")
-                        print("=" * 30)
-                        for i, patch_item in enumerate(patch_args.patches):
-                            print(f"Patch {i+1}/{len(patch_args.patches)}:")
-                            print(f"  File: {patch_item.file_path}")
-                            print(f"  Reasoning: {patch_item.reasoning}")
-                            # Optionally show snippets of original/new text for review
-                            print(f"  Original (snippet): '{patch_item.original_text[:80].strip()}...'")
-                            print(f"  New (snippet):      '{patch_item.new_text[:80].strip()}...'")
-                            print("-" * 20)
-
-                        confirm = input(f"Apply these {len(patch_args.patches)} patches? (y/N): ").lower()
-                        if confirm == 'y':
-                            applied_count = 0
-                            failed_count = 0
-                            for patch_item in patch_args.patches:
-                                # Call the new apply function for each patch
-                                success = apply_simple_patch(patch_item)
-                                if success:
-                                    applied_count += 1
-                                else:
-                                    failed_count += 1
-
-                            print("\nPatch Application Summary:")
-                            if applied_count > 0:
-                                print(f"✅ Successfully applied {applied_count} patches.")
-                            if failed_count > 0:
-                                print(f"❌ Failed to apply {failed_count} patches.")
-                            if applied_count == 0 and failed_count == 0: # Should not happen if list wasn't empty
-                                 print("⚪ No patches were applied.")
-                            print("=" * 30)
-                        else:
-                            print("🤖 Gemini: Patches not applied by user.")
-                            print("-" * 20)
-
-                    except Exception as e: # Catch Pydantic validation errors or other issues
-                        print(f"❌ Error processing patch response: {e}")
-                        # Attempt to show the raw response text if parsing failed
-                        raw_text = ""
-                        try:
-                            if response.parts:
-                                raw_text = "".join(part.text for part in response.parts if hasattr(part, 'text'))
-                            elif hasattr(response, 'text'):
-                                raw_text = response.text
-                        except Exception:
-                            pass # Ignore errors getting raw text
-                        if raw_text:
-                           print(f"   Received response text:\n{raw_text}")
-                        else:
-                           print(f"   Received response content: {response}") # Fallback representation
-
-                except Exception as e:
-                    print(f"\n❌ An error occurred while requesting patches from Gemini: {e}")
-                    print("   Please check your connection, API key, and model permissions/capabilities.")
-                    print("-" * 20)
-
-                continue # Go to next loop iteration after handling /patch
-            elif user_input.strip() in ['/help', '/?']:
-                print("🤖 Gemini: Available commands:")
-                print("  /q          - Quit the chat session.")
-                print("  /patch      - Request a diff patch (not fully implemented yet).")
-                print("  /review      - Pre-fill input with a review/summary prompt template.")
-                print("  /help or /? - Show this help message.")
-                print("-" * 20)
-                continue
-            elif not user_input.strip(): # Ignore empty input
-                continue
-
-            print("\n🤖 Gemini:")
-            full_response_text = ""
-            try:
-                # Use send_message_stream for subsequent messages
-                response_stream = chat.send_message_stream(user_input, config=config)
-                for chunk in response_stream:
-                    print(chunk.text, end="", flush=True)
-                    full_response_text += chunk.text
-                print("\n" + "-"*20)
-            except Exception as e:
-                 print(f"\nAn unexpected error occurred: {e}")
-                 print("Try again or type 'exit'.")
-
-    except Exception as e:
-        # Catch other potential errors
-        print(f"\nAn error occurred setting up the chat session: {e}")
-
 def main():
     parser = argparse.ArgumentParser(description="Generate a prompt with project structure, file contents, and web content.")
     parser.add_argument('inputs', nargs='+', help='Files, directories, or URLs to include in the prompt')
     parser.add_argument('-t', '--task', help='Task description for the AI prompt')
-    parser.add_argument('-I', '--interactive', action='store_true', help='Start an interactive chat session after generating the prompt.')
     args = parser.parse_args()
 
     ignore_patterns = read_gitignore()
@@ -1296,47 +991,34 @@ def main():
 
     prompt_template, cursor_position = generate_prompt_template(files_to_include, ignore_patterns, web_contents, env_vars)
 
-    if args.interactive:
-        print("\nPreparing initial prompt for editing...")
-        if args.task:
-            editor_initial_content = prompt_template[:cursor_position] + args.task + prompt_template[cursor_position:]
-            print("Pre-populating editor with task provided via --task argument.")
+    if args.task:
+        task_description = args.task
+        task_marker = "## Task Instructions\n\n"
+        insertion_point = prompt_template.find(task_marker)
+        if insertion_point != -1:
+            final_prompt = prompt_template[:insertion_point + len(task_marker)] + task_description + "\n\n" + prompt_template[insertion_point + len(task_marker):]
         else:
-            editor_initial_content = prompt_template
-            print("Opening editor for you to add the task instructions.")
-
-        initial_chat_prompt = open_editor_for_input(editor_initial_content, cursor_position)
-        print("Editor closed. Starting interactive chat session...")
-        start_chat_session(initial_chat_prompt)
+            final_prompt = prompt_template[:cursor_position] + task_description + prompt_template[cursor_position:]
+        print("\nUsing task description from -t argument.")
     else:
-        if args.task:
-            task_description = args.task
-            task_marker = "## Task Instructions\n\n"
-            insertion_point = prompt_template.find(task_marker)
-            if insertion_point != -1:
-                final_prompt = prompt_template[:insertion_point + len(task_marker)] + task_description + "\n\n" + prompt_template[insertion_point + len(task_marker):]
-            else:
-                final_prompt = prompt_template[:cursor_position] + task_description + prompt_template[cursor_position:]
-            print("\nUsing task description from -t argument.")
-        else:
-            print("\nOpening editor for task instructions...")
-            final_prompt = open_editor_for_input(prompt_template, cursor_position)
+        print("\nOpening editor for task instructions...")
+        final_prompt = open_editor_for_input(prompt_template, cursor_position)
 
-        print("\n\nGenerated prompt:")
-        print("-" * 80)
-        print(final_prompt)
-        print("-" * 80)
+    print("\n\nGenerated prompt:")
+    print("-" * 80)
+    print(final_prompt)
+    print("-" * 80)
 
-        try:
-            pyperclip.copy(final_prompt)
-            separator = "\n" + "=" * 40 + "\n☕🍝       Kopipasta Complete!       🍝☕\n" + "=" * 40 + "\n"
-            print(separator)
-            final_char_count = len(final_prompt)
-            final_token_estimate = final_char_count // 4
-            print(f"Prompt has been copied to clipboard. Final size: {final_char_count} characters (~ {final_token_estimate} tokens)")
-        except pyperclip.PyperclipException as e:
-            print(f"\nWarning: Failed to copy to clipboard: {e}")
-            print("You can manually copy the prompt above.")
+    try:
+        pyperclip.copy(final_prompt)
+        separator = "\n" + "=" * 40 + "\n☕🍝       Kopipasta Complete!       🍝☕\n" + "=" * 40 + "\n"
+        print(separator)
+        final_char_count = len(final_prompt)
+        final_token_estimate = final_char_count // 4
+        print(f"Prompt has been copied to clipboard. Final size: {final_char_count} characters (~ {final_token_estimate} tokens)")
+    except pyperclip.PyperclipException as e:
+        print(f"\nWarning: Failed to copy to clipboard: {e}")
+        print("You can manually copy the prompt above.")
 
 if __name__ == "__main__":
     main()

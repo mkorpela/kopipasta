@@ -14,8 +14,9 @@ import pygments.util
 
 import requests
 
-from kopipasta.file import FileTuple, is_binary, is_ignored, read_file_contents
+from kopipasta.file import FileTuple, get_human_readable_size, is_binary, is_ignored, is_large_file, read_file_contents
 import kopipasta.import_parser as import_parser
+from kopipasta.tree_selector import TreeSelector
 from kopipasta.prompt import generate_prompt_template, get_file_snippet, get_language_for_file
 
 def _propose_and_add_dependencies(
@@ -152,15 +153,6 @@ def read_gitignore():
                 if line and not line.startswith('#'):
                     gitignore_patterns.append(line)
     return gitignore_patterns
-
-def get_human_readable_size(size):
-    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
-        if size < 1024.0:
-            return f"{size:.2f} {unit}"
-        size /= 1024.0
-
-def is_large_file(file_path, threshold=102400):  # 100 KB threshold
-    return os.path.getsize(file_path) > threshold
 
 def split_python_file(file_content):
     """
@@ -505,13 +497,18 @@ def grep_files_in_directory(pattern: str, directory: str, ignore_patterns: List[
             count_result = subprocess.run(count_cmd, capture_output=True, text=True)
             match_count = 0
             if count_result.stdout:
-                # Parse "filename:count" format
-                parts = count_result.stdout.strip().split(':')
-                if len(parts) >= 2:
+                # ag --count outputs "filename:count"
+                # We need to handle filenames that might contain colons
+                stdout_line = count_result.stdout.strip()
+                # Find the last colon to separate filename from count
+                last_colon_idx = stdout_line.rfind(':')
+                if last_colon_idx > 0:
                     try:
-                        match_count = int(parts[-1])
+                        match_count = int(stdout_line[last_colon_idx + 1:])
                     except ValueError:
                         match_count = 1
+                else:
+                    match_count = 1
             
             # Get preview of matches (up to 3 lines)
             preview_cmd = [
@@ -1003,16 +1000,17 @@ def main():
     ignore_patterns = read_gitignore()
     env_vars = read_env_file()
     project_root_abs = os.path.abspath(os.getcwd())
-    selected_files_set: Set[str] = set()
-
 
     files_to_include: List[FileTuple] = []
-    processed_dirs = set()
     web_contents: Dict[str, Tuple[FileTuple, str]] = {}
     current_char_count = 0
-
+    
+    # Separate URLs from file/directory paths
+    paths_for_tree = []
+    
     for input_path in args.inputs:
         if input_path.startswith(('http://', 'https://')):
+            # Handle web content as before
             result = fetch_web_content(input_path)
             if result:
                 file_tuple, full_content, snippet = result
@@ -1046,95 +1044,37 @@ def main():
                 current_char_count += len(content)
                 print(f"Added {'snippet of ' if is_snippet else ''}web content from: {input_path}")
                 print_char_count(current_char_count)
-        elif os.path.isfile(input_path):
-            abs_input_path = os.path.abspath(input_path)
-            if not is_ignored(abs_input_path, ignore_patterns) and not is_binary(abs_input_path):
-                file_size = os.path.getsize(abs_input_path)
-                file_size_readable = get_human_readable_size(file_size)
-                file_char_estimate = file_size
-                language = get_language_for_file(abs_input_path)
-                file_to_add = None
-
-                if is_large_file(abs_input_path):
-                    print(f"\nFile {os.path.relpath(abs_input_path)} ({file_size_readable}, ~{file_char_estimate} chars) is large.")
-                    print("Preview (first ~50 lines or 4KB):")
-                    print(get_colored_file_snippet(abs_input_path))
-                    print("-" * 40)
-                    while True:
-                        print_char_count(current_char_count)
-                        choice = input(f"How to include large file {os.path.relpath(abs_input_path)}? (f)ull / (s)nippet / (p)atches / (n)o skip: ").lower()
-                        if choice == 'f':
-                            file_to_add = (abs_input_path, False, None, language)
-                            current_char_count += file_char_estimate
-                            print(f"Added full file: {os.path.relpath(abs_input_path)}")
-                            break
-                        elif choice == 's':
-                            snippet_content = get_file_snippet(abs_input_path)
-                            file_to_add = (abs_input_path, True, None, language)
-                            current_char_count += len(snippet_content)
-                            print(f"Added snippet of file: {os.path.relpath(abs_input_path)}")
-                            break
-                        elif choice == 'p':
-                            chunks, char_count = select_file_patches(abs_input_path)
-                            if chunks:
-                                file_to_add = (abs_input_path, False, chunks, language)
-                                current_char_count += char_count
-                                print(f"Added selected patches from file: {os.path.relpath(abs_input_path)}")
-                            else:
-                                print(f"No patches selected for {os.path.relpath(abs_input_path)}. Skipping file.")
-                            break
-                        elif choice == 'n':
-                            print(f"Skipped large file: {os.path.relpath(abs_input_path)}")
-                            break
-                        else:
-                            print("Invalid choice. Please enter 'f', 's', 'p', or 'n'.")
-                else:
-                    file_to_add = (abs_input_path, False, None, language)
-                    current_char_count += file_char_estimate
-                    print(f"Added file: {os.path.relpath(abs_input_path)} ({file_size_readable})")
-
-                if file_to_add:
-                    files_to_include.append(file_to_add)
-                    selected_files_set.add(abs_input_path)
-                    # --- NEW: Call dependency analysis ---
-                    new_deps, deps_char_count = _propose_and_add_dependencies(abs_input_path, project_root_abs, files_to_include, current_char_count)
-                    files_to_include.extend(new_deps)
-                    current_char_count += deps_char_count
-                    # Update selected files set with dependencies
-                    for dep_tuple in new_deps:
-                        selected_files_set.add(os.path.abspath(dep_tuple[0]))
-                
-                print_char_count(current_char_count)
-
-            else:
-                if is_ignored(input_path, ignore_patterns):
-                    print(f"Ignoring file based on ignore patterns: {input_path}")
-                elif is_binary(input_path):
-                     print(f"Ignoring binary file: {input_path}")
-                else:
-                     print(f"Ignoring file: {input_path}")
-        elif os.path.isdir(input_path):
-            print(f"\nProcessing directory specified directly: {input_path}")
-            # Pass selected_files_set to process_directory
-            dir_files, dir_processed, current_char_count = process_directory(
-                input_path, ignore_patterns, project_root_abs, current_char_count, selected_files_set
-            )
-            files_to_include.extend(dir_files)
-            processed_dirs.update(dir_processed)
         else:
-            print(f"Warning: {input_path} is not a valid file, directory, or URL. Skipping.")
+            # Add to paths for tree selector
+            if os.path.exists(input_path):
+                paths_for_tree.append(input_path)
+            else:
+                print(f"Warning: {input_path} does not exist. Skipping.")
+    
+    # Use tree selector for file/directory selection
+    if paths_for_tree:
+        print("\nStarting interactive file selection...")
+        print("Use arrow keys to navigate, Space to select, 'q' to finish. Press 'h' for help.\n")
+        
+        tree_selector = TreeSelector(ignore_patterns, project_root_abs)
+        try:
+            selected_files, file_char_count = tree_selector.run(paths_for_tree)
+            files_to_include.extend(selected_files)
+            current_char_count += file_char_count
+        except KeyboardInterrupt:
+            print("\nSelection cancelled.")
+            return
 
     if not files_to_include and not web_contents:
         print("No files or web content were selected. Exiting.")
         return
 
     print("\nFile and web content selection complete.")
-    print_char_count(current_char_count) # Print final count before prompt generation
+    print_char_count(current_char_count)
 
     added_files_count = len(files_to_include)
-    added_dirs_count = len(processed_dirs)
     added_web_count = len(web_contents)
-    print(f"Summary: Added {added_files_count} files/patches from {added_dirs_count} directories and {added_web_count} web sources.")
+    print(f"Summary: Added {added_files_count} files/patches and {added_web_count} web sources.")
 
     prompt_template, cursor_position = generate_prompt_template(files_to_include, ignore_patterns, web_contents, env_vars)
 

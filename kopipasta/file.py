@@ -34,3 +34,14 @@ def is_binary(file_path):
             return False
     except IOError:
         return False
+
+
+def get_human_readable_size(size):
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if size < 1024.0:
+            return f"{size:.2f} {unit}"
+        size /= 1024.0
+
+
+def is_large_file(file_path, threshold=102400):  # 100 KB threshold
+    return os.path.getsize(file_path) > threshold

@@ -18,6 +18,7 @@ from kopipasta.file import FileTuple, get_human_readable_size, is_binary, is_ign
 import kopipasta.import_parser as import_parser
 from kopipasta.tree_selector import TreeSelector
 from kopipasta.prompt import generate_prompt_template, get_file_snippet, get_language_for_file
+from kopipasta.cache import save_selection_to_cache
 
 def _propose_and_add_dependencies(
     file_just_added: str,
@@ -993,9 +994,13 @@ def open_editor_for_input(template: str, cursor_position: int) -> str:
 
 def main():
     parser = argparse.ArgumentParser(description="Generate a prompt with project structure, file contents, and web content.")
-    parser.add_argument('inputs', nargs='+', help='Files, directories, or URLs to include in the prompt')
+    parser.add_argument('inputs', nargs='*', help='Files, directories, or URLs to include. Defaults to current directory.')
     parser.add_argument('-t', '--task', help='Task description for the AI prompt')
     args = parser.parse_args()
+
+    # Default to the current directory if no inputs are provided
+    if not args.inputs:
+        args.inputs.append('.')
 
     ignore_patterns = read_gitignore()
     env_vars = read_env_file()
@@ -1054,7 +1059,7 @@ def main():
     # Use tree selector for file/directory selection
     if paths_for_tree:
         print("\nStarting interactive file selection...")
-        print("Use arrow keys to navigate, Space to select, 'q' to finish. Press 'h' for help.\n")
+        print("Use arrow keys to navigate, Space to select, 'q' to finish. See all keys below.\n")
         
         tree_selector = TreeSelector(ignore_patterns, project_root_abs)
         try:
@@ -1068,6 +1073,10 @@ def main():
     if not files_to_include and not web_contents:
         print("No files or web content were selected. Exiting.")
         return
+
+    # Save the final selection for the next run
+    if files_to_include:
+        save_selection_to_cache(files_to_include)
 
     print("\nFile and web content selection complete.")
     print_char_count(current_char_count)

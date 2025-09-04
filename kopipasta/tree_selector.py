@@ -9,6 +9,7 @@ import click
 
 from kopipasta.file import FileTuple, is_binary, is_ignored, get_human_readable_size
 from kopipasta.prompt import get_file_snippet, get_language_for_file
+from kopipasta.cache import load_selection_from_cache
 
 
 class FileNode:
@@ -253,15 +254,16 @@ class TreeSelector:
     def _show_help(self) -> Panel:
         """Create help panel"""
         help_text = """[bold]Navigation:[/bold]
-↑/k: Up  ↓/j: Down  →/l/Enter: Expand  ←/h: Collapse  PgUp/PgDn: Page  G/End: Bottom
+↑/k: Up  ↓/j: Down  →/l/Enter: Expand  ←/h: Collapse
 
 [bold]Selection:[/bold]  
 Space: Toggle file/dir     a: Add all in dir     s: Snippet mode
 
 [bold]Actions:[/bold]
-g: Grep in directory     d: Show dependencies     q: Quit selection"""
+r: Reuse last selection  g: Grep in directory   d: Show dependencies
+q: Quit and finalize"""
         
-        return Panel(help_text, title="Keys", border_style="dim", expand=False)
+        return Panel(help_text, title="Keyboard Controls", border_style="dim", expand=False)
     
     def _get_status_bar(self) -> str:
         """Create status bar with selection info"""
@@ -352,7 +354,7 @@ g: Grep in directory     d: Show dependencies     q: Quit selection"""
                     self.char_count += node.size
     
     def _toggle_directory(self, node: FileNode):
-        """Toggle all files in a directory"""
+        """Toggle all files in a directory, now fully recursive."""
         if not node.is_dir:
             return
             
@@ -365,6 +367,9 @@ g: Grep in directory     d: Show dependencies     q: Quit selection"""
         
         def collect_files(n: FileNode):
             if n.is_dir:
+                # CRITICAL FIX: Ensure sub-directory children are loaded before recursing
+                if not n.children:
+                    self._scan_directory(n.path, n)
                 for child in n.children:
                     collect_files(child)
             else:
@@ -376,16 +381,92 @@ g: Grep in directory     d: Show dependencies     q: Quit selection"""
         any_unselected = any(os.path.abspath(f.path) not in self.selected_files for f in all_files)
         
         if any_unselected:
-            # Select all unselected
+            # Select all unselected files
             for file_node in all_files:
-                if file_node.path not in self.selected_files:
-                    self._toggle_selection(file_node)
+                abs_path = os.path.abspath(file_node.path)
+                if abs_path not in self.selected_files:
+                    self.selected_files[abs_path] = (False, None)
+                    self.char_count += file_node.size
         else:
-            # Unselect all
+            # Unselect all files
             for file_node in all_files:
-                if file_node.path in self.selected_files:
-                    self._toggle_selection(file_node)
-    
+                abs_path = os.path.abspath(file_node.path)
+                if abs_path in self.selected_files:
+                    is_snippet, _ = self.selected_files[abs_path]
+                    del self.selected_files[abs_path]
+                    if is_snippet:
+                        self.char_count -= len(get_file_snippet(file_node.path))
+                    else:
+                        self.char_count -= file_node.size
+
+    def _propose_and_apply_last_selection(self):
+        """Loads paths from cache, shows a confirmation dialog, and applies the selection if confirmed."""
+        cached_paths = load_selection_from_cache()
+
+        if not cached_paths:
+            self.console.print(Panel("[yellow]No cached selection found to reuse.[/yellow]", title="Info", border_style="dim"))
+            click.pause("Press any key to continue...")
+            return
+
+        # Categorize cached paths for the preview
+        files_to_add = []
+        files_already_selected = []
+        files_not_found = []
+
+        for rel_path in cached_paths:
+            abs_path = os.path.abspath(rel_path)
+            if not os.path.isfile(abs_path):
+                files_not_found.append(rel_path)
+                continue
+
+            if abs_path in self.selected_files:
+                files_already_selected.append(rel_path)
+            else:
+                files_to_add.append(rel_path)
+        
+        # Build the rich text for the confirmation panel
+        preview_text = Text()
+        if files_to_add:
+            preview_text.append("The following files will be ADDED:\n", style="bold")
+            for path in sorted(files_to_add):
+                preview_text.append("  ")
+                preview_text.append("+", style="cyan")
+                preview_text.append(f" {path}\n")
+        
+        if files_already_selected:
+            preview_text.append("\nAlready selected (no change):\n", style="bold dim")
+            for path in sorted(files_already_selected):
+                preview_text.append(f"  ✓ {path}\n")
+
+        if files_not_found:
+            preview_text.append("\nNot found on disk (will be skipped):\n", style="bold dim")
+            for path in sorted(files_not_found):
+                preview_text.append("  ")
+                preview_text.append("-", style="red")
+                preview_text.append(f" {path}\n")
+
+        # Display the confirmation panel and prompt
+        self.console.clear()
+        self.console.print(Panel(preview_text, title="[bold cyan]Reuse Last Selection?", border_style="cyan", padding=(1, 2)))
+        
+        if not files_to_add:
+            self.console.print("\n[yellow]No new files to add from the last selection.[/yellow]")
+            click.pause("Press any key to continue...")
+            return
+
+        # Use click.confirm for a simple and effective y/n prompt
+        if not click.confirm(f"\nAdd {len(files_to_add)} file(s) to your current selection?", default=True):
+            return
+
+        # If confirmed, apply the changes
+        for rel_path in files_to_add:
+            abs_path = os.path.abspath(rel_path)
+            if os.path.isfile(abs_path) and abs_path not in self.selected_files:
+                file_size = os.path.getsize(abs_path)
+                self.selected_files[abs_path] = (False, None)
+                self.char_count += file_size
+                self._ensure_path_visible(abs_path)
+
     def _ensure_path_visible(self, file_path: str):
         """Ensure a file path is visible in the tree by expanding parent directories"""
         abs_file_path = os.path.abspath(file_path)
@@ -529,10 +610,11 @@ g: Grep in directory     d: Show dependencies     q: Quit selection"""
                         self._toggle_directory(current_node)
                         
                 # Handle actions
+                elif key == 'r':  # Reuse last selection
+                    self._propose_and_apply_last_selection()
                 elif key == 'g':  # Grep
                     self.console.print()  # Add some space
                     self._handle_grep(current_node)
-                    click.pause("Press any key to continue...")
                 elif key == 'd':  # Dependencies
                     self.console.print()  # Add some space
                     self._show_dependencies(current_node)

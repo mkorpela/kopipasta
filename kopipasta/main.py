@@ -137,7 +137,7 @@ def read_gitignore():
         '.terraform', 'output', 'poetry.lock', 'package-lock.json', '.env',
         '*.log', '*.bak', '*.swp', '*.swo', '*.tmp', 'tmp', 'temp', 'logs',
         'build', 'target', '.DS_Store', 'Thumbs.db', '*.class', '*.jar',
-        '*.war', '*.ear', '*.sqlite', '*.db', '.github', '.gitignore',
+        '*.war', '*.ear', '*.sqlite', '*.db',
         '*.jpg', '*.jpeg', '*.png', '*.gif', '*.bmp', '*.tiff',
         '*.ico', '*.svg', '*.webp', '*.mp3', '*.mp4', '*.avi',
         '*.mov', '*.wmv', '*.flv', '*.pdf', '*.doc', '*.docx',
@@ -490,7 +490,7 @@ def grep_files_in_directory(pattern: str, directory: str, ignore_patterns: List[
         grep_results = []
         
         for file in files:
-            if is_ignored(file, ignore_patterns) or is_binary(file):
+            if is_ignored(file, ignore_patterns, directory) or is_binary(file):
                 continue
                 
             # Get match count and preview lines
@@ -1012,6 +1012,7 @@ def main():
     
     # Separate URLs from file/directory paths
     paths_for_tree = []
+    files_to_preselect = []
     
     for input_path in args.inputs:
         if input_path.startswith(('http://', 'https://')):
@@ -1050,9 +1051,11 @@ def main():
                 print(f"Added {'snippet of ' if is_snippet else ''}web content from: {input_path}")
                 print_char_count(current_char_count)
         else:
-            # Add to paths for tree selector
-            if os.path.exists(input_path):
+            abs_path = os.path.abspath(input_path)
+            if os.path.exists(abs_path):
                 paths_for_tree.append(input_path)
+                if os.path.isfile(abs_path):
+                    files_to_preselect.append(abs_path)
             else:
                 print(f"Warning: {input_path} does not exist. Skipping.")
     
@@ -1063,7 +1066,7 @@ def main():
         
         tree_selector = TreeSelector(ignore_patterns, project_root_abs)
         try:
-            selected_files, file_char_count = tree_selector.run(paths_for_tree)
+            selected_files, file_char_count = tree_selector.run(paths_for_tree, files_to_preselect)
             files_to_include.extend(selected_files)
             current_char_count += file_char_count
         except KeyboardInterrupt:
@@ -1107,8 +1110,25 @@ def main():
 
     try:
         pyperclip.copy(final_prompt)
+        print("\n--- Included Files & Content ---\n")
+        for file_path, is_snippet, chunks, _ in sorted(files_to_include, key=lambda x: x[0]):
+            details = []
+            if is_snippet:
+                details.append("snippet")
+            if chunks is not None:
+                details.append(f"{len(chunks)} patches")
+            
+            detail_str = f" ({', '.join(details)})" if details else ""
+            print(f"- {os.path.relpath(file_path)}{detail_str}")
+
+        for url, (file_tuple, _) in sorted(web_contents.items()):
+            is_snippet = file_tuple[1]
+            detail_str = " (snippet)" if is_snippet else ""
+            print(f"- {url}{detail_str}")
+        
         separator = "\n" + "=" * 40 + "\n☕🍝       Kopipasta Complete!       🍝☕\n" + "=" * 40 + "\n"
         print(separator)
+        
         final_char_count = len(final_prompt)
         final_token_estimate = final_char_count // 4
         print(f"Prompt has been copied to clipboard. Final size: {final_char_count} characters (~ {final_token_estimate} tokens)")

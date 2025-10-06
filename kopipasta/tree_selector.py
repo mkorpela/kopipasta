@@ -65,7 +65,7 @@ class TreeSelector:
             
             if os.path.isfile(abs_path):
                 # Single file - add to root
-                if not is_ignored(abs_path, self.ignore_patterns) and not is_binary(abs_path):
+                if not is_ignored(abs_path, self.ignore_patterns, self.project_root_abs) and not is_binary(abs_path):
                     node = FileNode(abs_path, False, root)
                     root.children.append(node)
             elif os.path.isdir(abs_path):
@@ -102,7 +102,7 @@ class TreeSelector:
         
         for item in items:
             item_path = os.path.join(abs_dir_path, item)
-            if is_ignored(item_path, self.ignore_patterns):
+            if is_ignored(item_path, self.ignore_patterns, self.project_root_abs):
                 continue
                 
             if os.path.isdir(item_path):
@@ -156,10 +156,10 @@ class TreeSelector:
     def _build_display_tree(self) -> Tree:
         """Build Rich tree for display with viewport"""
         # Get terminal size
-        term_width, term_height = shutil.get_terminal_size()
+        _, term_height = shutil.get_terminal_size()
         
         # Reserve space for header, help panel, and status
-        available_height = term_height - 15  # Adjust based on your UI
+        available_height = term_height - 8
         available_height = max(5, available_height)  # Minimum height
         
         # Flatten tree to get all visible nodes
@@ -338,10 +338,7 @@ q: Quit and finalize"""
                 # Unselect
                 is_snippet, _ = self.selected_files[abs_path]
                 del self.selected_files[abs_path]
-                if is_snippet:
-                    self.char_count -= len(get_file_snippet(node.path))
-                else:
-                    self.char_count -= node.size
+                self.char_count -= len(get_file_snippet(node.path)) if is_snippet else node.size
             else:
                 # Select
                 if snippet_mode or (node.size > 102400 and not self._confirm_large_file(node)):
@@ -539,10 +536,32 @@ q: Quit and finalize"""
             
         self.char_count += deps_char_count
     
-    def run(self, initial_paths: List[str]) -> Tuple[List[FileTuple], int]:
+    def _preselect_files(self, files_to_preselect: List[str]):
+        """Pre-selects a list of files passed from the command line."""
+        if not files_to_preselect:
+            return
+
+        added_count = 0
+        for file_path in files_to_preselect:
+            abs_path = os.path.abspath(file_path)
+            if abs_path in self.selected_files:
+                continue
+
+            # This check is simpler than a full tree walk and sufficient here
+            if os.path.isfile(abs_path) and not is_binary(abs_path):
+                file_size = os.path.getsize(abs_path)
+                self.selected_files[abs_path] = (False, None) # (is_snippet=False, chunks=None)
+                self.char_count += file_size
+                added_count += 1
+                self._ensure_path_visible(abs_path)
+
+    def run(self, initial_paths: List[str], files_to_preselect: Optional[List[str]] = None) -> Tuple[List[FileTuple], int]:
         """Run the interactive tree selector"""
         self.root = self.build_tree(initial_paths)
         
+        if files_to_preselect:
+            self._preselect_files(files_to_preselect)
+
         # Don't use Live mode, instead manually control the display
         while not self.quit_selection:
             # Clear and redraw

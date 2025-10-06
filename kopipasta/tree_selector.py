@@ -14,27 +14,23 @@ from kopipasta.cache import load_selection_from_cache
 
 class FileNode:
     """Represents a file or directory in the tree"""
-    def __init__(self, path: str, is_dir: bool, parent: Optional['FileNode'] = None):
-        self.path = os.path.abspath(path)  # Always store absolute paths
+    def __init__(self, path: str, is_dir: bool, parent: Optional['FileNode'] = None, is_scan_root: bool = False):
+        self.path = os.path.abspath(path)
         self.is_dir = is_dir
         self.parent = parent
         self.children: List['FileNode'] = []
         self.expanded = False
-        self.selected = False
-        self.selected_as_snippet = False
+        # This flag marks the invisible root of the file tree, which is not meant to be displayed.
+        self.is_scan_root = is_scan_root
         self.size = 0 if is_dir else os.path.getsize(self.path)
-        self.is_root = path == "."  # Mark if this is the root node
         
     @property
     def name(self):
-        if self.is_root:
-            return "."  # Show root as "." instead of directory name
         return os.path.basename(self.path) or self.path
         
     @property
     def relative_path(self):
-        if self.is_root:
-            return "."
+        # os.path.relpath is relative to the current working directory by default
         return os.path.relpath(self.path)
 
 
@@ -54,33 +50,33 @@ class TreeSelector:
         self.viewport_offset = 0  # First visible item index
         
     def build_tree(self, paths: List[str]) -> FileNode:
-        """Build tree structure from given paths"""
-        # Use current directory as root
-        root = FileNode(".", True)
-        root.expanded = True  # Always expand root
-        
-        # Process each input path
+        """Build tree structure from given paths."""
+        # If one directory is given, make its contents the top level of the tree.
+        if len(paths) == 1 and os.path.isdir(paths[0]):
+            root_path = os.path.abspath(paths[0])
+            root = FileNode(root_path, True, is_scan_root=True)
+            root.expanded = True
+            self._scan_directory(root_path, root)
+            return root
+
+        # Otherwise, create a virtual root to hold multiple items (e.g., `kopipasta file.py dir/`).
+        # This virtual root itself won't be displayed.
+        virtual_root_path = os.path.join(self.project_root_abs, "__kopipasta_virtual_root__")
+        root = FileNode(virtual_root_path, True, is_scan_root=True)
+        root.expanded = True
+
         for path in paths:
             abs_path = os.path.abspath(path)
-            
+            node = None
             if os.path.isfile(abs_path):
-                # Single file - add to root
                 if not is_ignored(abs_path, self.ignore_patterns, self.project_root_abs) and not is_binary(abs_path):
                     node = FileNode(abs_path, False, root)
-                    root.children.append(node)
             elif os.path.isdir(abs_path):
-                # If the directory is the current directory, scan its contents directly
-                if abs_path == os.path.abspath("."):
-                    self._scan_directory(abs_path, root)
-                else:
-                    # Otherwise add the directory as a child
-                    dir_node = FileNode(abs_path, True, root)
-                    root.children.append(dir_node)
-                    # Auto-expand if it's the only child
-                    if len(paths) == 1:
-                        dir_node.expanded = True
-                        self._scan_directory(abs_path, dir_node)
-                
+                node = FileNode(abs_path, True, root)
+
+            if node:
+                root.children.append(node)
+
         return root
     
     def _scan_directory(self, dir_path: str, parent_node: FileNode):
@@ -131,23 +127,18 @@ class TreeSelector:
                 parent_node.children.append(file_node)
     
     def _flatten_tree(self, node: FileNode, level: int = 0) -> List[Tuple[FileNode, int]]:
-        """Flatten tree into a list of (node, level) tuples for display"""
+        """Flatten tree into a list of (node, level) tuples for display."""
         result = []
         
-        # Special handling for root - show its children at top level
-        if node.is_root:
-            # Don't include the root node itself in the display
+        # If it's the special root node, don't display it. Display its children at the top level.
+        if node.is_scan_root:
             for child in node.children:
-                result.extend(self._flatten_tree(child, 0))  # Start children at level 0
+                result.extend(self._flatten_tree(child, 0))
         else:
-            # Include this node
             result.append((node, level))
-            
             if node.is_dir and node.expanded:
-                # Load children on demand if not loaded
                 if not node.children:
                     self._scan_directory(node.path, node)
-                    
                 for child in node.children:
                     result.extend(self._flatten_tree(child, level + 1))
                 

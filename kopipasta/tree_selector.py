@@ -150,7 +150,8 @@ class TreeSelector:
         _, term_height = shutil.get_terminal_size()
         
         # Reserve space for header, help panel, and status
-        available_height = term_height - 8
+        reserved_space = 17
+        available_height = term_height - reserved_space
         available_height = max(5, available_height)  # Minimum height
         
         # Flatten tree to get all visible nodes

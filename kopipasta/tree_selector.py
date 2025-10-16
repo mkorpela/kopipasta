@@ -150,7 +150,7 @@ class TreeSelector:
         _, term_height = shutil.get_terminal_size()
         
         # Reserve space for header, help panel, and status
-        reserved_space = 17
+        reserved_space = 12
         available_height = term_height - reserved_space
         available_height = max(5, available_height)  # Minimum height
         
@@ -245,14 +245,9 @@ class TreeSelector:
 
     def _show_help(self) -> Panel:
         """Create help panel"""
-        help_text = """[bold]Navigation:[/bold]
-↑/k: Up  ↓/j: Down  →/l/Enter: Expand  ←/h: Collapse
-
-[bold]Selection:[/bold]  
-Space: Toggle file/dir     a: Add all in dir     s: Snippet mode
-
-[bold]Actions:[/bold]
-r: Reuse last selection  g: Grep in directory   d: Show dependencies
+        help_text = """[bold]Navigation:[/bold]  ↑/k: Up  ↓/j: Down  →/l/Enter: Expand  ←/h: Collapse
+[bold]Selection:[/bold]  Space: Toggle file/dir     a: Add all in dir     s: Snippet mode
+[bold]Actions:[/bold]  r: Reuse last selection  g: Grep in directory   d: Show dependencies
 q: Quit and finalize"""
         
         return Panel(help_text, title="Keyboard Controls", border_style="dim", expand=False)

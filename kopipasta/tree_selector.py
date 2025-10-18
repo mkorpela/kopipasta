@@ -20,9 +20,12 @@ class FileNode:
         self.parent = parent
         self.children: List['FileNode'] = []
         self.expanded = False
-        # This flag marks the invisible root of the file tree, which is not meant to be displayed.
         self.is_scan_root = is_scan_root
+        # Base size (for files) or initial placeholder (for dirs)
         self.size = 0 if is_dir else os.path.getsize(self.path)
+        # New attributes for caching the results of a deep scan
+        self.total_size: int = self.size
+        self.is_scanned: bool = not self.is_dir
         
     @property
     def name(self):
@@ -48,7 +51,41 @@ class TreeSelector:
         self.char_count = 0
         self.quit_selection = False
         self.viewport_offset = 0  # First visible item index
+        self._metrics_cache: Dict[str, Tuple[int, int]] = {}
+
+    def _calculate_directory_metrics(self, node: FileNode) -> Tuple[int, int]:
+        """Recursively calculate total and selected size for a directory."""
+        if not node.is_dir:
+            return 0, 0
         
+        # Use instance cache for this render cycle
+        if node.path in self._metrics_cache:
+            return self._metrics_cache[node.path]
+
+        total_size = 0
+        selected_size = 0
+
+        # Ensure directory is scanned
+        if not node.children:
+            self._deep_scan_directory_and_calc_size(node.path, node)
+
+        for child in node.children:
+            if child.is_dir:
+                child_total, child_selected = self._calculate_directory_metrics(child)
+                total_size += child_total
+                selected_size += child_selected
+            else: # It's a file
+                total_size += child.size
+                if child.path in self.selected_files:
+                    is_snippet, _ = self.selected_files[child.path]
+                    if is_snippet:
+                        selected_size += len(get_file_snippet(child.path))
+                    else:
+                        selected_size += child.size
+
+        self._metrics_cache[node.path] = (total_size, selected_size)
+        return total_size, selected_size
+
     def build_tree(self, paths: List[str]) -> FileNode:
         """Build tree structure from given paths."""
         # If one directory is given, make its contents the top level of the tree.
@@ -56,7 +93,7 @@ class TreeSelector:
             root_path = os.path.abspath(paths[0])
             root = FileNode(root_path, True, is_scan_root=True)
             root.expanded = True
-            self._scan_directory(root_path, root)
+            self._deep_scan_directory_and_calc_size(root_path, root)
             return root
 
         # Otherwise, create a virtual root to hold multiple items (e.g., `kopipasta file.py dir/`).
@@ -79,7 +116,7 @@ class TreeSelector:
 
         return root
     
-    def _scan_directory(self, dir_path: str, parent_node: FileNode):
+    def _deep_scan_directory_and_calc_size(self, dir_path: str, parent_node: FileNode):
         """Recursively scan directory and build tree"""
         abs_dir_path = os.path.abspath(dir_path)
         
@@ -138,7 +175,7 @@ class TreeSelector:
             result.append((node, level))
             if node.is_dir and node.expanded:
                 if not node.children:
-                    self._scan_directory(node.path, node)
+                    self._deep_scan_directory_and_calc_size(node.path, node)
                 for child in node.children:
                     result.extend(self._flatten_tree(child, level + 1))
                 
@@ -146,6 +183,8 @@ class TreeSelector:
     
     def _build_display_tree(self) -> Tree:
         """Build Rich tree for display with viewport"""
+        self._metrics_cache = {} # Clear cache for each new render
+        
         # Get terminal size
         _, term_height = shutil.get_terminal_size()
         
@@ -180,7 +219,6 @@ class TreeSelector:
         tree = Tree(tree_title, guide_style="dim")
         
         # Build tree structure - only for visible portion
-        node_map = {}
         viewport_end = min(len(flat_tree), self.viewport_offset + available_height)
         
         # Track what level each visible item is at for proper tree structure
@@ -193,30 +231,35 @@ class TreeSelector:
             is_current = i == self.current_index
             style = "bold cyan" if is_current else ""
             
+            label = Text()
+
             if node.is_dir:
                 icon = "📂" if node.expanded else "📁"
-                size_str = f" ({len(node.children)} items)" if node.children else ""
-            else:
+                total_size, selected_size = self._calculate_directory_metrics(node)
+                if total_size > 0:
+                    size_str = f" ({get_human_readable_size(selected_size)} / {get_human_readable_size(total_size)})"
+                else:
+                    size_str = "" # Don't show size for empty dirs
+                
+                # Omit the selection circle for directories
+                label.append(f"{icon} {node.name}{size_str}", style=style)
+
+            else: # It's a file
                 icon = "📄"
                 size_str = f" ({get_human_readable_size(node.size)})"
                 
-            # Selection indicator
-            abs_path = os.path.abspath(node.path)
-            if abs_path in self.selected_files:
-                is_snippet = self.selected_files[abs_path][0]
-                if is_snippet:
-                    selection = "◐"  # Half-selected (snippet)
+                # File selection indicator
+                abs_path = os.path.abspath(node.path)
+                if abs_path in self.selected_files:
+                    is_snippet, _ = self.selected_files[abs_path]
+                    selection = "◐" if is_snippet else "●"
+                    style = "green " + style
                 else:
-                    selection = "●"  # Fully selected
-                style = "green " + style
-            else:
-                selection = "○"
+                    selection = "○"
                 
-            # Build label
-            label = Text()
-            label.append(f"{selection} ", style="dim")
-            label.append(f"{icon} {node.name}{size_str}", style=style)
-            
+                label.append(f"{selection} ", style="dim")
+                label.append(f"{icon} {node.name}{size_str}", style=style)
+
             # Add to tree at correct level
             if level == 0:
                 tree_node = tree.add(label)
@@ -230,10 +273,17 @@ class TreeSelector:
                     level_stacks[level] = tree_node
                 else:
                     # Fallback - add to root with indentation indicator
-                    indent_label = Text()
-                    indent_label.append("  " * level + f"{selection} ", style="dim")
-                    indent_label.append(f"{icon} {node.name}{size_str}", style=style)
-                    tree_node = tree.add(indent_label)
+                    indent_text = "  " * level
+                    if not node.is_dir:
+                         # Re-add file selection marker for indented fallback
+                        selection_char = "○"
+                        if node.path in self.selected_files:
+                            selection_char = "◐" if self.selected_files[node.path][0] else "●"
+                        indent_text += f"{selection_char} "
+                    
+                    # Create a new label with proper indentation for this edge case
+                    fallback_label_text = f"{indent_text}{label.plain}"
+                    tree_node = tree.add(Text(fallback_label_text, style=style))
                     level_stacks[level] = tree_node
         
         # Add scroll indicator at bottom if needed
@@ -344,7 +394,7 @@ q: Quit and finalize"""
             
         # Ensure children are loaded
         if not node.children:
-            self._scan_directory(node.path, node)
+            self._deep_scan_directory_and_calc_size(node.path, node)
             
         # Collect all files recursively
         all_files = []
@@ -353,7 +403,7 @@ q: Quit and finalize"""
             if n.is_dir:
                 # CRITICAL FIX: Ensure sub-directory children are loaded before recursing
                 if not n.children:
-                    self._scan_directory(n.path, n)
+                    self._deep_scan_directory_and_calc_size(n.path, n)
                 for child in n.children:
                     collect_files(child)
             else:
@@ -479,7 +529,7 @@ q: Quit and finalize"""
                         node.expanded = True
                     # Ensure children are loaded
                     if not node.children:
-                        self._scan_directory(node.path, node)
+                        self._deep_scan_directory_and_calc_size(node.path, node)
                     found = True
                     break
             

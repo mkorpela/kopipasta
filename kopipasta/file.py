@@ -1,14 +1,13 @@
 import fnmatch
 import os
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Set
 from pathlib import Path
 
 FileTuple = Tuple[str, bool, Optional[List[str]], str]
 
-# --- Cache for .gitignore patterns ---
-# Key: Directory path
-# Value: List of patterns
+# --- Caches ---
 _gitignore_cache: dict[str, list[str]] = {}
+_is_ignored_cache: dict[str, bool] = {}
 
 
 def _read_gitignore_patterns(gitignore_path: str) -> list[str]:
@@ -35,18 +34,70 @@ def is_ignored(
     path: str, default_ignore_patterns: list[str], project_root: Optional[str] = None
 ) -> bool:
     """
-    Checks if a path should be ignored based on default patterns and .gitignore files.
-    Searches for .gitignore from the path's location up to the project_root.
+    Checks if a path should be ignored by splitting patterns into fast (basename)
+    and slow (full path) checks, with heavy caching and optimized inner loops.
     """
     path_abs = os.path.abspath(path)
+    if path_abs in _is_ignored_cache:
+        return _is_ignored_cache[path_abs]
+
+    parent_dir = os.path.dirname(path_abs)
+    if parent_dir != path_abs and _is_ignored_cache.get(parent_dir, False):
+        _is_ignored_cache[path_abs] = True
+        return True
+
     if project_root is None:
         project_root = os.getcwd()
     project_root_abs = os.path.abspath(project_root)
 
-    # --- Step 1: Gather all patterns from all relevant .gitignore files ---
-    all_patterns = set(default_ignore_patterns)
+    basename_patterns, path_patterns = get_all_patterns(
+        default_ignore_patterns, path_abs, project_root_abs
+    )
+    
+    # --- Step 1: Fast check for basename patterns ---
+    path_basename = os.path.basename(path_abs)
+    for pattern in basename_patterns:
+        if fnmatch.fnmatch(path_basename, pattern):
+            _is_ignored_cache[path_abs] = True
+            return True
 
-    # Determine the directory to start searching for .gitignore files
+    # --- Step 2: Optimized nested check for path patterns ---
+    try:
+        path_rel_to_root = os.path.relpath(path_abs, project_root_abs)
+    except ValueError:
+        _is_ignored_cache[path_abs] = False
+        return False
+
+    # Pre-calculate all path prefixes to check, avoiding re-joins in the loop.
+    path_parts = Path(path_rel_to_root).parts
+    path_prefixes = [os.path.join(*path_parts[:i + 1]) for i in range(1, len(path_parts) + 1)]
+
+    # Pre-process patterns to remove trailing slashes once.
+    processed_path_patterns = [p.rstrip("/") for p in path_patterns]
+    
+    for prefix in path_prefixes:
+        for pattern in processed_path_patterns:
+            if fnmatch.fnmatch(prefix, pattern):
+                _is_ignored_cache[path_abs] = True
+                return True
+
+    _is_ignored_cache[path_abs] = False
+    return False
+
+def get_all_patterns(default_ignore_patterns, path_abs, project_root_abs) -> Tuple[Set[str], Set[str]]:
+    """
+    Gathers all applicable ignore patterns, splitting them into two sets
+    for optimized checking: one for basenames, one for full paths.
+    """
+    basename_patterns = set()
+    path_patterns = set()
+    
+    for p in default_ignore_patterns:
+        if "/" in p:
+            path_patterns.add(p)
+        else:
+            basename_patterns.add(p)
+
     search_start_dir = (
         path_abs if os.path.isdir(path_abs) else os.path.dirname(path_abs)
     )
@@ -62,13 +113,11 @@ def is_ignored(
                 gitignore_dir_rel = ""
 
             for p in patterns_from_file:
-                # Patterns with a '/' are relative to the .gitignore file's location.
-                # We construct a new pattern relative to the project root.
                 if "/" in p:
-                    all_patterns.add(os.path.join(gitignore_dir_rel, p.lstrip("/")))
+                    # Path patterns are relative to the .gitignore file's location
+                    path_patterns.add(os.path.join(gitignore_dir_rel, p.lstrip("/")))
                 else:
-                    # Patterns without a '/' (e.g., `*.log`) can match anywhere.
-                    all_patterns.add(p)
+                    basename_patterns.add(p)
 
         if (
             not current_dir.startswith(project_root_abs)
@@ -79,36 +128,7 @@ def is_ignored(
         if parent == current_dir:
             break
         current_dir = parent
-
-    # --- Step 2: Check the path and its parents against the patterns ---
-    try:
-        path_rel_to_root = os.path.relpath(path_abs, project_root_abs)
-    except ValueError:
-        return False  # Path is outside the project root
-
-    path_parts = Path(path_rel_to_root).parts
-
-    for pattern in all_patterns:
-        # Check against basename for simple wildcards (e.g., `*.log`, `__pycache__`)
-        # This is a primary matching mechanism.
-        if fnmatch.fnmatch(os.path.basename(path_abs), pattern):
-            return True
-
-        # Check the full path and its parent directories against the pattern.
-        # This handles directory ignores (`node_modules/`) and specific path ignores (`src/*.tmp`).
-        for i in range(len(path_parts)):
-            current_check_path = os.path.join(*path_parts[: i + 1])
-
-            # Handle directory patterns like `node_modules/`
-            if pattern.endswith("/"):
-                if fnmatch.fnmatch(current_check_path, pattern.rstrip("/")):
-                    return True
-            # Handle full path patterns
-            else:
-                if fnmatch.fnmatch(current_check_path, pattern):
-                    return True
-
-    return False
+    return basename_patterns, path_patterns
 
 
 def read_file_contents(file_path):

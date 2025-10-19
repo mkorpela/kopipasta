@@ -2,6 +2,7 @@ import pytest
 from pathlib import Path
 from kopipasta.file import is_ignored
 
+
 @pytest.fixture
 def project_root(tmp_path: Path) -> Path:
     """Creates a mock project structure for testing ignore patterns."""
@@ -28,10 +29,11 @@ def project_root(tmp_path: Path) -> Path:
     nested_dir = sub_dir / "api"
     nested_dir.mkdir()
     (nested_dir / "endpoint.py").touch()
-    (nested_dir / "endpoint.log").touch() # Should be ignored by root .gitignore
-    (nested_dir / "endpoint.tmp").touch() # Should be ignored by subdir .gitignore
+    (nested_dir / "endpoint.log").touch()  # Should be ignored by root .gitignore
+    (nested_dir / "endpoint.tmp").touch()  # Should be ignored by subdir .gitignore
 
     return project_dir
+
 
 def test_is_ignored_with_nested_gitignores(project_root: Path):
     """
@@ -45,13 +47,11 @@ def test_is_ignored_with_nested_gitignores(project_root: Path):
         ("main.py", False),
         ("node_modules/some_lib", True),
         ("node_modules", True),
-
         # Subdirectory level ignores
         ("src/component.js", False),
         ("src/component.tmp", True),
         ("src/__pycache__/cache_file", True),
         ("src/__pycache__", True),
-
         # Nested subdirectory, checking cascading ignores
         ("src/api/endpoint.py", False),
         ("src/api/endpoint.log", True),  # Ignored by root .gitignore
@@ -62,4 +62,6 @@ def test_is_ignored_with_nested_gitignores(project_root: Path):
     # so we pass an empty list and let the function handle discovery.
     for rel_path, expected in test_cases:
         full_path = project_root / rel_path
-        assert is_ignored(str(full_path), [], str(project_root)) == expected, f"Failed on path: {rel_path}"
+        assert (
+            is_ignored(str(full_path), [], str(project_root)) == expected
+        ), f"Failed on path: {rel_path}"

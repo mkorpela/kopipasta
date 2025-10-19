@@ -8,55 +8,59 @@ from typing import Dict, List, Tuple
 def get_file_snippet(file_path, max_lines=50, max_bytes=4096):
     snippet = ""
     byte_count = 0
-    with open(file_path, 'r') as file:
+    with open(file_path, "r") as file:
         for i, line in enumerate(file):
             if i >= max_lines or byte_count >= max_bytes:
                 break
             snippet += line
-            byte_count += len(line.encode('utf-8'))
+            byte_count += len(line.encode("utf-8"))
     return snippet
 
 
 def get_language_for_file(file_path):
     extension = os.path.splitext(file_path)[1].lower()
     language_map = {
-        '.py': 'python',
-        '.js': 'javascript',
-        '.jsx': 'jsx',
-        '.ts': 'typescript',
-        '.tsx': 'tsx',
-        '.html': 'html',
-        '.htm': 'html',
-        '.css': 'css',
-        '.json': 'json',
-        '.md': 'markdown',
-        '.sql': 'sql',
-        '.sh': 'bash',
-        '.yml': 'yaml',
-        '.yaml': 'yaml',
-        '.go': 'go',
-        '.toml': 'toml',
-        '.c': 'c',
-        '.cpp': 'cpp',
-        '.cc': 'cpp',
-        '.h': 'cpp',
-        '.hpp': 'cpp',
+        ".py": "python",
+        ".js": "javascript",
+        ".jsx": "jsx",
+        ".ts": "typescript",
+        ".tsx": "tsx",
+        ".html": "html",
+        ".htm": "html",
+        ".css": "css",
+        ".json": "json",
+        ".md": "markdown",
+        ".sql": "sql",
+        ".sh": "bash",
+        ".yml": "yaml",
+        ".yaml": "yaml",
+        ".go": "go",
+        ".toml": "toml",
+        ".c": "c",
+        ".cpp": "cpp",
+        ".cc": "cpp",
+        ".h": "cpp",
+        ".hpp": "cpp",
     }
-    return language_map.get(extension, '')
+    return language_map.get(extension, "")
 
 
 def get_project_structure(ignore_patterns):
     tree = []
-    for root, dirs, files in os.walk('.'):
-        dirs[:] = [d for d in dirs if not is_ignored(os.path.join(root, d), ignore_patterns)]
-        files = [f for f in files if not is_ignored(os.path.join(root, f), ignore_patterns)]
-        level = root.replace('.', '').count(os.sep)
-        indent = ' ' * 4 * level + '|-- '
+    for root, dirs, files in os.walk("."):
+        dirs[:] = [
+            d for d in dirs if not is_ignored(os.path.join(root, d), ignore_patterns)
+        ]
+        files = [
+            f for f in files if not is_ignored(os.path.join(root, f), ignore_patterns)
+        ]
+        level = root.replace(".", "").count(os.sep)
+        indent = " " * 4 * level + "|-- "
         tree.append(f"{indent}{os.path.basename(root)}/")
-        subindent = ' ' * 4 * (level + 1) + '|-- '
+        subindent = " " * 4 * (level + 1) + "|-- "
         for f in files:
             tree.append(f"{subindent}{f}")
-    return '\n'.join(tree)
+    return "\n".join(tree)
 
 
 def handle_env_variables(content, env_vars):
@@ -73,21 +77,28 @@ def handle_env_variables(content, env_vars):
 
     for key, value in detected_vars:
         while True:
-            choice = input(f"How would you like to handle {key}? (m)ask / (s)kip / (k)eep: ").lower()
-            if choice in ['m', 's', 'k']:
+            choice = input(
+                f"How would you like to handle {key}? (m)ask / (s)kip / (k)eep: "
+            ).lower()
+            if choice in ["m", "s", "k"]:
                 break
             print("Invalid choice. Please enter 'm', 's', or 'k'.")
 
-        if choice == 'm':
-            content = content.replace(value, '*' * len(value))
-        elif choice == 's':
+        if choice == "m":
+            content = content.replace(value, "*" * len(value))
+        elif choice == "s":
             content = content.replace(value, "[REDACTED]")
         # If 'k', we don't modify the content
 
     return content
 
 
-def generate_prompt_template(files_to_include: List[FileTuple], ignore_patterns: List[str], web_contents: Dict[str, Tuple[FileTuple, str]], env_vars: Dict[str, str]) -> Tuple[str, int]:
+def generate_prompt_template(
+    files_to_include: List[FileTuple],
+    ignore_patterns: List[str],
+    web_contents: Dict[str, Tuple[FileTuple, str]],
+    env_vars: Dict[str, str],
+) -> Tuple[str, int]:
     prompt = "# Project Overview\n\n"
     prompt += "## Project Structure\n\n"
     prompt += "```\n"
@@ -116,7 +127,7 @@ def generate_prompt_template(files_to_include: List[FileTuple], ignore_patterns:
         for url, (file_tuple, content) in web_contents.items():
             _, is_snippet, _, content_type = file_tuple
             content = handle_env_variables(content, env_vars)
-            language = content_type if content_type in ['json', 'csv'] else ''
+            language = content_type if content_type in ["json", "csv"] else ""
             prompt += f"### {url}{' (snippet)' if is_snippet else ''}\n\n```{language}\n{content}\n```\n\n"
 
     prompt += "## Task Instructions\n\n"

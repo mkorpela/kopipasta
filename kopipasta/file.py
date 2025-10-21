@@ -8,7 +8,38 @@ FileTuple = Tuple[str, bool, Optional[List[str]], str]
 # --- Caches ---
 _gitignore_cache: dict[str, list[str]] = {}
 _is_ignored_cache: dict[str, bool] = {}
+_is_binary_cache: dict[str, bool] = {}
 
+# --- Known File Extensions for is_binary ---
+# Using sets for O(1) average time complexity lookups
+TEXT_EXTENSIONS = {
+    # Code
+    ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".c", ".cpp", ".h", ".hpp",
+    ".cs", ".go", ".rs", ".sh", ".bash", ".ps1", ".rb", ".php", ".swift",
+    ".kt", ".kts", ".scala", ".pl", ".pm", ".tcl",
+    # Markup & Data
+    ".html", ".htm", ".xml", ".css", ".scss", ".sass", ".less", ".json",
+    ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".md", ".txt", ".rtf",
+    ".csv", ".tsv", ".sql", ".graphql", ".gql",
+    # Config & Other
+    ".gitignore", ".dockerfile", "dockerfile", ".env", ".properties", ".mdx",
+}
+
+BINARY_EXTENSIONS = {
+    # Images
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".ico", ".webp", ".svg",
+    # Audio/Video
+    ".mp3", ".wav", ".ogg", ".flac", ".mp4", ".avi", ".mov", ".wmv", ".mkv",
+    # Archives
+    ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz",
+    # Documents
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt",
+    # Executables & Compiled
+    ".exe", ".dll", ".so", ".dylib", ".class", ".jar", ".pyc", ".pyd", ".whl",
+    # Databases & Other
+    ".db", ".sqlite", ".sqlite3", ".db-wal", ".db-shm", ".lock",
+    ".bak", ".swo", ".swp",
+}
 
 def _read_gitignore_patterns(gitignore_path: str) -> list[str]:
     """Reads patterns from a single .gitignore file and caches them."""
@@ -140,17 +171,47 @@ def read_file_contents(file_path):
         return ""
 
 
-def is_binary(file_path):
+def is_binary(file_path: str) -> bool:
+    """
+    Efficiently checks if a file is binary.
+
+    The check follows a fast, multi-step process to minimize I/O:
+    1. Checks a memory cache for a previously determined result.
+    2. Checks the file extension against a list of known text file types.
+    3. Checks the file extension against a list of known binary file types.
+    4. As a last resort, reads the first 512 bytes of the file to check for
+       a null byte, a common indicator of a binary file.
+    """
+    # Step 1: Check cache first for fastest response
+    if file_path in _is_binary_cache:
+        return _is_binary_cache[file_path]
+
+    # Step 2: Fast check based on known text/binary extensions (no I/O)
+    _, extension = os.path.splitext(file_path)
+    extension = extension.lower()
+
+    if extension in TEXT_EXTENSIONS:
+        _is_binary_cache[file_path] = False
+        return False
+    if extension in BINARY_EXTENSIONS:
+        _is_binary_cache[file_path] = True
+        return True
+
+    # Step 3: Fallback to content analysis for unknown extensions
     try:
         with open(file_path, "rb") as file:
-            chunk = file.read(1024)
+            # Read a smaller chunk, 512 bytes is usually enough to find a null byte
+            chunk = file.read(512)
             if b"\0" in chunk:
+                _is_binary_cache[file_path] = True
                 return True
-            if file_path.lower().endswith((".json", ".csv")):
-                return False
+            # If no null byte, assume it's a text file
+            _is_binary_cache[file_path] = False
             return False
     except IOError:
-        return False
+        # If we can't open it, treat it as binary to be safe
+        _is_binary_cache[file_path] = True
+        return True
 
 
 def get_human_readable_size(size):

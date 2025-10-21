@@ -101,7 +101,7 @@ def is_ignored(
 
     # Pre-calculate all path prefixes to check, avoiding re-joins in the loop.
     path_parts = Path(path_rel_to_root).parts
-    path_prefixes = [os.path.join(*path_parts[:i + 1]) for i in range(1, len(path_parts) + 1)]
+    path_prefixes = [os.path.join(*path_parts[:i]) for i in range(1, len(path_parts) + 1)]
 
     # Pre-process patterns to remove trailing slashes once.
     processed_path_patterns = [p.rstrip("/") for p in path_patterns]

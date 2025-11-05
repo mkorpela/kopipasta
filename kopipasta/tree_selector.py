@@ -706,9 +706,9 @@ q: Quit and finalize"""
                 current_node = self.visible_nodes[self.current_index]
 
                 # Handle navigation
-                if key in ["\x1b[A", "k"]:  # Up arrow or k
+                if key in ["\x1b[A", "\xe0H", "k"]:  # Up arrow or k
                     self.current_index = max(0, self.current_index - 1)
-                elif key in ["\x1b[B", "j"]:  # Down arrow or j
+                elif key in ["\x1b[B", "\xe0P", "j"]:  # Down arrow or j
                     self.current_index = min(
                         len(self.visible_nodes) - 1, self.current_index + 1
                     )
@@ -728,10 +728,10 @@ q: Quit and finalize"""
                     self.current_index = len(self.visible_nodes) - 1
                 elif key == "G":  # Shift+G - go to bottom (vim style)
                     self.current_index = len(self.visible_nodes) - 1
-                elif key in ["\x1b[C", "l", "\r"]:  # Right arrow, l, or Enter
+                elif key in ["\x1b[C", "l", "\r", "\xe0M"]:  # Right arrow, l, or Enter
                     if current_node.is_dir:
                         current_node.expanded = True
-                elif key in ["\x1b[D", "h"]:  # Left arrow or h
+                elif key in ["\x1b[D", "h", "\xe0K"]:  # Left arrow or h
                     if current_node.is_dir and current_node.expanded:
                         current_node.expanded = False
                     elif current_node.parent:

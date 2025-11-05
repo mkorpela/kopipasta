@@ -1,6 +1,8 @@
 import os
 from kopipasta.file import FileTuple, read_file_contents, is_ignored
-
+from prompt_toolkit import prompt as prompt_toolkit_prompt
+from prompt_toolkit.styles import Style
+from rich.console import Console
 
 from typing import Dict, List, Tuple
 
@@ -172,3 +174,26 @@ def generate_prompt_template(
     )
     prompt += analysis_text
     return prompt, cursor_position
+
+
+def get_task_from_user_interactive(console: Console) -> str:
+    """
+    Prompts the user for a multiline task description using an interactive
+    terminal prompt instead of an external editor.
+    """
+    console.print("\n[bold cyan]📝 Please enter your task instructions.[/bold cyan]")
+    console.print("   - Press [bold]Meta+Enter[/bold] or [bold]Esc[/bold] then [bold]Enter[/bold] to submit.")
+    console.print("   - Press [bold]Ctrl-C[/bold] to abort.")
+
+    style = Style.from_dict({'': '#00ff00'})
+
+    try:
+        task = prompt_toolkit_prompt(
+            '> ',
+            multiline=True,
+            prompt_continuation='  ',
+            style=style,
+        )
+        return task.strip()
+    except KeyboardInterrupt:
+        return ""

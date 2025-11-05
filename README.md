@@ -23,7 +23,7 @@ The workflow is dead simple:
 
 1.  **Gather:** Run `kopipasta` and point it at the files, directories, and URLs that matter for your task.
 2.  **Select:** The tool interactively helps you choose what to include. For large files, you can send just a snippet or even hand-pick individual functions.
-3.  **Define:** Your default editor (`$EDITOR`) opens for you to write your instructions to the LLM.
+3.  **Define:** Write your instructions to the LLM in an interactive prompt directly in your terminal.
 4.  **Paste:** The final, comprehensive prompt is now on your clipboard, ready to be pasted into ChatGPT, Gemini, Claude, or your LLM of choice.
 
 ## Installation
@@ -60,7 +60,7 @@ kopipasta [options] [files_or_directories_or_urls...]
     *   Detects if you're about to include secrets from a `.env` file and asks what to do.
 *   **Context-Aware:** Keeps a running total of the prompt size (in characters and estimated tokens) so you don't overload the LLM's context window.
 *   **Developer-Friendly:**
-    *   Uses your familiar `$EDITOR` for writing task descriptions.
+    *   Provides a rich, interactive prompt for writing task descriptions in terminal.
     *   Copies the final prompt directly to your clipboard.
     *   Provides syntax highlighting during chunk selection.
 
@@ -75,10 +75,3 @@ I had a bug where my `setup.py` didn't include all the dependencies from `requir
 5.  I tested the changes and committed.
 
 No manual file reading, no clumsy copy-pasting, just a clean, context-rich prompt that I had full control over.
-
-## Configuration
-
-Set your preferred command-line editor via the `EDITOR` environment variable.
-```bash
-export EDITOR=nvim  # or vim, nano, code --wait, etc.
-```

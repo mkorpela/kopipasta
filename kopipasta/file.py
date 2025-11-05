@@ -164,11 +164,12 @@ def get_all_patterns(default_ignore_patterns, path_abs, project_root_abs) -> Tup
 
 def read_file_contents(file_path):
     try:
-        with open(file_path, "r") as file:
+        with open(file_path, "r", encoding="utf-8") as file:
             return file.read()
-    except Exception as e:
-        print(f"Error reading {file_path}: {e}")
-        return ""
+    except (IOError, UnicodeDecodeError) as e:
+        failure = f"Error reading {file_path}: {e}"
+        print(failure)
+        return f"<.. {failure} ..>"
 
 
 def is_binary(file_path: str) -> bool:

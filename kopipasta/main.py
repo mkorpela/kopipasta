@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 import os
 import argparse
-import re
 import subprocess
-import tempfile
 import shutil
 from typing import Dict, List, Optional, Set, Tuple
 import pyperclip
+from rich.console import Console
 from pygments import highlight
 from pygments.lexers import get_lexer_for_filename, TextLexer
 from pygments.formatters import TerminalFormatter
@@ -28,6 +27,7 @@ from kopipasta.prompt import (
     generate_prompt_template,
     get_file_snippet,
     get_language_for_file,
+    get_task_from_user_interactive,
 )
 from kopipasta.cache import save_selection_to_cache
 
@@ -1227,43 +1227,8 @@ def read_env_file():
     return env_vars
 
 
-def open_editor_for_input(template: str, cursor_position: int) -> str:
-    editor = os.environ.get("EDITOR", "vim")
-    with tempfile.NamedTemporaryFile(
-        mode="w+", suffix=".md", delete=False, encoding="utf-8"
-    ) as temp_file:
-        temp_file.write(template)
-        temp_file.flush()
-        temp_file_path = temp_file.name
-
-    try:
-        cursor_line = template[:cursor_position].count("\n") + 1
-        cursor_column = cursor_position - template.rfind("\n", 0, cursor_position)
-
-        if "vim" in editor or "nvim" in editor:
-            subprocess.call(
-                [
-                    editor,
-                    f"+call cursor({cursor_line}, {cursor_column})",
-                    "+startinsert",
-                    temp_file_path,
-                ]
-            )
-        elif "emacs" in editor:
-            subprocess.call([editor, f"+{cursor_line}:{cursor_column}", temp_file_path])
-        elif "nano" in editor:
-            subprocess.call([editor, f"+{cursor_line},{cursor_column}", temp_file_path])
-        else:
-            subprocess.call([editor, temp_file_path])
-
-        with open(temp_file_path, "r", encoding="utf-8") as file:
-            content = file.read()
-        return content
-    finally:
-        os.unlink(temp_file_path)
-
-
 def main():
+    console = Console()
     parser = argparse.ArgumentParser(
         description="Generate a prompt with project structure, file contents, and web content."
     )
@@ -1381,25 +1346,19 @@ def main():
 
     if args.task:
         task_description = args.task
-        task_marker = "## Task Instructions\n\n"
-        insertion_point = prompt_template.find(task_marker)
-        if insertion_point != -1:
-            final_prompt = (
-                prompt_template[: insertion_point + len(task_marker)]
-                + task_description
-                + "\n\n"
-                + prompt_template[insertion_point + len(task_marker) :]
-            )
-        else:
-            final_prompt = (
-                prompt_template[:cursor_position]
-                + task_description
-                + prompt_template[cursor_position:]
-            )
-        print("\nUsing task description from -t argument.")
+        console.print("\n[bold cyan]Using task description from --task argument.[/bold cyan]")
     else:
-        print("\nOpening editor for task instructions...")
-        final_prompt = open_editor_for_input(prompt_template, cursor_position)
+        task_description = get_task_from_user_interactive(console)
+    
+    if not task_description:
+        console.print("\n[bold red]No task provided. Aborting.[/bold red]")
+        return
+
+    final_prompt = (
+        prompt_template[:cursor_position]
+        + task_description
+        + prompt_template[cursor_position:]
+    )
 
     print("\n\nGenerated prompt:")
     print("-" * 80)

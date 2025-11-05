@@ -1230,7 +1230,7 @@ def read_env_file():
 def open_editor_for_input(template: str, cursor_position: int) -> str:
     editor = os.environ.get("EDITOR", "vim")
     with tempfile.NamedTemporaryFile(
-        mode="w+", suffix=".md", delete=False
+        mode="w+", suffix=".md", delete=False, encoding="utf-8"
     ) as temp_file:
         temp_file.write(template)
         temp_file.flush()
@@ -1256,7 +1256,7 @@ def open_editor_for_input(template: str, cursor_position: int) -> str:
         else:
             subprocess.call([editor, temp_file_path])
 
-        with open(temp_file_path, "r") as file:
+        with open(temp_file_path, "r", encoding="utf-8") as file:
             content = file.read()
         return content
     finally:

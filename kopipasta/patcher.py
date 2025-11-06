@@ -39,7 +39,6 @@ def apply_patches(patches: List[Tuple[str, str]]) -> None:
     For new files, it creates them.
     """
     console = Console()
-    is_debug = os.environ.get("KOPIPASTA_DEBUG")
     if not patches:
         console.print("[yellow]No valid file patches found in the pasted content.[/yellow]")
         return
@@ -65,50 +64,26 @@ def apply_patches(patches: List[Tuple[str, str]]) -> None:
             patch_lines = patch_content.splitlines()
 
             if not patch_lines:
-                console.print(f"⚠️ Skipped empty patch for [yellow]{file_path}[/yellow]")
+                # If patch is empty, clear the file.
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write("")
+                console.print(f"✅ Patched (cleared) [green]{file_path}[/green]")
                 continue
             
             # Find the longest contiguous matching block (the anchor).
             matcher = SequenceMatcher(None, original_lines, patch_lines, autojunk=False)
             match = matcher.find_longest_match(0, len(original_lines), 0, len(patch_lines))
 
+            # The only failure condition: if there is no common anchor, we cannot patch.
             if match.size == 0:
-                 # If there's no common ground, we can't patch.
                 console.print(f"❌ [bold red]Failed to apply patch to {file_path}:[/bold red] No common content found. File left unchanged.")
                 continue
 
             # Determine the block to replace in the original file based on the anchor.
             original_replace_start = max(0, match.a - match.b)
-            # The length of the block to replace should be relative to the original file's size
-            # based on how much the patch covers before and after the anchor.
-            lines_before_anchor_in_patch = match.b
             lines_after_anchor_in_patch = len(patch_lines) - (match.b + match.size)
             original_replace_end = min(len(original_lines), match.a + match.size + lines_after_anchor_in_patch)
-
-            # Perform a final confidence check on the identified block.
-            original_block_to_replace = original_lines[original_replace_start:original_replace_end]
-            confidence_matcher = SequenceMatcher(None, original_block_to_replace, patch_lines, autojunk=False)
-            confidence_ratio = confidence_matcher.ratio()
             
-            # --- DEBUG BLOCK ---
-            if is_debug:
-                original_block_text = "\n".join(original_block_to_replace)
-                patch_text = "\n".join(patch_lines)
-                console.print(f"\n[DEBUG] --- Patch Analysis for: {file_path} ---")
-                console.print(f"[DEBUG] Final confidence score: {confidence_ratio*100:.1f}%")
-                console.print(f"[DEBUG] --- Original Block (lines {original_replace_start+1}-{original_replace_end}) ---")
-                console.print(original_block_text)
-                console.print("[DEBUG] --- Patch Snippet ---")
-                console.print(patch_text)
-                console.print("[DEBUG] --- End Analysis ---\n")
-            # --- END DEBUG BLOCK ---
-
-            if confidence_ratio < 0.3: # Lowered threshold
-                console.print(
-                    f"❌ [bold red]Failed to apply patch to {file_path}:[/bold red] Snippet did not match content confidently (Similarity: {confidence_ratio*100:.1f}%). File left unchanged."
-                )
-                continue
-
             # Construct the new file content by replacing the identified block.
             final_lines = original_lines[:original_replace_start] + patch_lines + original_lines[original_replace_end:]
             final_content = "\n".join(final_lines)

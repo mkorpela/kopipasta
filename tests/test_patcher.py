@@ -62,8 +62,9 @@ def patch_test_dir(tmp_path: Path) -> Path:
     return test_dir
 
 
-def test_apply_patches_intelligent(patch_test_dir: Path, mock_llm_output, capsys):
+def test_apply_patches_intelligent(patch_test_dir: Path, mock_llm_output, capsys, monkeypatch):
     patches = parse_llm_output(mock_llm_output)
+    monkeypatch.setenv("KOPIPASTA_DEBUG", "1")
 
     # Change CWD into the mock project for the duration of the test
     original_cwd = os.getcwd()
@@ -96,7 +97,8 @@ def test_apply_patches_intelligent(patch_test_dir: Path, mock_llm_output, capsys
         assert "Patched src/main.py" in output
         assert "Created web/app.js" in output
         assert "Failed to apply patch to config.txt" in output
-        assert "Snippet did not match content confidently" in output
+        # Check for the more specific failure message for the config.txt patch
+        assert "No common content found" in output
 
     finally:
         os.chdir(original_cwd)

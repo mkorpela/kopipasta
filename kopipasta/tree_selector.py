@@ -1,12 +1,15 @@
 import os
 import shutil
 from typing import Dict, List, Optional, Tuple
+from prompt_toolkit import prompt as prompt_toolkit_prompt
+from prompt_toolkit.styles import Style
 from rich.console import Console
 from rich.tree import Tree
 from rich.panel import Panel
 from rich.text import Text
 import click
 
+from kopipasta.patcher import apply_patches, parse_llm_output
 from kopipasta.file import FileTuple, is_binary, is_ignored, get_human_readable_size
 from kopipasta.prompt import get_file_snippet, get_language_for_file
 from kopipasta.cache import load_selection_from_cache
@@ -329,8 +332,8 @@ class TreeSelector:
     def _show_help(self) -> Panel:
         """Create help panel"""
         help_text = """[bold]Navigation:[/bold]  ↑/k: Up  ↓/j: Down  →/l/Enter: Expand  ←/h: Collapse
-[bold]Selection:[/bold]  Space: Toggle file/dir     a: Add all in dir     s: Snippet mode
-[bold]Actions:[/bold]  r: Reuse last selection  g: Grep in directory   d: Show dependencies
+[bold]Selection:[/bold]  Space: Toggle selection  a: Add all in dir     s: Snippet mode
+[bold]Actions:[/bold]    r: Reuse last selection  g: Grep in directory   p: Apply patch
 q: Quit and finalize"""
 
         return Panel(
@@ -407,6 +410,39 @@ q: Quit and finalize"""
             self.console.print(
                 f"\n[yellow]All selected files were already in selection[/yellow]"
             )
+
+    def _handle_apply_patches(self):
+        """Handles the 'p' keypress to apply patches from pasted text."""
+        self.console.clear()
+        self.console.print(
+            Panel(
+                "[bold cyan]📝 Paste the LLM's markdown response below.[/bold cyan]\n\n"
+                "   - Press [bold]Meta+Enter[/bold] or [bold]Esc[/bold] then [bold]Enter[/bold] to submit.\n"
+                "   - Press [bold]Ctrl-C[/bold] to cancel.",
+                title="Apply Patches",
+                border_style="cyan",
+            )
+        )
+
+        style = Style.from_dict({"": "#ffffff"})
+        try:
+            content = prompt_toolkit_prompt(
+                "> ",
+                multiline=True,
+                prompt_continuation="  ",
+                style=style,
+            )
+            if not content.strip():
+                self.console.print("\n[yellow]No content pasted. Aborting.[/yellow]")
+                return
+
+            patches = parse_llm_output(content)
+            apply_patches(patches)
+            self.console.print("\n[bold]Review the changes above with `git diff` before committing.[/bold]")
+
+        except KeyboardInterrupt:
+            self.console.print("\n[red]Patch application cancelled.[/red]")
+
 
     def _toggle_selection(self, node: FileNode, snippet_mode: bool = False):
         """Toggle selection of a file or directory"""
@@ -763,6 +799,9 @@ q: Quit and finalize"""
                 elif key == "g":  # Grep
                     self.console.print()  # Add some space
                     self._handle_grep(current_node)
+                elif key == "p": # Apply Patches
+                    self._handle_apply_patches()
+                    click.pause("Press any key to return to the file selector...")
                 elif key == "d":  # Dependencies
                     self.console.print()  # Add some space
                     self._show_dependencies(current_node)

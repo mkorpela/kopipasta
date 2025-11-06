@@ -25,6 +25,7 @@ The workflow is dead simple:
 2.  **Select:** The tool interactively helps you choose what to include. For large files, you can send just a snippet or even hand-pick individual functions.
 3.  **Define:** Write your instructions to the LLM in an interactive prompt directly in your terminal.
 4.  **Paste:** The final, comprehensive prompt is now on your clipboard, ready to be pasted into ChatGPT, Gemini, Claude, or your LLM of choice.
+5.  **Apply:** Inside the file selector, press `p`, paste the LLM's markdown response, and the tool will automatically patch your local files.
 
 ## Installation
 
@@ -38,6 +39,10 @@ pip install kopipasta
 
 ## Usage
 
+`kopipasta` has two main modes: creating prompts and applying patches.
+
+### Creating a Prompt
+
 ```bash
 kopipasta [options] [files_or_directories_or_urls...]
 ```
@@ -50,9 +55,19 @@ kopipasta [options] [files_or_directories_or_urls...]
 
 *   `-t TASK`, `--task TASK`: Provide the task description directly on the command line, skipping the editor.
 
+### Applying Patches
+
+`kopipasta` can apply changes suggested by an LLM directly to your codebase, assuming you are in a Git repository.
+
+1.  While running `kopipasta` in the interactive file selector, press the `p` key.
+2.  Paste the entire markdown response from your LLM into the terminal prompt and submit.
+3.  The tool will find code blocks with file paths (e.g., `// FILE: src/main.py`) and immediately write those changes to your local files.
+4.  After applying, use standard Git commands like `git diff` to review the changes before staging and committing them.
+
 ## Key Features
 
 *   **Total Context Control:** Interactively select files, directories, snippets, or even individual functions. You see everything that goes into the prompt.
+*   **Interactive Code Patcher:** Press `p` in the file selector to paste and apply LLM-suggested changes directly to your local files. Relies on your version control (like Git) for safety, enabling a fast workflow.
 *   **Transparent & Explicit:** No hidden RAG. You know exactly what's in the prompt because you built it. This makes debugging LLM failures possible.
 *   **Web-Aware:** Pulls in content directly from URLs—perfect for API documentation.
 *   **Safety First:**
@@ -71,7 +86,8 @@ I had a bug where my `setup.py` didn't include all the dependencies from `requir
 1.  I ran `kopipasta -t "Update setup.py to read dependencies dynamically from requirements.txt" setup.py requirements.txt`.
 2.  The tool confirmed the inclusion of both files and copied the complete prompt to my clipboard.
 3.  I pasted the prompt into my LLM chat window.
-4.  I copied the LLM's suggested code back into my local `setup.py`.
-5.  I tested the changes and committed.
+4.  I copied the LLM's response (which included a modified `setup.py` in a markdown code block).
+5.  Inside `kopipasta`, I pressed `p`, pasted the response, and my local `setup.py` was updated.
+6.  I ran `git diff` to review the changes, then tested and committed.
 
-No manual file reading, no clumsy copy-pasting, just a clean, context-rich prompt that I had full control over.
+No manual file reading, no clumsy copy-pasting, just a clean, context-rich prompt that I had full control over, and a seamless way to apply the results.

@@ -105,7 +105,7 @@ def test_apply_patches_intelligent(patch_test_dir: Path, mock_llm_output, capsys
         os.chdir(original_cwd)
 
 
-# --- fixtures and test for diff-based patching ---
+# --- Diff-based patching ---
 
 @pytest.fixture
 def mock_llm_diff_output():
@@ -115,7 +115,7 @@ Here are the changes for the Python file. The line numbers are totally wrong.
 // FILE: src/app.py
 @@ -99,7 +99,8 @@
  def main():
-     \"\"\"This is the main function.\"\"\"
+     \"""This is the main function.\"""
      user = get_user("test")
 -    print(f"Hello, {user}!")
 +    # Log the user for debugging
@@ -139,7 +139,7 @@ And for the documentation.
 Finally, a TypeScript file for a new feature.
 ```diff
 // FILE: web/api/service.ts
-@@ -20,5 +30,8 @@
+@@ -5,5 +5,8 @@
  export class ApiService {
      constructor(private endpoint: string) {}
  

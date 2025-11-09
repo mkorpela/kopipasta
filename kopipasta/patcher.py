@@ -27,12 +27,14 @@ def _parse_diff_hunks(diff_content: str) -> List[Hunk]:
     hunks: List[Hunk] = []
     lines = diff_content.splitlines()
     current_hunk: Hunk = None
+    hunk_counter = 0
 
     for line in lines:
         if line.startswith("@@ "):
             if current_hunk:
                 hunks.append(current_hunk)
             current_hunk = {'original_lines': [], 'new_lines': []}
+            hunk_counter += 1
             continue
 
         if not current_hunk:
@@ -67,6 +69,9 @@ def parse_llm_output(content: str) -> List[Patch]:
     file_path_regex = re.compile(
         r"^(?:#|//|\/\*)\s*FILE:\s*(\S+)\s*(?:\*\/)?\s*\n?", re.MULTILINE
     )
+    # REGEX to robustly detect a unified diff hunk header
+    diff_hunk_header_regex = re.compile(r"^@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@", re.MULTILINE)
+
 
     for match in code_block_regex.finditer(content):
         block_content = match.group(1)
@@ -76,8 +81,8 @@ def parse_llm_output(content: str) -> List[Patch]:
             # The actual code is what's left after the file path comment
             code_content = file_path_regex.sub("", block_content, count=1).lstrip("\n")
             
-            # Heuristic to detect if the content is a unified diff
-            if "@@ -" in code_content and " @@" in code_content:
+            # Use the robust regex to detect if the content is a unified diff
+            if diff_hunk_header_regex.search(code_content):
                 hunks = _parse_diff_hunks(code_content)
                 if hunks:
                     patches.append({'file_path': file_path, 'type': 'diff', 'content': hunks})
@@ -98,7 +103,7 @@ def _apply_diff_patch(file_path: str, original_content: str, hunks: List[Hunk], 
     for i, hunk in enumerate(hunks):
         hunk_original = hunk['original_lines']
         if not hunk_original:
-            console.print(f"  - Skipping hunk #{i+1}: Cannot apply pure-addition hunk without context.")
+            console.print(f"  - Skipping hunk #{i+1}: Cannot apply a patch without any context lines to match against.")
             continue
 
         matcher = SequenceMatcher(None, original_lines, hunk_original, autojunk=False)
@@ -106,8 +111,9 @@ def _apply_diff_patch(file_path: str, original_content: str, hunks: List[Hunk], 
 
         match_ratio = match.size / len(hunk_original) if hunk_original else 0
         
+        # A higher threshold is better for preventing incorrect patches.
         if match.size == 0 or match_ratio < 0.6:
-            console.print(f"  - Skipping hunk #{i+1}: Could not find a confident match (ratio: {match_ratio:.2f}).")
+            console.print(f"  - Skipping hunk #{i+1}: Could not find a confident match (best ratio: {match_ratio:.2f}).")
             continue
 
         start_index = match.a - match.b

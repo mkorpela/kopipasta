@@ -1,20 +1,68 @@
 import os
 import re
-from typing import List, Tuple
+from typing import List, Union, TypedDict
 from difflib import SequenceMatcher
 
 from rich.console import Console
 
 
-def parse_llm_output(content: str) -> List[Tuple[str, str]]:
+# --- Data Structures for Parsed Patches ---
+
+class Hunk(TypedDict):
+    """Represents a single 'hunk' or block of changes from a diff."""
+    original_lines: List[str]
+    new_lines: List[str]
+
+PatchContent = Union[str, List[Hunk]]
+
+class Patch(TypedDict):
+    """Represents a patch for a single file, either full content or a diff."""
+    file_path: str
+    type: str  # 'full' or 'diff'
+    content: PatchContent
+
+
+def _parse_diff_hunks(diff_content: str) -> List[Hunk]:
+    """Parses the content of a diff block into a list of Hunks."""
+    hunks: List[Hunk] = []
+    lines = diff_content.splitlines()
+    current_hunk: Hunk = None
+
+    for line in lines:
+        if line.startswith("@@ "):
+            if current_hunk:
+                hunks.append(current_hunk)
+            current_hunk = {'original_lines': [], 'new_lines': []}
+            continue
+
+        if not current_hunk:
+            continue
+
+        if line.startswith("-"):
+            current_hunk['original_lines'].append(line[1:])
+        elif line.startswith("+"):
+            current_hunk['new_lines'].append(line[1:])
+        elif line.startswith(" "):
+            line_content = line[1:]
+            current_hunk['original_lines'].append(line_content)
+            current_hunk['new_lines'].append(line_content)
+        # Ignore other lines like '---', '+++', '\ No newline at end of file'
+
+    if current_hunk:
+        hunks.append(current_hunk)
+
+    return hunks
+
+
+def parse_llm_output(content: str) -> List[Patch]:
     """
     Parses LLM markdown output to find file patches.
-    Looks for fenced code blocks with a special `// FILE: path/to/file.ext` comment.
-    Returns a list of (file_path, new_content) tuples.
+    Detects whether a patch is a full file or a diff.
+    Returns a list of structured Patch objects.
     """
-    patches = []
+    patches: List[Patch] = []
     # Regex to find fenced code blocks, optionally with a language hint
-    code_block_regex = re.compile(r"```(?:\w+)?\n(.*?)```", re.DOTALL)
+    code_block_regex = re.compile(r"```(?:[a-zA-Z0-9\.\-]+)?\n(.*?)```", re.DOTALL)
     # Regex to find the file path comment, supporting various comment styles
     file_path_regex = re.compile(
         r"^(?:#|//|\/\*)\s*FILE:\s*(\S+)\s*(?:\*\/)?\s*\n?", re.MULTILINE
@@ -27,16 +75,80 @@ def parse_llm_output(content: str) -> List[Tuple[str, str]]:
             file_path = file_path_match.group(1).strip()
             # The actual code is what's left after the file path comment
             code_content = file_path_regex.sub("", block_content, count=1).lstrip("\n")
-            patches.append((file_path, code_content))
+            
+            # Heuristic to detect if the content is a unified diff
+            if "@@ -" in code_content and " @@" in code_content:
+                hunks = _parse_diff_hunks(code_content)
+                if hunks:
+                    patches.append({'file_path': file_path, 'type': 'diff', 'content': hunks})
+            else:
+                patches.append({'file_path': file_path, 'type': 'full', 'content': code_content})
 
     return patches
 
 
-def apply_patches(patches: List[Tuple[str, str]]) -> None:
+def _apply_diff_patch(file_path: str, original_content: str, hunks: List[Hunk], console: Console) -> bool:
+    """Applies a list of diff hunks to the original file content."""
+    original_lines = original_content.splitlines()
+    final_lines = original_lines[:]
+    
+    replacements = []
+    hunks_applied_count = 0
+
+    for i, hunk in enumerate(hunks):
+        hunk_original = hunk['original_lines']
+        if not hunk_original:
+            console.print(f"  - Skipping hunk #{i+1}: Cannot apply pure-addition hunk without context.")
+            continue
+
+        matcher = SequenceMatcher(None, original_lines, hunk_original, autojunk=False)
+        match = matcher.find_longest_match(0, len(original_lines), 0, len(hunk_original))
+
+        match_ratio = match.size / len(hunk_original) if hunk_original else 0
+        
+        if match.size == 0 or match_ratio < 0.6:
+            console.print(f"  - Skipping hunk #{i+1}: Could not find a confident match (ratio: {match_ratio:.2f}).")
+            continue
+
+        start_index = match.a - match.b
+        end_index = start_index + len(hunk_original)
+
+        is_overlapping = any(
+            max(start_index, r_start) < min(end_index, r_end)
+            for r_start, r_end, _ in replacements
+        )
+        if is_overlapping:
+             console.print(f"  - Skipping hunk #{i+1}: Match overlaps with another hunk's changes.")
+             continue
+
+        replacements.append((start_index, end_index, hunk['new_lines']))
+        hunks_applied_count += 1
+
+    if hunks_applied_count == 0:
+        console.print(f"❌ [bold red]Failed to apply patch to {file_path}:[/bold red] No applicable hunks found. File left unchanged.")
+        return False
+
+    # Sort replacements by start index in reverse to apply patches without shifting indices
+    replacements.sort(key=lambda x: x[0], reverse=True)
+    
+    for start, end, new_lines in replacements:
+        final_lines[start:end] = new_lines
+
+    final_content = "\n".join(final_lines)
+    if original_content.endswith('\n') and not final_content.endswith('\n'):
+        final_content += '\n'
+
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write(final_content)
+    
+    console.print(f"✅ Patched [green]{file_path}[/green] ({hunks_applied_count}/{len(hunks)} hunks applied)")
+    return True
+
+
+def apply_patches(patches: List[Patch]) -> None:
     """
     Applies a list of patches to the filesystem.
-    For existing files, it finds the most similar block and replaces it.
-    For new files, it creates them.
+    Dispatches between full-file replacement and diff-based patching.
     """
     console = Console()
     if not patches:
@@ -44,57 +156,68 @@ def apply_patches(patches: List[Tuple[str, str]]) -> None:
         return
 
     console.print(f"\n[bold]Applying {len(patches)} patch(es)...[/bold]")
-    for file_path, patch_content in patches:
+    for patch in patches:
+        file_path = patch['file_path']
+        patch_type = patch['type']
+        patch_content = patch['content']
+
         try:
             # If file doesn't exist, it's a simple creation.
             if not os.path.exists(file_path):
+                if patch_type == 'diff':
+                    # For a new file, a diff is just the content to be added.
+                    full_content = "\n".join(
+                        line for hunk in patch_content for line in hunk['new_lines']
+                    )
+                else: # 'full'
+                    full_content = patch_content
+
                 parent_dir = os.path.dirname(file_path)
                 if parent_dir:
                     os.makedirs(parent_dir, exist_ok=True)
                 with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(patch_content)
+                    f.write(full_content)
                 console.print(f"✅ Created [green]{file_path}[/green]")
                 continue
 
-            # File exists, so we apply an intelligent patch.
+            # File exists, so we apply a patch.
             with open(file_path, "r", encoding="utf-8") as f:
                 original_content = f.read()
 
-            original_lines = original_content.splitlines()
-            patch_lines = patch_content.splitlines()
+            if patch_type == 'diff':
+                _apply_diff_patch(file_path, original_content, patch_content, console)
+            
+            else: # 'full'
+                # --- Legacy logic for full-file content replacement ---
+                original_lines = original_content.splitlines()
+                patch_lines = patch_content.splitlines()
 
-            if not patch_lines:
-                # If patch is empty, clear the file.
+                if not patch_lines:
+                    with open(file_path, "w", encoding="utf-8") as f: f.write("")
+                    console.print(f"✅ Patched (cleared) [green]{file_path}[/green]")
+                    continue
+                
+                matcher = SequenceMatcher(None, original_lines, patch_lines, autojunk=False)
+                match = matcher.find_longest_match(0, len(original_lines), 0, len(patch_lines))
+
+                if match.size == 0:
+                    console.print(f"❌ [bold red]Failed to apply patch to {file_path}:[/bold red] No common content found. File left unchanged.")
+                    continue
+
+                original_replace_start = max(0, match.a - match.b)
+                lines_after_anchor_in_patch = len(patch_lines) - (match.b + match.size)
+                original_replace_end = min(len(original_lines), match.a + match.size + lines_after_anchor_in_patch)
+                
+                final_lines = original_lines[:original_replace_start] + patch_lines + original_lines[original_replace_end:]
+                final_content = "\n".join(final_lines)
+                
+                if original_content.endswith('\n') and not final_content.endswith('\n'):
+                    final_content += '\n'
+
                 with open(file_path, "w", encoding="utf-8") as f:
-                    f.write("")
-                console.print(f"✅ Patched (cleared) [green]{file_path}[/green]")
-                continue
-            
-            # Find the longest contiguous matching block (the anchor).
-            matcher = SequenceMatcher(None, original_lines, patch_lines, autojunk=False)
-            match = matcher.find_longest_match(0, len(original_lines), 0, len(patch_lines))
+                    f.write(final_content)
 
-            # The only failure condition: if there is no common anchor, we cannot patch.
-            if match.size == 0:
-                console.print(f"❌ [bold red]Failed to apply patch to {file_path}:[/bold red] No common content found. File left unchanged.")
-                continue
-
-            # Determine the block to replace in the original file based on the anchor.
-            original_replace_start = max(0, match.a - match.b)
-            lines_after_anchor_in_patch = len(patch_lines) - (match.b + match.size)
-            original_replace_end = min(len(original_lines), match.a + match.size + lines_after_anchor_in_patch)
-            
-            # Construct the new file content by replacing the identified block.
-            final_lines = original_lines[:original_replace_start] + patch_lines + original_lines[original_replace_end:]
-            final_content = "\n".join(final_lines)
-            
-            if original_content.endswith('\n'):
-                final_content += '\n'
-
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(final_content)
-
-            console.print(f"✅ Patched [green]{file_path}[/green]")
+                console.print(f"✅ Patched [green]{file_path}[/green]")
 
         except Exception as e:
             console.print(f"❌ [bold red]Error processing {file_path}: {e}[/bold red]")

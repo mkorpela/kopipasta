@@ -13,6 +13,7 @@ from kopipasta.patcher import apply_patches, parse_llm_output
 from kopipasta.file import FileTuple, is_binary, is_ignored, get_human_readable_size
 from kopipasta.prompt import get_file_snippet, get_language_for_file
 from kopipasta.cache import load_selection_from_cache
+from kopipasta.ops import propose_and_add_dependencies, grep_files_in_directory, select_from_grep_results
 
 
 class FileNode:
@@ -373,9 +374,6 @@ q: Quit and finalize"""
 
         self.console.print(f"Searching for '{pattern}' in {node.relative_path}...")
 
-        # Import here to avoid circular dependency
-        from kopipasta.main import grep_files_in_directory, select_from_grep_results
-
         grep_results = grep_files_in_directory(pattern, node.path, self.ignore_patterns)
         if not grep_results:
             self.console.print(f"[yellow]No matches found for '{pattern}'[/yellow]")
@@ -667,16 +665,14 @@ q: Quit and finalize"""
 
         self.console.print(f"\nAnalyzing dependencies for {node.relative_path}...")
 
-        # Import here to avoid circular dependency
-        from kopipasta.main import _propose_and_add_dependencies
-
         # Create a temporary files list for the dependency analyzer
         files_list = [
             (path, is_snippet, chunks, get_language_for_file(path))
             for path, (is_snippet, chunks) in self.selected_files.items()
         ]
 
-        new_deps, deps_char_count = _propose_and_add_dependencies(
+        # Use imported function from ops
+        new_deps, deps_char_count = propose_and_add_dependencies(
             node.path, self.project_root_abs, files_list, self.char_count
         )
 

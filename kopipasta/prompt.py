@@ -68,7 +68,8 @@ def get_project_structure(ignore_patterns):
 def handle_env_variables(content, env_vars):
     detected_vars = []
     for key, value in env_vars.items():
-        if value in content:
+        # Only detect if value is not empty and present in content
+        if value and value in content:
             detected_vars.append((key, value))
     if not detected_vars:
         return content
@@ -93,7 +94,6 @@ def handle_env_variables(content, env_vars):
         # If 'k', we don't modify the content
 
     return content
-
 
 def generate_prompt_template(
     files_to_include: List[FileTuple],

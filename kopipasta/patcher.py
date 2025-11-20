@@ -194,36 +194,18 @@ def apply_patches(patches: List[Patch]) -> None:
                 _apply_diff_patch(file_path, original_content, patch_content, console)
             
             else: # 'full'
-                # --- Legacy logic for full-file content replacement ---
-                original_lines = original_content.splitlines()
-                patch_lines = patch_content.splitlines()
-
-                if not patch_lines:
-                    with open(file_path, "w", encoding="utf-8") as f: f.write("")
-                    console.print(f"✅ Patched (cleared) [green]{file_path}[/green]")
-                    continue
+                # For non-diff blocks, we treat them as full file overwrites.
+                # The prompt instructs the LLM to provide full content if not using patches.
+                # We rely on git diff for the user to verify safety.
                 
-                matcher = SequenceMatcher(None, original_lines, patch_lines, autojunk=False)
-                match = matcher.find_longest_match(0, len(original_lines), 0, len(patch_lines))
-
-                if match.size == 0:
-                    console.print(f"❌ [bold red]Failed to apply patch to {file_path}:[/bold red] No common content found. File left unchanged.")
-                    continue
-
-                original_replace_start = max(0, match.a - match.b)
-                lines_after_anchor_in_patch = len(patch_lines) - (match.b + match.size)
-                original_replace_end = min(len(original_lines), match.a + match.size + lines_after_anchor_in_patch)
-                
-                final_lines = original_lines[:original_replace_start] + patch_lines + original_lines[original_replace_end:]
-                final_content = "\n".join(final_lines)
-                
+                final_content = patch_content
                 if original_content.endswith('\n') and not final_content.endswith('\n'):
                     final_content += '\n'
 
                 with open(file_path, "w", encoding="utf-8") as f:
                     f.write(final_content)
 
-                console.print(f"✅ Patched [green]{file_path}[/green]")
+                console.print(f"✅ Overwrote [green]{file_path}[/green] (Full Content)")
 
         except Exception as e:
             console.print(f"❌ [bold red]Error processing {file_path}: {e}[/bold red]")

@@ -64,7 +64,11 @@ def patch_test_dir(tmp_path: Path) -> Path:
     return test_dir
 
 
-def test_apply_patches_intelligent(patch_test_dir: Path, mock_llm_output, capsys, monkeypatch):
+def test_apply_patches_overwrite(patch_test_dir: Path, mock_llm_output, capsys, monkeypatch):
+    """
+    Tests that 'full' blocks overwrite the existing file content entirely.
+    This is the safer, deterministic behavior replacing the old fuzzy matcher.
+    """
     patches = parse_llm_output(mock_llm_output)
     
     # Change CWD into the mock project for the duration of the test
@@ -73,33 +77,27 @@ def test_apply_patches_intelligent(patch_test_dir: Path, mock_llm_output, capsys
     try:
         apply_patches(patches)
 
-        # Check existing file was intelligently patched, not overwritten
+        # Check existing file was overwritten
         updated_main_py = patch_test_dir / "src/main.py"
         assert updated_main_py.exists()
         main_py_content = updated_main_py.read_text()
+        
+        # It should contain the new content
         assert 'print("Hello, new patched world!")' in main_py_content
-        # This implicitly checks it wasn't a full overwrite
-        assert main_py_content.startswith('def main():')
-        assert not (patch_test_dir / "src/main.py.bak").exists()
+        
+        # It should NOT contain the old content (overwrite behavior)
+        assert 'print("Hello, old world!")' not in main_py_content
 
         # Check new file was created
         new_app_js = patch_test_dir / "web/app.js"
         assert new_app_js.exists()
         assert "Hello from JS" in new_app_js.read_text()
 
-        # Check that the un-patchable file was left unchanged
-        config_txt = patch_test_dir / "config.txt"
-        assert "original_key=bar" in config_txt.read_text()
-        assert "completely_different_key=foo" not in config_txt.read_text()
-
         # Check for correct console output
         captured = capsys.readouterr()
         output = captured.out
-        assert "Patched src/main.py" in output
+        assert "Overwrote src/main.py" in output
         assert "Created web/app.js" in output
-        assert "Failed to apply patch to config.txt" in output
-        # Check for the more specific failure message for the config.txt patch
-        assert "No common content found" in output
 
     finally:
         os.chdir(original_cwd)

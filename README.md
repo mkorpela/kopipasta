@@ -3,7 +3,9 @@
 [![Version](https://img.shields.io/pypi/v/kopipasta.svg)](https://pypi.python.org/pypi/kopipasta)
 [![Downloads](http://pepy.tech/badge/kopipasta)](http://pepy.tech/project/kopipasta)
 
-A CLI tool for taking **full, transparent control** of your LLM context. No black boxes.
+**kopipasta bridges the gap between your local file system and LLM context windows.**
+
+A CLI tool for taking **full, transparent control** of your prompt. No black boxes.
 
 <img src="kopipasta.jpg" alt="kopipasta" width="300">
 

@@ -59,6 +59,7 @@ kopipasta [options] [files_or_directories_or_urls...]
 
 ### Applying Patches
 
+`kopipasta` automatically injects strict instructions into your prompt, teaching the LLM how to format code for this tool.
 `kopipasta` can apply changes suggested by an LLM directly to your codebase, assuming you are in a Git repository.
 
 1.  While running `kopipasta` in the interactive file selector, press the `p` key.
@@ -68,8 +69,10 @@ kopipasta [options] [files_or_directories_or_urls...]
 
 ## Key Features
 
-*   **Total Context Control:** Interactively select files, directories, snippets, or even individual functions. You see everything that goes into the prompt.
+*   **Total Context Control:** Interactively select files, directories, or snippets. You see everything that goes into the prompt.
+*   **Smart Dependency Analysis:** Press `d` on a Python or TypeScript/JavaScript file, and `kopipasta` will scan imports to find and add related local files to your context automatically.
 *   **Interactive Code Patcher:** Press `p` in the file selector to paste and apply LLM-suggested changes directly to your local files. Relies on your version control (like Git) for safety, enabling a fast workflow.
+*   **Built-in Search:** Press `g` to grep for text patterns inside directories to find relevant files.
 *   **Transparent & Explicit:** No hidden RAG. You know exactly what's in the prompt because you built it. This makes debugging LLM failures possible.
 *   **Web-Aware:** Pulls in content directly from URLs—perfect for API documentation.
 *   **Safety First:**
@@ -80,6 +83,20 @@ kopipasta [options] [files_or_directories_or_urls...]
     *   Provides a rich, interactive prompt for writing task descriptions in terminal.
     *   Copies the final prompt directly to your clipboard.
     *   Provides syntax highlighting during chunk selection.
+
+## Interactive Controls
+
+| Key | Action |
+| :--- | :--- |
+| `Space` | Toggle file/directory selection |
+| `s` | Toggle **Snippet Mode** (include only the first 50 lines) |
+| `d` | **Analyze Dependencies** (find and add imported files) |
+| `g` | **Grep** (search text in directory) |
+| `a` | Add all files in directory |
+| `p` | **Apply Patch** (paste LLM response) |
+| `r` | Reuse selection from previous run |
+| `Enter` | Expand/Collapse directory |
+| `q` | Quit and finalize selection |
 
 ## A Real-World Example
 

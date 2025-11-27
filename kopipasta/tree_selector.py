@@ -13,7 +13,11 @@ from kopipasta.patcher import apply_patches, parse_llm_output
 from kopipasta.file import FileTuple, is_binary, is_ignored, get_human_readable_size
 from kopipasta.prompt import get_file_snippet, get_language_for_file
 from kopipasta.cache import load_selection_from_cache
-from kopipasta.ops import propose_and_add_dependencies, grep_files_in_directory, select_from_grep_results
+from kopipasta.ops import (
+    propose_and_add_dependencies,
+    grep_files_in_directory,
+    select_from_grep_results,
+)
 
 
 class FileNode:
@@ -436,11 +440,12 @@ q: Quit and finalize"""
 
             patches = parse_llm_output(content)
             apply_patches(patches)
-            self.console.print("\n[bold]Review the changes above with `git diff` before committing.[/bold]")
+            self.console.print(
+                "\n[bold]Review the changes above with `git diff` before committing.[/bold]"
+            )
 
         except KeyboardInterrupt:
             self.console.print("\n[red]Patch application cancelled.[/red]")
-
 
     def _toggle_selection(self, node: FileNode, snippet_mode: bool = False):
         """Toggle selection of a file or directory"""
@@ -795,7 +800,7 @@ q: Quit and finalize"""
                 elif key == "g":  # Grep
                     self.console.print()  # Add some space
                     self._handle_grep(current_node)
-                elif key == "p": # Apply Patches
+                elif key == "p":  # Apply Patches
                     self._handle_apply_patches()
                     click.pause("Press any key to return to the file selector...")
                 elif key == "d":  # Dependencies

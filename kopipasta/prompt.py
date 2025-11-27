@@ -7,6 +7,82 @@ from rich.console import Console
 from typing import Dict, List, Tuple
 
 
+def _is_masking_candidate(value: str) -> bool:
+    """
+    Determines if an environment variable value is distinct enough to be worth masking.
+    Filters out common configuration values, short strings, and integers to prevent
+    aggressive false positives (e.g., masking '1', 'true', 'dev').
+    """
+    if not value:
+        return False
+
+    val_lower = value.lower().strip()
+
+    # Common values that appear frequently in code and shouldn't be masked
+    common_values = {
+        # Booleans and Nulls
+        "true",
+        "false",
+        "yes",
+        "no",
+        "on",
+        "off",
+        "1",
+        "0",
+        "null",
+        "none",
+        "undefined",
+        "nil",
+        # Environments
+        "development",
+        "production",
+        "test",
+        "staging",
+        "dev",
+        "prod",
+        "local",
+        # Log levels
+        "debug",
+        "info",
+        "warn",
+        "warning",
+        "error",
+        "trace",
+        "fatal",
+        # Network
+        "localhost",
+        "127.0.0.1",
+        "0.0.0.0",
+        # Common credentials placeholders
+        "password",
+        "secret",
+        "key",
+        "token",
+        "admin",
+        "root",
+        "user",
+        # Misc
+        "public",
+        "private",
+        "default",
+        "utf-8",
+    }
+
+    if val_lower in common_values:
+        return False
+
+    # Ignore short values (likely false positives in text)
+    if len(value) < 4:
+        return False
+
+    # Ignore short numeric values (ports, counts, simple IDs)
+    # Most secrets (API keys, etc.) are longer or mixed alphanumeric.
+    if value.isdigit() and len(value) < 6:
+        return False
+
+    return True
+
+
 def get_file_snippet(file_path, max_lines=50, max_bytes=4096):
     snippet = ""
     byte_count = 0
@@ -68,8 +144,8 @@ def get_project_structure(ignore_patterns):
 def handle_env_variables(content, env_vars):
     detected_vars = []
     for key, value in env_vars.items():
-        # Only detect if value is not empty and present in content
-        if value and value in content:
+        # Only detect if value is not empty, present in content, AND is a candidate
+        if value and value in content and _is_masking_candidate(value):
             detected_vars.append((key, value))
     if not detected_vars:
         return content
@@ -94,6 +170,7 @@ def handle_env_variables(content, env_vars):
         # If 'k', we don't modify the content
 
     return content
+
 
 def generate_prompt_template(
     files_to_include: List[FileTuple],
@@ -182,16 +259,18 @@ def get_task_from_user_interactive(console: Console) -> str:
     terminal prompt instead of an external editor.
     """
     console.print("\n[bold cyan]📝 Please enter your task instructions.[/bold cyan]")
-    console.print("   - Press [bold]Meta+Enter[/bold] or [bold]Esc[/bold] then [bold]Enter[/bold] to submit.")
+    console.print(
+        "   - Press [bold]Meta+Enter[/bold] or [bold]Esc[/bold] then [bold]Enter[/bold] to submit."
+    )
     console.print("   - Press [bold]Ctrl-C[/bold] to abort.")
 
-    style = Style.from_dict({'': '#00ff00'})
+    style = Style.from_dict({"": "#00ff00"})
 
     try:
         task = prompt_toolkit_prompt(
-            '> ',
+            "> ",
             multiline=True,
-            prompt_continuation='  ',
+            prompt_continuation="  ",
             style=style,
         )
         return task.strip()

@@ -14,32 +14,123 @@ _is_binary_cache: dict[str, bool] = {}
 # Using sets for O(1) average time complexity lookups
 TEXT_EXTENSIONS = {
     # Code
-    ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".c", ".cpp", ".h", ".hpp",
-    ".cs", ".go", ".rs", ".sh", ".bash", ".ps1", ".rb", ".php", ".swift",
-    ".kt", ".kts", ".scala", ".pl", ".pm", ".tcl",
+    ".py",
+    ".js",
+    ".ts",
+    ".jsx",
+    ".tsx",
+    ".java",
+    ".c",
+    ".cpp",
+    ".h",
+    ".hpp",
+    ".cs",
+    ".go",
+    ".rs",
+    ".sh",
+    ".bash",
+    ".ps1",
+    ".rb",
+    ".php",
+    ".swift",
+    ".kt",
+    ".kts",
+    ".scala",
+    ".pl",
+    ".pm",
+    ".tcl",
     # Markup & Data
-    ".html", ".htm", ".xml", ".css", ".scss", ".sass", ".less", ".json",
-    ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".md", ".txt", ".rtf",
-    ".csv", ".tsv", ".sql", ".graphql", ".gql",
+    ".html",
+    ".htm",
+    ".xml",
+    ".css",
+    ".scss",
+    ".sass",
+    ".less",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".conf",
+    ".md",
+    ".txt",
+    ".rtf",
+    ".csv",
+    ".tsv",
+    ".sql",
+    ".graphql",
+    ".gql",
     # Config & Other
-    ".gitignore", ".dockerfile", "dockerfile", ".env", ".properties", ".mdx",
+    ".gitignore",
+    ".dockerfile",
+    "dockerfile",
+    ".env",
+    ".properties",
+    ".mdx",
 }
 
 BINARY_EXTENSIONS = {
     # Images
-    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".ico", ".webp", ".svg",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".bmp",
+    ".tiff",
+    ".ico",
+    ".webp",
+    ".svg",
     # Audio/Video
-    ".mp3", ".wav", ".ogg", ".flac", ".mp4", ".avi", ".mov", ".wmv", ".mkv",
+    ".mp3",
+    ".wav",
+    ".ogg",
+    ".flac",
+    ".mp4",
+    ".avi",
+    ".mov",
+    ".wmv",
+    ".mkv",
     # Archives
-    ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz",
+    ".zip",
+    ".rar",
+    ".7z",
+    ".tar",
+    ".gz",
+    ".bz2",
+    ".xz",
     # Documents
-    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt",
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".ppt",
+    ".pptx",
+    ".odt",
     # Executables & Compiled
-    ".exe", ".dll", ".so", ".dylib", ".class", ".jar", ".pyc", ".pyd", ".whl",
+    ".exe",
+    ".dll",
+    ".so",
+    ".dylib",
+    ".class",
+    ".jar",
+    ".pyc",
+    ".pyd",
+    ".whl",
     # Databases & Other
-    ".db", ".sqlite", ".sqlite3", ".db-wal", ".db-shm", ".lock",
-    ".bak", ".swo", ".swp",
+    ".db",
+    ".sqlite",
+    ".sqlite3",
+    ".db-wal",
+    ".db-shm",
+    ".lock",
+    ".bak",
+    ".swo",
+    ".swp",
 }
+
 
 def _read_gitignore_patterns(gitignore_path: str) -> list[str]:
     """Reads patterns from a single .gitignore file and caches them."""
@@ -84,7 +175,7 @@ def is_ignored(
     basename_patterns, path_patterns = get_all_patterns(
         default_ignore_patterns, path_abs, project_root_abs
     )
-    
+
     # --- Step 1: Fast check for basename patterns ---
     path_basename = os.path.basename(path_abs)
     for pattern in basename_patterns:
@@ -101,11 +192,13 @@ def is_ignored(
 
     # Pre-calculate all path prefixes to check, avoiding re-joins in the loop.
     path_parts = Path(path_rel_to_root).parts
-    path_prefixes = [os.path.join(*path_parts[:i]) for i in range(1, len(path_parts) + 1)]
+    path_prefixes = [
+        os.path.join(*path_parts[:i]) for i in range(1, len(path_parts) + 1)
+    ]
 
     # Pre-process patterns to remove trailing slashes once.
     processed_path_patterns = [p.rstrip("/") for p in path_patterns]
-    
+
     for prefix in path_prefixes:
         for pattern in processed_path_patterns:
             if fnmatch.fnmatch(prefix, pattern):
@@ -115,14 +208,17 @@ def is_ignored(
     _is_ignored_cache[path_abs] = False
     return False
 
-def get_all_patterns(default_ignore_patterns, path_abs, project_root_abs) -> Tuple[Set[str], Set[str]]:
+
+def get_all_patterns(
+    default_ignore_patterns, path_abs, project_root_abs
+) -> Tuple[Set[str], Set[str]]:
     """
     Gathers all applicable ignore patterns, splitting them into two sets
     for optimized checking: one for basenames, one for full paths.
     """
     basename_patterns = set()
     path_patterns = set()
-    
+
     for p in default_ignore_patterns:
         if "/" in p:
             path_patterns.add(p)

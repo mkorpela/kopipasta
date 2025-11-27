@@ -44,16 +44,73 @@ def read_env_file() -> Dict[str, str]:
 
 def read_gitignore() -> List[str]:
     default_ignore_patterns = [
-        ".git", "node_modules", "venv", ".venv", "dist", ".idea", "__pycache__",
-        "*.pyc", ".ruff_cache", ".mypy_cache", ".pytest_cache", ".vscode",
-        ".vite", ".terraform", "output", "poetry.lock", "package-lock.json",
-        ".env", "*.log", "*.bak", "*.swp", "*.swo", "*.tmp", "tmp", "temp",
-        "logs", "build", "target", ".DS_Store", "Thumbs.db", "*.class", "*.jar",
-        "*.war", "*.ear", "*.sqlite", "*.db", "*.jpg", "*.jpeg", "*.png",
-        "*.gif", "*.bmp", "*.tiff", "*.ico", "*.svg", "*.webp", "*.mp3",
-        "*.mp4", "*.avi", "*.mov", "*.wmv", "*.flv", "*.pdf", "*.doc",
-        "*.docx", "*.xls", "*.xlsx", "*.ppt", "*.pptx", "*.zip", "*.rar",
-        "*.tar", "*.gz", "*.7z", "*.exe", "*.dll", "*.so", "*.dylib",
+        ".git",
+        "node_modules",
+        "venv",
+        ".venv",
+        "dist",
+        ".idea",
+        "__pycache__",
+        "*.pyc",
+        ".ruff_cache",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".vscode",
+        ".vite",
+        ".terraform",
+        "output",
+        "poetry.lock",
+        "package-lock.json",
+        ".env",
+        "*.log",
+        "*.bak",
+        "*.swp",
+        "*.swo",
+        "*.tmp",
+        "tmp",
+        "temp",
+        "logs",
+        "build",
+        "target",
+        ".DS_Store",
+        "Thumbs.db",
+        "*.class",
+        "*.jar",
+        "*.war",
+        "*.ear",
+        "*.sqlite",
+        "*.db",
+        "*.jpg",
+        "*.jpeg",
+        "*.png",
+        "*.gif",
+        "*.bmp",
+        "*.tiff",
+        "*.ico",
+        "*.svg",
+        "*.webp",
+        "*.mp3",
+        "*.mp4",
+        "*.avi",
+        "*.mov",
+        "*.wmv",
+        "*.flv",
+        "*.pdf",
+        "*.doc",
+        "*.docx",
+        "*.xls",
+        "*.xlsx",
+        "*.ppt",
+        "*.pptx",
+        "*.zip",
+        "*.rar",
+        "*.tar",
+        "*.gz",
+        "*.7z",
+        "*.exe",
+        "*.dll",
+        "*.so",
+        "*.dylib",
     ]
     gitignore_patterns = default_ignore_patterns.copy()
 
@@ -67,7 +124,7 @@ def read_gitignore() -> List[str]:
                         gitignore_patterns.append(line)
         except Exception as e:
             print(f"Warning: Could not read .gitignore: {e}")
-            
+
     return gitignore_patterns
 
 
@@ -200,8 +257,12 @@ def grep_files_in_directory(
 
     try:
         cmd = [
-            "ag", "--files-with-matches", "--nocolor", "--ignore-case",
-            pattern, directory,
+            "ag",
+            "--files-with-matches",
+            "--nocolor",
+            "--ignore-case",
+            pattern,
+            directory,
         ]
 
         result = subprocess.run(cmd, capture_output=True, text=True)
@@ -230,8 +291,13 @@ def grep_files_in_directory(
                     match_count = 1
 
             preview_cmd = [
-                "ag", "--max-count=3", "--nocolor", "--noheading", "--numbers",
-                pattern, file,
+                "ag",
+                "--max-count=3",
+                "--nocolor",
+                "--noheading",
+                "--numbers",
+                pattern,
+                file,
             ]
             preview_result = subprocess.run(preview_cmd, capture_output=True, text=True)
             preview_lines = []

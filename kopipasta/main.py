@@ -189,10 +189,12 @@ def main():
 
     if args.task:
         task_description = args.task
-        console.print("\n[bold cyan]Using task description from --task argument.[/bold cyan]")
+        console.print(
+            "\n[bold cyan]Using task description from --task argument.[/bold cyan]"
+        )
     else:
         task_description = get_task_from_user_interactive(console)
-    
+
     if not task_description:
         console.print("\n[bold red]No task provided. Aborting.[/bold red]")
         return
@@ -245,6 +247,7 @@ def main():
     except pyperclip.PyperclipException as e:
         print(f"\nWarning: Failed to copy to clipboard: {e}")
         print("You can manually copy the prompt above.")
+
 
 if __name__ == "__main__":
     main()

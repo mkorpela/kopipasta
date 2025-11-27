@@ -39,18 +39,18 @@ completely_different_key=foo
 def test_parse_llm_output(mock_llm_output):
     patches = parse_llm_output(mock_llm_output)
     assert len(patches) == 3
-    
-    main_py_patch = next(p for p in patches if p['file_path'] == 'src/main.py')
-    assert main_py_patch['type'] == 'full'
-    assert '# A new comment' in main_py_patch['content']
 
-    app_js_patch = next(p for p in patches if p['file_path'] == 'web/app.js')
-    assert app_js_patch['type'] == 'full'
-    assert 'console.log("Hello from JS");' in app_js_patch['content']
+    main_py_patch = next(p for p in patches if p["file_path"] == "src/main.py")
+    assert main_py_patch["type"] == "full"
+    assert "# A new comment" in main_py_patch["content"]
 
-    config_txt_patch = next(p for p in patches if p['file_path'] == 'config.txt')
-    assert config_txt_patch['type'] == 'full'
-    assert "completely_different_key=foo" in config_txt_patch['content']
+    app_js_patch = next(p for p in patches if p["file_path"] == "web/app.js")
+    assert app_js_patch["type"] == "full"
+    assert 'console.log("Hello from JS");' in app_js_patch["content"]
+
+    config_txt_patch = next(p for p in patches if p["file_path"] == "config.txt")
+    assert config_txt_patch["type"] == "full"
+    assert "completely_different_key=foo" in config_txt_patch["content"]
 
 
 @pytest.fixture
@@ -64,13 +64,15 @@ def patch_test_dir(tmp_path: Path) -> Path:
     return test_dir
 
 
-def test_apply_patches_overwrite(patch_test_dir: Path, mock_llm_output, capsys, monkeypatch):
+def test_apply_patches_overwrite(
+    patch_test_dir: Path, mock_llm_output, capsys, monkeypatch
+):
     """
     Tests that 'full' blocks overwrite the existing file content entirely.
     This is the safer, deterministic behavior replacing the old fuzzy matcher.
     """
     patches = parse_llm_output(mock_llm_output)
-    
+
     # Change CWD into the mock project for the duration of the test
     original_cwd = os.getcwd()
     os.chdir(patch_test_dir)
@@ -81,10 +83,10 @@ def test_apply_patches_overwrite(patch_test_dir: Path, mock_llm_output, capsys, 
         updated_main_py = patch_test_dir / "src/main.py"
         assert updated_main_py.exists()
         main_py_content = updated_main_py.read_text()
-        
+
         # It should contain the new content
         assert 'print("Hello, new patched world!")' in main_py_content
-        
+
         # It should NOT contain the old content (overwrite behavior)
         assert 'print("Hello, old world!")' not in main_py_content
 
@@ -104,6 +106,7 @@ def test_apply_patches_overwrite(patch_test_dir: Path, mock_llm_output, capsys, 
 
 
 # --- Diff-based patching ---
+
 
 @pytest.fixture
 def mock_llm_diff_output():
@@ -162,7 +165,7 @@ def diff_test_dir(tmp_path: Path) -> Path:
     src_dir = test_dir / "src"
     src_dir.mkdir()
     (src_dir / "app.py").write_text(
-"""def get_user(name: str) -> str:
+        """def get_user(name: str) -> str:
     return name.upper()
 
 def main():
@@ -173,22 +176,24 @@ def main():
 
 if __name__ == "__main__":
     main()
-""")
+"""
+    )
 
     # Markdown file
     docs_dir = test_dir / "docs"
     docs_dir.mkdir()
     (docs_dir / "usage.md").write_text(
-"""# Usage
+        """# Usage
 
 Run the tool from your terminal.
-""")
+"""
+    )
 
     # TypeScript file
     web_api_dir = test_dir / "web" / "api"
     web_api_dir.mkdir(parents=True, exist_ok=True)
     (web_api_dir / "service.ts").write_text(
-"""interface IApiService {
+        """interface IApiService {
     fetchData(id: string): Promise<any>;
 }
 
@@ -199,7 +204,8 @@ export class ApiService {
         return fetch(this.endpoint);
     }
 }
-""")
+"""
+    )
     return test_dir
 
 
@@ -214,9 +220,9 @@ def test_apply_patches_from_diff(diff_test_dir: Path, mock_llm_diff_output, caps
         # Assert Python file changed
         py_content = (diff_test_dir / "src/app.py").read_text()
         assert 'print(f"Greetings, {user}!")' in py_content
-        assert '# Log the user for debugging' in py_content
+        assert "# Log the user for debugging" in py_content
         assert 'print(f"Hello, {user}!")' not in py_content
-        
+
         # Assert Markdown file changed
         md_content = (diff_test_dir / "docs/usage.md").read_text()
         assert "project's root directory" in md_content

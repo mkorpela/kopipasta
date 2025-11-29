@@ -141,7 +141,10 @@ def get_project_structure(ignore_patterns):
     return "\n".join(tree)
 
 
-def handle_env_variables(content, env_vars):
+def handle_env_variables(content, env_vars, decisions_cache: Dict[str, str] = None):
+    if decisions_cache is None:
+        decisions_cache = {}
+
     detected_vars = []
     for key, value in env_vars.items():
         # Only detect if value is not empty, present in content, AND is a candidate
@@ -150,19 +153,25 @@ def handle_env_variables(content, env_vars):
     if not detected_vars:
         return content
 
-    print("Detected environment variables:")
-    for key, value in detected_vars:
-        print(f"- {key}={value}")
+    undecided_vars = [item for item in detected_vars if item[0] not in decisions_cache]
+
+    if undecided_vars:
+        print("Detected environment variables:")
+        for key, value in undecided_vars:
+            print(f"- {key}={value}")
+
+        for key, value in undecided_vars:
+            while True:
+                choice = input(
+                    f"How would you like to handle {key}? (m)ask / (s)kip / (k)eep: "
+                ).lower()
+                if choice in ["m", "s", "k"]:
+                    break
+                print("Invalid choice. Please enter 'm', 's', or 'k'.")
+            decisions_cache[key] = choice
 
     for key, value in detected_vars:
-        while True:
-            choice = input(
-                f"How would you like to handle {key}? (m)ask / (s)kip / (k)eep: "
-            ).lower()
-            if choice in ["m", "s", "k"]:
-                break
-            print("Invalid choice. Please enter 'm', 's', or 'k'.")
-
+        choice = decisions_cache.get(key, 'k')
         if choice == "m":
             content = content.replace(value, "*" * len(value))
         elif choice == "s":
@@ -178,6 +187,8 @@ def generate_prompt_template(
     web_contents: Dict[str, Tuple[FileTuple, str]],
     env_vars: Dict[str, str],
 ) -> Tuple[str, int]:
+    env_decisions = {}
+
     prompt = "# Project Overview\n\n"
     prompt += "## Project Structure\n\n"
     prompt += "```\n"
@@ -198,14 +209,14 @@ def generate_prompt_template(
             prompt += f"### {relative_path} (snippet)\n\n```{language}\n{file_content}\n```\n\n"
         else:
             file_content = read_file_contents(file)
-            file_content = handle_env_variables(file_content, env_vars)
+            file_content = handle_env_variables(file_content, env_vars, env_decisions)
             prompt += f"### {relative_path}\n\n```{language}\n{file_content}\n```\n\n"
 
     if web_contents:
         prompt += "## Web Content\n\n"
         for url, (file_tuple, content) in web_contents.items():
             _, is_snippet, _, content_type = file_tuple
-            content = handle_env_variables(content, env_vars)
+            content = handle_env_variables(content, env_vars, env_decisions)
             language = content_type if content_type in ["json", "csv"] else ""
             prompt += f"### {url}{' (snippet)' if is_snippet else ''}\n\n```{language}\n{content}\n```\n\n"
 

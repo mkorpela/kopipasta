@@ -3,6 +3,7 @@ import os
 import argparse
 import subprocess
 import shutil
+import sys
 from typing import Dict, List, Optional, Set, Tuple
 import pyperclip
 from rich.console import Console
@@ -70,6 +71,14 @@ def fetch_web_content(
 
 
 def main():
+    if sys.platform == "win32":
+        try:
+            sys.stdin.reconfigure(encoding="utf-8")
+            sys.stdout.reconfigure(encoding="utf-8")
+            sys.stderr.reconfigure(encoding="utf-8")
+        except AttributeError:
+            pass
+
     console = Console()
     parser = argparse.ArgumentParser(
         description="Generate a prompt with project structure, file contents, and web content."

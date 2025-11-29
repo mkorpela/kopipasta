@@ -69,7 +69,7 @@ def parse_llm_output(content: str) -> List[Patch]:
     """
     patches: List[Patch] = []
     # Regex to find fenced code blocks, optionally with a language hint
-    code_block_regex = re.compile(r"```(?:[a-zA-Z0-9\.\-]+)?\n(.*?)```", re.DOTALL)
+    code_block_regex = re.compile(r"```(?:[a-zA-Z0-9\.\-]+)?\n(.*?)\n```", re.DOTALL)
     # Regex to find the file path comment, supporting various comment styles
     file_path_regex = re.compile(
         r"^(?:#|//|\/\*)\s*FILE:\s*(\S+)\s*(?:\*\/)?\s*\n?", re.MULTILINE

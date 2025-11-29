@@ -112,6 +112,7 @@ def _apply_diff_patch(
     replacements = []
     hunks_applied_count = 0
 
+    # --- Hunk Analysis Phase ---
     for i, hunk in enumerate(hunks):
         hunk_original = hunk["original_lines"]
         if not hunk_original:
@@ -131,6 +132,11 @@ def _apply_diff_patch(
         if match.size == 0 or match_ratio < 0.6:
             console.print(
                 f"  - Skipping hunk #{i+1}: Could not find a confident match (best ratio: {match_ratio:.2f})."
+            )
+            # Clean up context for display (limit to first 3 lines)
+            preview = "\n".join([f"      | {line}" for line in hunk_original[:3]])
+            console.print(
+                f"    [dim]Expected context starts with:\n{preview}[/dim]"
             )
             continue
 
@@ -156,6 +162,8 @@ def _apply_diff_patch(
         )
         return False
 
+    # --- Application Phase ---
+    
     # Sort replacements by start index in reverse to apply patches without shifting indices
     replacements.sort(key=lambda x: x[0], reverse=True)
 

@@ -22,6 +22,7 @@ from kopipasta.ops import (
     print_char_count,
     read_env_file,
     read_gitignore,
+    sanitize_string,
 )
 from kopipasta.tree_selector import TreeSelector
 from kopipasta.prompt import (
@@ -73,9 +74,9 @@ def fetch_web_content(
 def main():
     if sys.platform == "win32":
         try:
-            sys.stdin.reconfigure(encoding="utf-8")
-            sys.stdout.reconfigure(encoding="utf-8")
-            sys.stderr.reconfigure(encoding="utf-8")
+            sys.stdin.reconfigure(encoding="utf-8", errors="replace")
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
         except AttributeError:
             pass
 
@@ -213,6 +214,8 @@ def main():
         + task_description
         + prompt_template[cursor_position:]
     )
+    
+    final_prompt = sanitize_string(final_prompt)
 
     print("\n\nGenerated prompt:")
     print("-" * 80)

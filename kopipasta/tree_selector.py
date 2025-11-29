@@ -17,6 +17,7 @@ from kopipasta.ops import (
     propose_and_add_dependencies,
     grep_files_in_directory,
     select_from_grep_results,
+    sanitize_string,
 )
 
 
@@ -434,6 +435,7 @@ q: Quit and finalize"""
                 prompt_continuation="  ",
                 style=style,
             )
+            content = sanitize_string(content)
             if not content.strip():
                 self.console.print("\n[yellow]No content pasted. Aborting.[/yellow]")
                 return

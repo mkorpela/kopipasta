@@ -15,6 +15,17 @@ from kopipasta.prompt import get_file_snippet, get_language_for_file
 import kopipasta.import_parser as import_parser
 
 
+def sanitize_string(text: str) -> str:
+    """
+    Ensures the string contains valid unicode code points, fixing surrogate pairs
+    that might have been introduced by Windows terminal input.
+    """
+    try:
+        return text.encode("utf-16", "surrogatepass").decode("utf-16")
+    except Exception:
+        return text
+
+
 def print_char_count(count: int):
     token_estimate = count // 4
     print(

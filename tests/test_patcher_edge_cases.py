@@ -3,11 +3,13 @@ from pathlib import Path
 import pytest
 from kopipasta.patcher import apply_patches, parse_llm_output
 
+
 @pytest.fixture
 def edge_case_dir(tmp_path: Path) -> Path:
     d = tmp_path / "edge_cases"
     d.mkdir()
     return d
+
 
 def test_multiple_hunks_same_file(edge_case_dir, capsys):
     """
@@ -50,6 +52,7 @@ def test_multiple_hunks_same_file(edge_case_dir, capsys):
     finally:
         os.chdir(original_cwd)
 
+
 def test_patch_with_backticks_in_string(edge_case_dir):
     """Regression test: Ensure code containing markdown blocks isn't truncated."""
     file_path = edge_case_dir / "meta.py"
@@ -71,13 +74,14 @@ print("hello")
     try:
         patches = parse_llm_output(llm_output)
         apply_patches(patches)
-        
+
         content = file_path.read_text()
         # Should contain the nested backticks
-        assert '```python' in content
+        assert "```python" in content
         assert 'print("hello")' in content
     finally:
         os.chdir(original_cwd)
+
 
 def test_diff_context_mismatch_diagnostics(edge_case_dir, capsys):
     """

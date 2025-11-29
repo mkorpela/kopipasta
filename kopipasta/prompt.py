@@ -171,7 +171,7 @@ def handle_env_variables(content, env_vars, decisions_cache: Dict[str, str] = No
             decisions_cache[key] = choice
 
     for key, value in detected_vars:
-        choice = decisions_cache.get(key, 'k')
+        choice = decisions_cache.get(key, "k")
         if choice == "m":
             content = content.replace(value, "*" * len(value))
         elif choice == "s":

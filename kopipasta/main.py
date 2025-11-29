@@ -214,7 +214,7 @@ def main():
         + task_description
         + prompt_template[cursor_position:]
     )
-    
+
     final_prompt = sanitize_string(final_prompt)
 
     print("\n\nGenerated prompt:")

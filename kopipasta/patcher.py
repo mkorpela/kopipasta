@@ -69,7 +69,9 @@ def parse_llm_output(content: str) -> List[Patch]:
     """
     patches: List[Patch] = []
     # Regex to find fenced code blocks, optionally with a language hint
-    code_block_regex = re.compile(r"```(?:[a-zA-Z0-9\.\-]+)?\n(.*?)\n```(?:\s*\n|\s*$)", re.DOTALL)
+    code_block_regex = re.compile(
+        r"```(?:[a-zA-Z0-9\.\-]+)?\n(.*?)\n```(?:\s*\n|\s*$)", re.DOTALL
+    )
     # Regex to find the file path comment, supporting various comment styles
     file_path_regex = re.compile(
         r"^(?:#|//|\/\*)\s*FILE:\s*(\S+)\s*(?:\*\/)?\s*\n?", re.MULTILINE
@@ -135,9 +137,7 @@ def _apply_diff_patch(
             )
             # Clean up context for display (limit to first 3 lines)
             preview = "\n".join([f"      | {line}" for line in hunk_original[:3]])
-            console.print(
-                f"    [dim]Expected context starts with:\n{preview}[/dim]"
-            )
+            console.print(f"    [dim]Expected context starts with:\n{preview}[/dim]")
             continue
 
         start_index = match.a - match.b
@@ -163,7 +163,7 @@ def _apply_diff_patch(
         return False
 
     # --- Application Phase ---
-    
+
     # Sort replacements by start index in reverse to apply patches without shifting indices
     replacements.sort(key=lambda x: x[0], reverse=True)
 

@@ -13,7 +13,7 @@ A CLI tool for taking **full, transparent control** of your prompt. No black box
 
 ## The Philosophy: You Control the Context
 
-Many AI coding assistants use Retrieval-Augmented Generation (RAG) to automatically find what *they think* is relevant context. This is a black box. When the LLM gives a bad answer, you can't debug it because you don't know what context it was actually given.
+Many AI coding assistants automatically find what *they think* is relevant context. This is a black box. When the LLM gives a bad answer, you can't debug it because you don't know what context it was actually given.
 
 **`kopipasta` is the opposite.** I built it for myself on the principle of **explicit context control**. You are in the driver's seat. You decide *exactly* what files, functions, and snippets go into the prompt. This transparency is the key to getting reliable, debuggable results from an LLM.
 

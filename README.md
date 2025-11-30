@@ -21,13 +21,12 @@ It's a "smart copy" command for your project, not a magic wand.
 
 ## How It Works
 
-The workflow is dead simple:
+The workflow is a fast, iterative cycle:
 
-1.  **Gather:** Run `kopipasta` and point it at the files, directories, and URLs that matter for your task.
-2.  **Select:** The tool interactively helps you choose what to include. For large files, you can send just a snippet or even hand-pick individual functions.
-3.  **Define:** Write your instructions to the LLM in an interactive prompt directly in your terminal.
-4.  **Paste:** The final, comprehensive prompt is now on your clipboard, ready to be pasted into ChatGPT, Gemini, Claude, or your LLM of choice.
-5.  **Apply:** Inside the file selector, press `p`, paste the LLM's markdown response, and the tool will automatically patch your local files.
+1.  **Context:** Run `kopipasta` to select files and define your task.
+2.  **Generate:** Paste the prompt into your LLM (ChatGPT, Claude, etc.).
+3.  **Patch:** Press `p` in `kopipasta` and paste the LLM's response to apply changes locally.
+4.  **Iterate:** Review with `git diff`, then repeat for the next step.
 
 ## Installation
 
@@ -62,16 +61,17 @@ kopipasta [options] [files_or_directories_or_urls...]
 `kopipasta` automatically injects strict instructions into your prompt, teaching the LLM how to format code for this tool.
 `kopipasta` can apply changes suggested by an LLM directly to your codebase, assuming you are in a Git repository.
 
-1.  While running `kopipasta` in the interactive file selector, press the `p` key.
-2.  Paste the entire markdown response from your LLM into the terminal prompt and submit.
-3.  The tool will find code blocks with file paths (e.g., `// FILE: src/main.py`) and immediately write those changes to your local files.
-4.  After applying, use standard Git commands like `git diff` to review the changes before staging and committing them.
+1.  Press `p` in the file selector.
+2.  Paste the **entire** markdown response from your LLM.
+3.  The tool robustly detects code blocks, handles indentation quirks, and applies changes (full files or diffs).
+4.  If a patch fails, the tool provides **diagnostic feedback** telling you exactly why (e.g., missing headers).
+5.  **Always** review changes with `git diff` before committing.
 
 ## Key Features
 
 *   **Total Context Control:** Interactively select files, directories, or snippets. You see everything that goes into the prompt.
 *   **Smart Dependency Analysis:** Press `d` on a Python or TypeScript/JavaScript file, and `kopipasta` will scan imports to find and add related local files to your context automatically.
-*   **Interactive Code Patcher:** Press `p` in the file selector to paste and apply LLM-suggested changes directly to your local files. Relies on your version control (like Git) for safety, enabling a fast workflow.
+*   **Robust Code Patcher:** Applies LLM suggestions directly. Handles indentation, various comment styles (`#`, `//`, `<!--`), and multiple files per block.
 *   **Built-in Search:** Press `g` to grep for text patterns inside directories to find relevant files.
 *   **Transparent & Explicit:** No hidden RAG. You know exactly what's in the prompt because you built it. This makes debugging LLM failures possible.
 *   **Web-Aware:** Pulls in content directly from URLs—perfect for API documentation.

@@ -7,9 +7,17 @@
 
 A CLI tool for taking **full, transparent control** of your prompt. No black boxes.
 
-<img src="kopipasta.jpg" alt="kopipasta" width="300">
+```text
+➜  ~ kopipasta
 
-- An LLM told me that "kopi" means Coffee in some languages... and a Diffusion model then made this delicious soup.
+  📁 Project Files
+  |-- 📂 src/
+  |   |-- ● 📄 main.py (4.2 KB)
+  |   |-- ○ 📄 utils.py (1.5 KB)
+  |-- ○ 📄 README.md (2.1 KB)
+
+  Current: src/main.py | Selected: 1 full | ~4,200 chars
+```
 
 ## The Philosophy: You Control the Context
 
@@ -27,6 +35,13 @@ The workflow is a fast, iterative cycle:
 2.  **Generate:** Paste the prompt into your LLM (ChatGPT, Claude, etc.).
 3.  **Patch:** Press `p` in `kopipasta` and paste the LLM's response to apply changes locally.
 4.  **Iterate:** Review with `git diff`, then repeat for the next step.
+
+## Use Cases
+
+*   **Targeted Refactoring:** Select just the module you are cleaning up and its immediate dependencies.
+*   **Test Generation:** Pipe your implementation file and a similar existing test file to the LLM to generate consistent new tests.
+*   **Docs to Code:** Select an API documentation file (or web URL) and your source file to implement a feature against a spec.
+*   **Bug Fixing:** Grab the relevant traceback files and the config to diagnose issues without distracting the LLM with the whole repo.
 
 ## Installation
 
@@ -69,6 +84,22 @@ kopipasta [options] [files_or_directories_or_urls...]
 3.  The tool robustly detects code blocks, handles indentation quirks, and applies changes (full files or diffs).
 4.  If a patch fails, the tool provides **diagnostic feedback** telling you exactly why (e.g., missing headers).
 5.  **Always** review changes with `git diff` before committing.
+
+**Example of supported LLM output formats:**
+
+```python
+# FILE: src/utils.py
+def new_feature():
+    print("kopipasta handles full file creation")
+```
+
+```diff
+# FILE: src/main.py
+@@ -10,2 +10,3 @@
+ def main():
+-    pass
++    new_feature()
+```
 
 ## Key Features
 

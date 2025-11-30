@@ -440,7 +440,7 @@ q: Quit and finalize"""
                 self.console.print("\n[yellow]No content pasted. Aborting.[/yellow]")
                 return
 
-            patches = parse_llm_output(content)
+            patches = parse_llm_output(content, self.console)
             apply_patches(patches)
             self.console.print(
                 "\n[bold]Review the changes above with `git diff` before committing.[/bold]"

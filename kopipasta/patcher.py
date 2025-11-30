@@ -61,7 +61,7 @@ def _parse_diff_hunks(diff_content: str) -> List[Hunk]:
     return hunks
 
 
-def parse_llm_output(content: str) -> List[Patch]:
+def parse_llm_output(content: str, console: Console = None) -> List[Patch]:
     """
     Parses LLM markdown output to find file patches.
     Handles:
@@ -73,6 +73,9 @@ def parse_llm_output(content: str) -> List[Patch]:
     Returns a list of structured Patch objects.
     """
     patches: List[Patch] = []
+    blocks_found = 0
+    blocks_with_valid_headers = 0
+
     lines = content.splitlines()
     i = 0
 
@@ -98,6 +101,7 @@ def parse_llm_output(content: str) -> List[Patch]:
         fence_match = re.match(r"^(\s*)(`{3,})(.*)$", line)
 
         if fence_match:
+            blocks_found += 1
             indent = fence_match.group(1)
             fence_len = len(fence_match.group(2))
             info_string = fence_match.group(3)
@@ -109,6 +113,7 @@ def parse_llm_output(content: str) -> List[Patch]:
             header_match = file_header_regex.search(info_string)
             if header_match:
                 current_file_path = header_match.group(1).strip()
+                blocks_with_valid_headers += 1
 
             i += 1
 
@@ -147,6 +152,7 @@ def parse_llm_output(content: str) -> List[Patch]:
                     if current_file_path:
                         finalize(current_file_path, current_content_lines)
                     current_file_path = match.group(1).strip()
+                    blocks_with_valid_headers += 1
                     current_content_lines = []
                 else:
                     if current_file_path:
@@ -155,8 +161,27 @@ def parse_llm_output(content: str) -> List[Patch]:
             # Save the last file in the block
             if current_file_path:
                 finalize(current_file_path, current_content_lines)
+            
+            # --- DIAGNOSTICS: If block ended but we never found a file path ---
+            elif console:
+                # Check for near misses to give helpful hints
+                preview = "\n".join(block_lines[:2]).strip()
+                hint = ""
+                if "FILE:" in info_string or any("FILE:" in l for l in block_lines[:2]):
+                    hint = " (Found 'FILE:' keyword but syntax was incorrect. Check comment style?)"
+                elif "filename" in info_string.lower() or any("filename" in l.lower() for l in block_lines[:2]):
+                    hint = " (Found 'filename' keyword. Please use 'FILE:' instead.)"
+
+                console.print(f"[dim yellow]⚠ Skipped code block at line {i}: No valid '# FILE: path' header found.{hint}[/dim yellow]")
+                if preview:
+                    console.print(f"[dim]   Preview: {preview}[/dim]")
 
         i += 1
+
+    if blocks_found == 0 and console:
+        console.print("[dim yellow]⚠ No markdown code blocks (```) found in the pasted content.[/dim yellow]")
+    elif blocks_found > 0 and len(patches) == 0 and console:
+        console.print(f"[bold red]Found {blocks_found} code blocks, but none contained valid file headers.[/bold red]")
 
     return patches
 

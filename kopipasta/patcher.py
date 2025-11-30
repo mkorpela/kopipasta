@@ -82,7 +82,7 @@ def parse_llm_output(content: str) -> List[Patch]:
     # - Capture filename lazily (.+?)
     # - Handle trailing comment closers like */ or -->
     file_header_regex = re.compile(
-        r"^\s*(?:#|//|--|/\*|<!--)\s*FILE:\s*(.+?)(?:\s|\*\/|-->)*$",
+        r"\s*(?:#|//|--|/\*|<!--)\s*FILE:\s*(.+?)(?:\s|\*\/|-->)*$",
         re.IGNORECASE
     )
 

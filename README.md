@@ -15,7 +15,7 @@ A CLI tool for taking **full, transparent control** of your prompt. No black box
 
 Many AI coding assistants automatically find what *they think* is relevant context. This is a black box. When the LLM gives a bad answer, you can't debug it because you don't know what context it was actually given.
 
-**`kopipasta` is the opposite.** I built it for myself on the principle of **explicit context control**. You are in the driver's seat. You decide *exactly* what files, functions, and snippets go into the prompt. This transparency is the key to getting reliable, debuggable results from an LLM.
+**`kopipasta` is the opposite.** I built it on the principle of **explicit context control**. You are in the driver's seat. You decide *exactly* what files, functions, and snippets go into the prompt.
 
 It's a "smart copy" command for your project, not a magic wand.
 
@@ -44,6 +44,9 @@ pip install kopipasta
 
 ### Creating a Prompt
 
+By default `kopipasta` opens tree selector on the current dir.
+
+You may also use the command line arguments:
 ```bash
 kopipasta [options] [files_or_directories_or_urls...]
 ```
@@ -97,16 +100,3 @@ kopipasta [options] [files_or_directories_or_urls...]
 | `r` | Reuse selection from previous run |
 | `Enter` | Expand/Collapse directory |
 | `q` | Quit and finalize selection |
-
-## A Real-World Example
-
-I had a bug where my `setup.py` didn't include all the dependencies from `requirements.txt`.
-
-1.  I ran `kopipasta -t "Update setup.py to read dependencies dynamically from requirements.txt" setup.py requirements.txt`.
-2.  The tool confirmed the inclusion of both files and copied the complete prompt to my clipboard.
-3.  I pasted the prompt into my LLM chat window.
-4.  I copied the LLM's response (which included a modified `setup.py` in a markdown code block).
-5.  Inside `kopipasta`, I pressed `p`, pasted the response, and my local `setup.py` was updated.
-6.  I ran `git diff` to review the changes, then tested and committed.
-
-No manual file reading, no clumsy copy-pasting, just a clean, context-rich prompt that I had full control over, and a seamless way to apply the results.

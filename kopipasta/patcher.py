@@ -64,42 +64,99 @@ def _parse_diff_hunks(diff_content: str) -> List[Hunk]:
 def parse_llm_output(content: str) -> List[Patch]:
     """
     Parses LLM markdown output to find file patches.
-    Detects whether a patch is a full file or a diff.
+    Handles:
+    - Indented code blocks.
+    - Multiple files in a single block.
+    - Various comment styles (#, //, --, <!--).
+    - Nested backticks (by matching fence length).
+    - File headers on the fence line.
     Returns a list of structured Patch objects.
     """
     patches: List[Patch] = []
-    # Regex to find fenced code blocks, optionally with a language hint
-    code_block_regex = re.compile(
-        r"```(?:[a-zA-Z0-9\.\-]+)?\n(.*?)\n```(?:\s*\n|\s*$)", re.DOTALL
+    lines = content.splitlines()
+    i = 0
+
+    # Regex for file headers:
+    # - Allow leading whitespace (^\s*)
+    # - Support #, //, --, /*, <!--
+    # - Capture filename lazily (.+?)
+    # - Handle trailing comment closers like */ or -->
+    file_header_regex = re.compile(
+        r"^\s*(?:#|//|--|/\*|<!--)\s*FILE:\s*(.+?)(?:\s|\*\/|-->)*$",
+        re.IGNORECASE
     )
-    # Regex to find the file path comment, supporting various comment styles
-    file_path_regex = re.compile(
-        r"^(?:#|//|\/\*)\s*FILE:\s*(\S+)\s*(?:\*\/)?\s*\n?", re.MULTILINE
-    )
-    # REGEX to robustly detect a unified diff hunk header
+
+    # Regex to detect unified diff hunks
     diff_hunk_header_regex = re.compile(
         r"^@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@", re.MULTILINE
     )
 
-    for match in code_block_regex.finditer(content):
-        block_content = match.group(1)
-        file_path_match = file_path_regex.search(block_content)
-        if file_path_match:
-            file_path = file_path_match.group(1).strip()
-            # The actual code is what's left after the file path comment
-            code_content = file_path_regex.sub("", block_content, count=1).lstrip("\n")
+    while i < len(lines):
+        line = lines[i]
 
-            # Use the robust regex to detect if the content is a unified diff
-            if diff_hunk_header_regex.search(code_content):
-                hunks = _parse_diff_hunks(code_content)
-                if hunks:
-                    patches.append(
-                        {"file_path": file_path, "type": "diff", "content": hunks}
-                    )
-            else:
-                patches.append(
-                    {"file_path": file_path, "type": "full", "content": code_content}
-                )
+        # Detect start of code block: indentation + ``` + info_string
+        fence_match = re.match(r"^(\s*)(`{3,})(.*)$", line)
+
+        if fence_match:
+            indent = fence_match.group(1)
+            fence_len = len(fence_match.group(2))
+            info_string = fence_match.group(3)
+
+            block_lines = []
+
+            # Check if fence line has a file header (e.g. ```python # FILE: foo.py)
+            current_file_path = None
+            header_match = file_header_regex.search(info_string)
+            if header_match:
+                current_file_path = header_match.group(1).strip()
+
+            i += 1
+
+            # Capture block content until closing fence
+            while i < len(lines):
+                block_line = lines[i]
+                # Check for closing fence of same or greater length
+                closing_match = re.match(r"^(\s*)(`{3,})\s*$", block_line)
+                if closing_match and len(closing_match.group(2)) >= fence_len:
+                    break
+
+                # Strip indentation if it matches the fence's indentation
+                if block_line.startswith(indent):
+                    block_lines.append(block_line[len(indent) :])
+                else:
+                    block_lines.append(block_line)
+                i += 1
+
+            # Inner function to finalize a collected patch
+            def finalize(path, collected_lines):
+                if not path:
+                    return
+                content_str = "\n".join(collected_lines).strip()
+                if diff_hunk_header_regex.search(content_str):
+                    hunks = _parse_diff_hunks(content_str)
+                    if hunks:
+                        patches.append({"file_path": path, "type": "diff", "content": hunks})
+                else:
+                    patches.append({"file_path": path, "type": "full", "content": content_str})
+
+            # Process lines to split multiple files
+            current_content_lines = []
+            for bline in block_lines:
+                match = file_header_regex.match(bline)
+                if match:
+                    if current_file_path:
+                        finalize(current_file_path, current_content_lines)
+                    current_file_path = match.group(1).strip()
+                    current_content_lines = []
+                else:
+                    if current_file_path:
+                        current_content_lines.append(bline)
+
+            # Save the last file in the block
+            if current_file_path:
+                finalize(current_file_path, current_content_lines)
+
+        i += 1
 
     return patches
 

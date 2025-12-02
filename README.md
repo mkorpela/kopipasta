@@ -19,7 +19,7 @@ A CLI tool for taking **full, transparent control** of your prompt. No black box
   Current: src/main.py | Selected: 1 full | ~4,200 chars
 ```
 
-## The Philosophy: You Control the Context
+## You Control the Context
 
 Many AI coding assistants automatically find what *they think* is relevant context. This is a black box. When the LLM gives a bad answer, you can't debug it because you don't know what context it was actually given.
 

@@ -1,6 +1,6 @@
 import os
 import re
-from typing import List, Union, TypedDict
+from typing import List, Union, TypedDict, Tuple, Optional
 from difflib import SequenceMatcher
 
 from rich.console import Console
@@ -14,6 +14,7 @@ class Hunk(TypedDict):
 
     original_lines: List[str]
     new_lines: List[str]
+    start_line: Optional[int]  # The line number from @@ -N,M ...
 
 
 PatchContent = Union[str, List[Hunk]]
@@ -32,14 +33,22 @@ def _parse_diff_hunks(diff_content: str) -> List[Hunk]:
     hunks: List[Hunk] = []
     lines = diff_content.splitlines()
     current_hunk: Hunk = None
-    hunk_counter = 0
+
+    # Regex to parse the hunk header: @@ -12,3 +15,5 @@
+    hunk_header_regex = re.compile(r"^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@")
 
     for line in lines:
-        if line.startswith("@@ "):
+        header_match = hunk_header_regex.match(line)
+        if header_match:
             if current_hunk:
                 hunks.append(current_hunk)
-            current_hunk = {"original_lines": [], "new_lines": []}
-            hunk_counter += 1
+
+            start_line = int(header_match.group(1))
+            current_hunk = {
+                "original_lines": [],
+                "new_lines": [],
+                "start_line": start_line,
+            }
             continue
 
         if not current_hunk:
@@ -85,8 +94,7 @@ def parse_llm_output(content: str, console: Console = None) -> List[Patch]:
     # - Capture filename lazily (.+?)
     # - Handle trailing comment closers like */ or -->
     file_header_regex = re.compile(
-        r"\s*(?:#|//|--|/\*|<!--)\s*FILE:\s*(.+?)(?:\s|\*\/|-->)*$",
-        re.IGNORECASE
+        r"\s*(?:#|//|--|/\*|<!--)\s*FILE:\s*(.+?)(?:\s|\*\/|-->)*$", re.IGNORECASE
     )
 
     # Regex to detect unified diff hunks
@@ -140,9 +148,13 @@ def parse_llm_output(content: str, console: Console = None) -> List[Patch]:
                 if diff_hunk_header_regex.search(content_str):
                     hunks = _parse_diff_hunks(content_str)
                     if hunks:
-                        patches.append({"file_path": path, "type": "diff", "content": hunks})
+                        patches.append(
+                            {"file_path": path, "type": "diff", "content": hunks}
+                        )
                 else:
-                    patches.append({"file_path": path, "type": "full", "content": content_str})
+                    patches.append(
+                        {"file_path": path, "type": "full", "content": content_str}
+                    )
 
             # Process lines to split multiple files
             current_content_lines = []
@@ -161,7 +173,7 @@ def parse_llm_output(content: str, console: Console = None) -> List[Patch]:
             # Save the last file in the block
             if current_file_path:
                 finalize(current_file_path, current_content_lines)
-            
+
             # --- DIAGNOSTICS: If block ended but we never found a file path ---
             elif console:
                 # Check for near misses to give helpful hints
@@ -169,21 +181,59 @@ def parse_llm_output(content: str, console: Console = None) -> List[Patch]:
                 hint = ""
                 if "FILE:" in info_string or any("FILE:" in l for l in block_lines[:2]):
                     hint = " (Found 'FILE:' keyword but syntax was incorrect. Check comment style?)"
-                elif "filename" in info_string.lower() or any("filename" in l.lower() for l in block_lines[:2]):
+                elif "filename" in info_string.lower() or any(
+                    "filename" in l.lower() for l in block_lines[:2]
+                ):
                     hint = " (Found 'filename' keyword. Please use 'FILE:' instead.)"
 
-                console.print(f"[dim yellow]⚠ Skipped code block at line {i}: No valid '# FILE: path' header found.{hint}[/dim yellow]")
+                console.print(
+                    f"[dim yellow]⚠ Skipped code block at line {i}: No valid '# FILE: path' header found.{hint}[/dim yellow]"
+                )
                 if preview:
                     console.print(f"[dim]   Preview: {preview}[/dim]")
 
         i += 1
 
     if blocks_found == 0 and console:
-        console.print("[dim yellow]⚠ No markdown code blocks (```) found in the pasted content.[/dim yellow]")
+        console.print(
+            "[dim yellow]⚠ No markdown code blocks (```) found in the pasted content.[/dim yellow]"
+        )
     elif blocks_found > 0 and len(patches) == 0 and console:
-        console.print(f"[bold red]Found {blocks_found} code blocks, but none contained valid file headers.[/bold red]")
+        console.print(
+            f"[bold red]Found {blocks_found} code blocks, but none contained valid file headers.[/bold red]"
+        )
 
     return patches
+
+
+def _find_all_sublist_indices(
+    full_list: List[str], sub_list: List[str], loose: bool = False
+) -> List[int]:
+    """
+    Finds starting indices of all occurrences of sub_list in full_list.
+    If loose is True, compares strings after stripping whitespace.
+    """
+    if not sub_list:
+        return []
+
+    n = len(full_list)
+    m = len(sub_list)
+    indices = []
+
+    if loose:
+        # Pre-process for performance
+        full_normalized = [s.strip() for s in full_list]
+        sub_normalized = [s.strip() for s in sub_list]
+
+        for i in range(n - m + 1):
+            if full_normalized[i : i + m] == sub_normalized:
+                indices.append(i)
+    else:
+        for i in range(n - m + 1):
+            if full_list[i : i + m] == sub_list:
+                indices.append(i)
+
+    return indices
 
 
 def _apply_diff_patch(
@@ -191,56 +241,115 @@ def _apply_diff_patch(
 ) -> bool:
     """Applies a list of diff hunks to the original file content."""
     original_lines = original_content.splitlines()
+    # If the file ended with a newline, splitlines() drops it.
+    # We work with lines and join them later.
+
     final_lines = original_lines[:]
 
-    replacements = []
+    # We collect all planned replacements (start_idx, end_idx, new_lines)
+    # Indices refer to the 'original_lines' array.
+    replacements: List[Tuple[int, int, List[str]]] = []
     hunks_applied_count = 0
 
-    # --- Hunk Analysis Phase ---
+    # Sort hunks to process them top-to-bottom for reporting,
+    # though application order will be handled by sorting replacements later.
+    # Note: If LLM outputs disordered hunks, we might have issues, but usually they are ordered.
+
     for i, hunk in enumerate(hunks):
         hunk_original = hunk["original_lines"]
+        target_line = hunk.get("start_line", 1) - 1  # 0-indexed
+
         if not hunk_original:
-            console.print(
-                f"  - Skipping hunk #{i+1}: Cannot apply a patch without any context lines to match against."
-            )
+            # An insert-only hunk (no context lines).
+            # These are rare in unified diffs without context, usually @@ ... @@ is followed by lines.
+            # If context is strictly empty, we can only rely on line number.
+            # However, standard unified diffs usually provide context.
+            # If we really have no context, we insert at the line number provided.
+            replacements.append((target_line, target_line, hunk["new_lines"]))
+            hunks_applied_count += 1
             continue
 
-        matcher = SequenceMatcher(None, original_lines, hunk_original, autojunk=False)
-        match = matcher.find_longest_match(
-            0, len(original_lines), 0, len(hunk_original)
+        # --- Phase 1: Exact Match ---
+        candidates = _find_all_sublist_indices(
+            original_lines, hunk_original, loose=False
         )
+        match_type = "exact"
 
-        match_ratio = match.size / len(hunk_original) if hunk_original else 0
-
-        # A higher threshold is better for preventing incorrect patches.
-        if match.size == 0 or match_ratio < 0.6:
-            console.print(
-                f"  - Skipping hunk #{i+1}: Could not find a confident match (best ratio: {match_ratio:.2f})."
+        # --- Phase 2: Loose Match (Whitespace Agnostic) ---
+        if not candidates:
+            candidates = _find_all_sublist_indices(
+                original_lines, hunk_original, loose=True
             )
-            # Clean up context for display (limit to first 3 lines)
-            preview = "\n".join([f"      | {line}" for line in hunk_original[:3]])
-            console.print(f"    [dim]Expected context starts with:\n{preview}[/dim]")
-            continue
+            match_type = "loose"
 
-        start_index = match.a - match.b
-        end_index = start_index + len(hunk_original)
+        # --- Phase 3: Disambiguation / Selection ---
+        selected_index = -1
+
+        if not candidates:
+            # --- Phase 4: Fuzzy Fallback (difflib) ---
+            # This handles cases where comments changed slightly, or variable names changed.
+            # It's risky but better than failing if the LLM wasn't perfect.
+            matcher = SequenceMatcher(
+                None, original_lines, hunk_original, autojunk=False
+            )
+            match = matcher.find_longest_match(
+                0, len(original_lines), 0, len(hunk_original)
+            )
+
+            # Calculate match ratio based on the hunk size
+            match_ratio = match.size / len(hunk_original) if hunk_original else 0
+
+            if match.size > 0 and match_ratio >= 0.6:
+                # We found a partial match
+                selected_index = match.a
+                match_type = f"fuzzy ({match_ratio:.2f})"
+            else:
+                console.print(
+                    f"  - [yellow]Skipping hunk #{i+1}:[/yellow] Could not find a match."
+                )
+                preview = "\n".join([f"      | {line}" for line in hunk_original[:3]])
+                console.print(f"    [dim]Expected context:\n{preview}[/dim]")
+                continue
+
+        else:
+            # We have 1 or more exact/loose matches.
+            # If multiple, pick the one closest to the target_line reported in diff header.
+            if len(candidates) == 1:
+                selected_index = candidates[0]
+            else:
+                # Find candidate with minimum distance to target_line
+                best_cand = min(candidates, key=lambda idx: abs(idx - target_line))
+                selected_index = best_cand
+                if match_type == "exact":
+                    match_type = "exact (disambiguated)"
+                else:
+                    match_type = "loose (disambiguated)"
+
+        # --- Validation: Check Overlaps ---
+        # The range we propose to replace in the original file:
+        start_idx = selected_index
+        end_idx = selected_index + len(hunk_original)
 
         is_overlapping = any(
-            max(start_index, r_start) < min(end_index, r_end)
+            max(start_idx, r_start) < min(end_idx, r_end)
             for r_start, r_end, _ in replacements
         )
+
         if is_overlapping:
             console.print(
-                f"  - Skipping hunk #{i+1}: Match overlaps with another hunk's changes."
+                f"  - [yellow]Skipping hunk #{i+1}:[/yellow] Overlaps with a previous hunk."
             )
             continue
 
-        replacements.append((start_index, end_index, hunk["new_lines"]))
+        # Success!
+        replacements.append((start_idx, end_idx, hunk["new_lines"]))
         hunks_applied_count += 1
+
+        # console.print(f"    [dim]Hunk #{i+1} applied via {match_type} match at line {start_idx+1}.[/dim]")
 
     if hunks_applied_count == 0:
         console.print(
-            f"❌ [bold red]Failed to apply patch to {file_path}:[/bold red] No applicable hunks found. File left unchanged."
+            f"❌ [bold red]Failed to apply patch to {file_path}:[/bold red] No applicable hunks found."
         )
         return False
 
@@ -311,9 +420,6 @@ def apply_patches(patches: List[Patch]) -> None:
 
             else:  # 'full'
                 # For non-diff blocks, we treat them as full file overwrites.
-                # The prompt instructs the LLM to provide full content if not using patches.
-                # We rely on git diff for the user to verify safety.
-
                 final_content = patch_content
                 if original_content.endswith("\n") and not final_content.endswith("\n"):
                     final_content += "\n"

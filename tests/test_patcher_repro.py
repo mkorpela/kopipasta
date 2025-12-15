@@ -1,6 +1,7 @@
 import pytest
 from kopipasta.patcher import parse_llm_output
 
+
 def test_fail_indented_header():
     """
     Current behavior: Regex starts with ^ so it fails if there is whitespace.
@@ -15,6 +16,7 @@ def test_fail_indented_header():
     patches = parse_llm_output(llm_output)
     assert len(patches) == 1
     assert patches[0]["file_path"] == "indented.py"
+
 
 def test_fail_multiple_files_single_block():
     """
@@ -37,6 +39,7 @@ def test_fail_multiple_files_single_block():
     assert patches[1]["file_path"] == "file2.py"
     assert "a = 1" not in patches[1]["content"]
 
+
 def test_fail_html_comment_style():
     """
     Current behavior: Regex only looks for #, //, /*. Misses HTML/XML style.
@@ -50,6 +53,7 @@ def test_fail_html_comment_style():
     patches = parse_llm_output(llm_output)
     assert len(patches) == 1
     assert patches[0]["file_path"] == "index.html"
+
 
 def test_fail_sql_comment_style():
     """
@@ -65,6 +69,7 @@ def test_fail_sql_comment_style():
     assert len(patches) == 1
     assert patches[0]["file_path"] == "query.sql"
 
+
 def test_fail_filenames_with_spaces():
     """
     Current behavior: Regex uses \S+ which stops at space.
@@ -78,6 +83,7 @@ def test_fail_filenames_with_spaces():
     patches = parse_llm_output(llm_output)
     assert len(patches) == 1
     assert patches[0]["file_path"] == "my cool file.txt"
+
 
 def test_fail_header_on_fence_line():
     """

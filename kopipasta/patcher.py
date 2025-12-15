@@ -79,6 +79,7 @@ def parse_llm_output(content: str, console: Console = None) -> List[Patch]:
     - Various comment styles (#, //, --, <!--).
     - Nested backticks (by matching fence length).
     - File headers on the fence line.
+    - File headers immediately preceding the code block.
     Returns a list of structured Patch objects.
     """
     patches: List[Patch] = []
@@ -115,13 +116,26 @@ def parse_llm_output(content: str, console: Console = None) -> List[Patch]:
             info_string = fence_match.group(3)
 
             block_lines = []
-
-            # Check if fence line has a file header (e.g. ```python # FILE: foo.py)
             current_file_path = None
+
+            # 1. Check if fence line itself has a file header
+            #    e.g. ```python # FILE: foo.py
             header_match = file_header_regex.search(info_string)
             if header_match:
                 current_file_path = header_match.group(1).strip()
                 blocks_with_valid_headers += 1
+            else:
+                # 2. Check preceding lines for a file header
+                #    e.g. # FILE: foo.py
+                #         ```python
+                k = i - 1
+                while k >= 0 and not lines[k].strip():
+                    k -= 1
+                if k >= 0:
+                    prev_match = file_header_regex.search(lines[k])
+                    if prev_match:
+                        current_file_path = prev_match.group(1).strip()
+                        blocks_with_valid_headers += 1
 
             i += 1
 

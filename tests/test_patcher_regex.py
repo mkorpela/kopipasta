@@ -1,4 +1,3 @@
-import pytest
 from kopipasta.patcher import parse_llm_output
 
 
@@ -33,3 +32,36 @@ Hope this helps!
 
     # It should NOT be truncated at the first backtick
     assert not content.strip().endswith('prompt += f"### {path}\\n\\n')
+
+
+def test_parse_llm_output_outside_header():
+    """
+    Tests that the parser detects file headers placed immediately BEFORE
+    the code block (e.g. # FILE: ... \n ```).
+    """
+    llm_output = """
+    Here is the first file:
+    
+    # FILE: outside_indent.py
+    ```python
+    print("found me outside")
+    ```
+
+    And here is one with some blank lines before it:
+    
+    // FILE: spaced_out.js
+    
+    
+    ```javascript
+    console.log("also found");
+    ```
+    """
+    patches = parse_llm_output(llm_output)
+
+    assert len(patches) == 2
+
+    assert patches[0]["file_path"] == "outside_indent.py"
+    assert 'print("found me outside")' in patches[0]["content"]
+
+    assert patches[1]["file_path"] == "spaced_out.js"
+    assert 'console.log("also found")' in patches[1]["content"]

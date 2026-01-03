@@ -45,7 +45,10 @@ class FileNode:
 
     @property
     def name(self):
-        return os.path.basename(self.path) or self.path
+        base = os.path.basename(self.path)
+        if not base and self.is_scan_root:
+            return "Project Root"
+        return base or self.path
 
     @property
     def relative_path(self):
@@ -125,6 +128,9 @@ class TreeSelector:
         )
         root = FileNode(virtual_root_path, True, is_scan_root=True)
         root.expanded = True
+        # Assign a meaningful name to the virtual root for display
+        # (FileNode uses basename, but virtual path ends in __kopipasta_virtual_root__)
+        # The name property logic handles empty basename, but let's ensure it's nice.
 
         for path in paths:
             abs_path = os.path.abspath(path)
@@ -206,18 +212,13 @@ class TreeSelector:
     ) -> List[Tuple[FileNode, int]]:
         """Flatten tree into a list of (node, level) tuples for display."""
         result = []
-
-        # If it's the special root node, don't display it. Display its children at the top level.
-        if node.is_scan_root:
+        
+        result.append((node, level))
+        if node.is_dir and node.expanded:
+            if not node.children:
+                self._deep_scan_directory_and_calc_size(node.path, node)
             for child in node.children:
-                result.extend(self._flatten_tree(child, 0))
-        else:
-            result.append((node, level))
-            if node.is_dir and node.expanded:
-                if not node.children:
-                    self._deep_scan_directory_and_calc_size(node.path, node)
-                for child in node.children:
-                    result.extend(self._flatten_tree(child, level + 1))
+                result.extend(self._flatten_tree(child, level + 1))
 
         return result
 
@@ -793,8 +794,9 @@ q: Quit and finalize"""
                     if not current_node.is_dir:
                         self._toggle_selection(current_node, snippet_mode=True)
                 elif key == "a":  # Add all in directory
-                    if current_node.is_dir:
-                        self._toggle_directory(current_node)
+                    target_node = current_node if current_node.is_dir else current_node.parent
+                    if target_node:
+                        self._toggle_directory(target_node)
 
                 # Handle actions
                 elif key == "r":  # Reuse last selection

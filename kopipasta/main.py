@@ -194,7 +194,7 @@ def main():
     )
 
     prompt_template, cursor_position = generate_prompt_template(
-        files_to_include, ignore_patterns, web_contents, env_vars
+        files_to_include, ignore_patterns, web_contents, env_vars, paths_for_tree
     )
 
     if args.task:

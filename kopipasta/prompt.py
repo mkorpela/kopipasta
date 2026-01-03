@@ -123,21 +123,42 @@ def get_language_for_file(file_path):
     return language_map.get(extension, "")
 
 
-def get_project_structure(ignore_patterns):
+def get_project_structure(ignore_patterns, search_paths=None):
+    if not search_paths:
+        search_paths = ["."]
+
     tree = []
-    for root, dirs, files in os.walk("."):
-        dirs[:] = [
-            d for d in dirs if not is_ignored(os.path.join(root, d), ignore_patterns)
-        ]
-        files = [
-            f for f in files if not is_ignored(os.path.join(root, f), ignore_patterns)
-        ]
-        level = root.replace(".", "").count(os.sep)
-        indent = " " * 4 * level + "|-- "
-        tree.append(f"{indent}{os.path.basename(root)}/")
-        subindent = " " * 4 * (level + 1) + "|-- "
-        for f in files:
-            tree.append(f"{subindent}{f}")
+    for start_path in search_paths:
+        if os.path.isfile(start_path):
+            if not is_ignored(start_path, ignore_patterns):
+                tree.append(f"|-- {os.path.basename(start_path)}")
+            continue
+
+        for root, dirs, files in os.walk(start_path):
+            dirs.sort()
+            files.sort()
+            dirs[:] = [
+                d
+                for d in dirs
+                if not is_ignored(os.path.join(root, d), ignore_patterns)
+            ]
+            files = [
+                f
+                for f in files
+                if not is_ignored(os.path.join(root, f), ignore_patterns)
+            ]
+
+            rel_path = os.path.relpath(root, start_path)
+            level = 0 if rel_path == "." else rel_path.count(os.sep) + 1
+
+            indent = " " * 4 * level + "|-- "
+            display_name = start_path if level == 0 else os.path.basename(root)
+            tree.append(f"{indent}{display_name}/")
+
+            subindent = " " * 4 * (level + 1) + "|-- "
+            for f in files:
+                tree.append(f"{subindent}{f}")
+
     return "\n".join(tree)
 
 
@@ -186,13 +207,14 @@ def generate_prompt_template(
     ignore_patterns: List[str],
     web_contents: Dict[str, Tuple[FileTuple, str]],
     env_vars: Dict[str, str],
+    search_paths: List[str] = None,
 ) -> Tuple[str, int]:
     env_decisions = {}
 
     prompt = "# Project Overview\n\n"
     prompt += "## Project Structure\n\n"
     prompt += "```\n"
-    prompt += get_project_structure(ignore_patterns)
+    prompt += get_project_structure(ignore_patterns, search_paths)
     prompt += "\n```\n\n"
     prompt += "## File Contents\n\n"
     for file, use_snippet, chunks, content_type in files_to_include:

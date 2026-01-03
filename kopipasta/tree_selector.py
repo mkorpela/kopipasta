@@ -253,11 +253,10 @@ class TreeSelector:
             self.viewport_offset = 0
 
         # Create tree with scroll indicators
-        tree_title = "📁 Project Files"
+        tree = Tree("root", hide_root=True)
         if self.viewport_offset > 0:
-            tree_title += f" ↑ ({self.viewport_offset} more)"
+            tree.add(Text(f"↑ ({self.viewport_offset} more items)", style="dim italic"))
 
-        tree = Tree(tree_title)
 
         # Build tree structure - only for visible portion
         viewport_end = min(len(flat_tree), self.viewport_offset + available_height)

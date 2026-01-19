@@ -1,10 +1,140 @@
 import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Dict, List, Tuple
+
+from jinja2 import Template
+
 from kopipasta.file import FileTuple, read_file_contents, is_ignored
 from prompt_toolkit import prompt as prompt_toolkit_prompt
 from prompt_toolkit.styles import Style
 from rich.console import Console
 
-from typing import Dict, List, Tuple
+CURSOR_MARKER = "<<CURSOR_POSITION>>"
+
+DEFAULT_TEMPLATE = """# Project Overview
+
+## Project Structure
+
+```
+{{ structure }}
+```
+
+## File Contents
+
+{% for file in files -%}
+### {{ file.path }}{{ file.description }}
+
+```{{ file.language }}
+{{ file.content }}
+```
+
+{% endfor -%}
+{% if web_pages -%}
+## Web Content
+
+{% for page in web_pages -%}
+### {{ page.url }}{{ page.description }}
+
+```{{ page.language }}
+{{ page.content }}
+```
+
+{% endfor -%}
+{% endif -%}
+## Task Instructions
+
+{{ cursor_marker }}
+
+## Instructions for Achieving the Task
+
+### 🧠 Core Philosophy
+1. **No Hallucinations**: You see the ## Project Structure. If you need to read a file that isn't in ## File Contents, stop and ask me to paste it.
+2. **Critical Partner**: Do not blindly follow instructions if they are flawed. Challenge assumptions. Propose better architectural solutions.
+3. **Hard Stops**: If you need user input, end with [AWAITING USER RESPONSE]. Do not guess.
+
+### 🛠️ Code Output & Patching (CRITICAL)
+I use a local tool to auto-apply your code blocks. You MUST follow these rules or I will lose data:
+
+**Rule 1: File Headers**
+Every code block must start with a comment line specifying the file path.
+Example: `// FILE: src/utils.py` or `# FILE: config.toml`
+
+**Rule 2: Modification vs. Creation**
+- **To EDIT an existing file**: You MUST use **Unified Diff** format (with `@@ ... @@` headers). Do NOT post snippets without diff headers, or my tool will overwrite the whole file with just the snippet.
+- **To CREATE or OVERWRITE a file**: Provide the **FULL** file content. Do not use lazy comments like `// ... rest of code ...` inside the block.
+
+### 🚀 Workflow
+1. **Analyze**: Briefly restate the goal. **Assess the Context**: Identify missing files OR irrelevant files that clutter the context. If I provided too much, list exactly which files to keep for the next run. **Ask to confirm.** End with [AWAITING USER RESPONSE].
+2. **Plan & Execute**: ONCE CONFIRMED, outline your approach and provide the code blocks (Diffs or Full Files).
+3. **Verify**: Suggest a command to test the changes.
+"""
+
+
+def _get_config_dir() -> Path:
+    """Returns the configuration directory, creating it if necessary."""
+    config_home = os.environ.get("XDG_CONFIG_HOME")
+    if config_home:
+        config_dir = Path(config_home) / "kopipasta"
+    else:
+        config_dir = Path.home() / ".config" / "kopipasta"
+    
+    config_dir.mkdir(parents=True, exist_ok=True)
+    return config_dir
+
+
+def get_template_path() -> Path:
+    """Returns the path to the user's prompt template file."""
+    return _get_config_dir() / "prompt_template.j2"
+
+
+def ensure_template_exists():
+    """Ensures the prompt template exists. If not, creates it from default."""
+    template_path = get_template_path()
+    if not template_path.exists():
+        reset_template()
+
+
+def reset_template():
+    """Overwrites the user's template with the default template."""
+    template_path = get_template_path()
+    try:
+        with open(template_path, "w", encoding="utf-8") as f:
+            f.write(DEFAULT_TEMPLATE)
+        print(f"Template reset to default at: {template_path}")
+    except IOError as e:
+        print(f"Error writing template file: {e}")
+
+
+def open_template_in_editor():
+    """Opens the template file in the system default editor."""
+    ensure_template_exists()
+    template_path = get_template_path()
+    
+    editor = os.environ.get("EDITOR", "code" if shutil.which("code") else "vim")
+    
+    if sys.platform == "win32":
+        os.startfile(template_path)
+    elif sys.platform == "darwin":
+        subprocess.call(("open", template_path))
+    else:
+        subprocess.call((editor, template_path))
+
+
+def load_template() -> Template:
+    """Loads the Jinja2 template from disk or uses default if loading fails."""
+    ensure_template_exists()
+    template_path = get_template_path()
+    try:
+        with open(template_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        return Template(content, keep_trailing_newline=True)
+    except Exception as e:
+        print(f"Warning: Could not load template from {template_path}: {e}")
+        print("Using default template fallback.")
+        return Template(DEFAULT_TEMPLATE, keep_trailing_newline=True)
 
 
 def _is_masking_candidate(value: str) -> bool:
@@ -86,12 +216,15 @@ def _is_masking_candidate(value: str) -> bool:
 def get_file_snippet(file_path, max_lines=50, max_bytes=4096):
     snippet = ""
     byte_count = 0
-    with open(file_path, "r") as file:
-        for i, line in enumerate(file):
-            if i >= max_lines or byte_count >= max_bytes:
-                break
-            snippet += line
-            byte_count += len(line.encode("utf-8"))
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="replace") as file:
+            for i, line in enumerate(file):
+                if i >= max_lines or byte_count >= max_bytes:
+                    break
+                snippet += line
+                byte_count += len(line.encode("utf-8"))
+    except Exception as e:
+        return f"<Error reading snippet: {e}>"
     return snippet
 
 
@@ -209,63 +342,77 @@ def generate_prompt_template(
     env_vars: Dict[str, str],
     search_paths: List[str] = None,
 ) -> Tuple[str, int]:
+    """
+    Generates the prompt using the Jinja2 template.
+    Returns (rendered_prompt_string, cursor_position_index).
+    """
     env_decisions = {}
+    
+    # 1. Prepare Project Structure
+    structure_tree = get_project_structure(ignore_patterns, search_paths)
 
-    prompt = "# Project Overview\n\n"
-    prompt += "## Project Structure\n\n"
-    prompt += "```\n"
-    prompt += get_project_structure(ignore_patterns, search_paths)
-    prompt += "\n```\n\n"
-    prompt += "## File Contents\n\n"
+    # 2. Prepare File Contents List
+    processed_files = []
     for file, use_snippet, chunks, content_type in files_to_include:
         relative_path = os.path.relpath(file)
         language = content_type if content_type else get_language_for_file(file)
+        description = ""
+        content = ""
 
         if chunks is not None:
-            prompt += f"### {relative_path} (selected patches)\n\n```{language}\n"
-            for chunk in chunks:
-                prompt += f"{chunk}\n"
-            prompt += "```\n\n"
+            description = " (selected patches)"
+            # Chunks are already strings, just join them
+            content = "\n".join(chunks)
         elif use_snippet:
-            file_content = get_file_snippet(file)
-            prompt += f"### {relative_path} (snippet)\n\n```{language}\n{file_content}\n```\n\n"
+            description = " (snippet)"
+            content = get_file_snippet(file)
         else:
-            file_content = read_file_contents(file)
-            file_content = handle_env_variables(file_content, env_vars, env_decisions)
-            prompt += f"### {relative_path}\n\n```{language}\n{file_content}\n```\n\n"
+            raw_content = read_file_contents(file)
+            content = handle_env_variables(raw_content, env_vars, env_decisions)
 
+        processed_files.append({
+            "path": relative_path,
+            "relative_path": relative_path,
+            "description": description,
+            "language": language,
+            "content": content
+        })
+
+    # 3. Prepare Web Contents List
+    processed_web_pages = []
     if web_contents:
-        prompt += "## Web Content\n\n"
-        for url, (file_tuple, content) in web_contents.items():
+        for url, (file_tuple, raw_content) in web_contents.items():
             _, is_snippet, _, content_type = file_tuple
-            content = handle_env_variables(content, env_vars, env_decisions)
+            safe_content = handle_env_variables(raw_content, env_vars, env_decisions)
+            
+            # Default empty lang for HTML/Web content unless specified (json/csv)
             language = content_type if content_type in ["json", "csv"] else ""
-            prompt += f"### {url}{' (snippet)' if is_snippet else ''}\n\n```{language}\n{content}\n```\n\n"
+            
+            processed_web_pages.append({
+                "url": url,
+                "description": " (snippet)" if is_snippet else "",
+                "language": language,
+                "content": safe_content
+            })
 
-    prompt += "## Task Instructions\n\n"
-    cursor_position = len(prompt)
-    prompt += "\n\n"
-    prompt += "## Instructions for Achieving the Task\n\n"
-    analysis_text = (
-        "### 🧠 Core Philosophy\n"
-        "1. **No Hallucinations**: You see the ## Project Structure. If you need to read a file that isn't in ## File Contents, stop and ask me to paste it.\n"
-        "2. **Critical Partner**: Do not blindly follow instructions if they are flawed. Challenge assumptions. Propose better architectural solutions.\n"
-        "3. **Hard Stops**: If you need user input, end with [AWAITING USER RESPONSE]. Do not guess.\n\n"
-        "### 🛠️ Code Output & Patching (CRITICAL)\n"
-        "I use a local tool to auto-apply your code blocks. You MUST follow these rules or I will lose data:\n\n"
-        "**Rule 1: File Headers**\n"
-        "Every code block must start with a comment line specifying the file path.\n"
-        "Example: `// FILE: src/utils.py` or `# FILE: config.toml`\n\n"
-        "**Rule 2: Modification vs. Creation**\n"
-        "- **To EDIT an existing file**: You MUST use **Unified Diff** format (with `@@ ... @@` headers). Do NOT post snippets without diff headers, or my tool will overwrite the whole file with just the snippet.\n"
-        "- **To CREATE or OVERWRITE a file**: Provide the **FULL** file content. Do not use lazy comments like `// ... rest of code ...` inside the block.\n\n"
-        "### 🚀 Workflow\n"
-        "1. **Analyze**: Briefly restate the goal. **Assess the Context**: Identify missing files OR irrelevant files that clutter the context. If I provided too much, list exactly which files to keep for the next run. **Ask to confirm.** End with [AWAITING USER RESPONSE].\n"
-        "2. **Plan & Execute**: ONCE CONFIRMED, outline your approach and provide the code blocks (Diffs or Full Files).\n"
-        "3. **Verify**: Suggest a command to test the changes.\n"
+    # 4. Render Template
+    template = load_template()
+    rendered = template.render(
+        structure=structure_tree,
+        files=processed_files,
+        web_pages=processed_web_pages,
+        cursor_marker=CURSOR_MARKER
     )
-    prompt += analysis_text
-    return prompt, cursor_position
+
+    # 5. Find and remove cursor marker
+    cursor_position = rendered.find(CURSOR_MARKER)
+    if cursor_position == -1:
+        # Fallback if user deleted marker from template: append to end
+        cursor_position = len(rendered)
+    else:
+        rendered = rendered.replace(CURSOR_MARKER, "", 1)
+
+    return rendered, cursor_position
 
 
 def get_task_from_user_interactive(console: Console) -> str:

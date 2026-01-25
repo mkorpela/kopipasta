@@ -10,7 +10,7 @@ with open("requirements.txt", "r", encoding="utf-8") as f:
 
 setup(
     name="kopipasta",
-    version="0.47.0",
+    version="0.48.0",
     author="Mikko Korpela",
     author_email="mikko.korpela@gmail.com",
     description="A CLI tool to generate prompts with project structure and file contents",

@@ -72,7 +72,7 @@ def test_fail_sql_comment_style():
 
 def test_fail_filenames_with_spaces():
     """
-    Current behavior: Regex uses \S+ which stops at space.
+    Current behavior: Regex uses \\S+ which stops at space.
     """
     llm_output = """
     ```text

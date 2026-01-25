@@ -5,7 +5,9 @@ import json
 from datetime import datetime
 from typing import Optional, TypedDict
 from rich.console import Console
+import click
 
+# Use a local console instance
 console = Console()
 
 SESSION_FILENAME = "AI_SESSION.md"
@@ -62,10 +64,21 @@ def init_session(project_root: str) -> bool:
     if is_git_dirty(project_root):
         console.print("[yellow]Warning: You have uncommitted changes.[/yellow]")
         console.print("It is recommended to start a session from a clean state for squashing to work correctly.")
-        # In the interactive TUI, we return False to let the user clean up, 
-        # or we could ask via click/input. Let's return False to be safe and strict.
         console.print("[red]Aborting session start. Please commit or stash changes.[/red]")
         return False
+
+    # --- Safety Check: Ensure ignored ---
+    from kopipasta.ops import check_session_gitignore_status, add_to_gitignore
+    if not check_session_gitignore_status(project_root):
+        console.print(f"\n[bold yellow]⚠ {SESSION_FILENAME} is NOT ignored by git.[/bold yellow]")
+        if click.confirm(f"Add {SESSION_FILENAME} to .gitignore now?", default=True):
+            add_to_gitignore(project_root, SESSION_FILENAME)
+            console.print(f"[green]Added {SESSION_FILENAME} to .gitignore[/green]")
+        else:
+            console.print("[red]Safety check failed.[/red]")
+            console.print(f"Please manually add {SESSION_FILENAME} to your .gitignore before starting a session.")
+            return False
+
 
     metadata = {
         "start_commit": head_hash,
@@ -111,8 +124,12 @@ def auto_commit_changes(project_root: str, message: str = "kopipasta: auto-check
         return False
 
     try:
-        # Stage everything
-        subprocess.run(["git", "add", "."], cwd=project_root, check=True, capture_output=True)
+        # Stage everything EXCEPT the session file using pathspec magic
+        # ":!AI_SESSION.md" tells git to exclude this file even if it's currently tracked or unignored
+        subprocess.run(
+            ["git", "add", ".", f":!{SESSION_FILENAME}"], 
+            cwd=project_root, check=True, capture_output=True
+        )
         
         # Check if anything is staged
         result = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=project_root)

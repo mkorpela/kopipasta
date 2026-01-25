@@ -112,6 +112,23 @@ def read_gitignore() -> List[str]:
     return gitignore_patterns
 
 
+def add_to_gitignore(project_root: str, entry: str):
+    """Appends an entry to the .gitignore file if not already present."""
+    path = os.path.join(project_root, ".gitignore")
+    content = ""
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+    
+    if entry not in content.splitlines():
+        with open(path, "a", encoding="utf-8") as f:
+            if content and not content.endswith("\n"):
+                f.write("\n")
+            f.write(f"{entry}\n")
+        return True
+    return False
+
+
 def get_global_profile_path() -> Path:
     config_home = os.environ.get("XDG_CONFIG_HOME")
     if config_home:

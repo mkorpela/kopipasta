@@ -131,16 +131,6 @@ def main():
     project_root_abs = os.path.abspath(os.getcwd())
     session_path = os.path.join(project_root_abs, "AI_SESSION.md")
 
-    # --- Safety Check: AI_SESSION.md ---
-    if not check_session_gitignore_status(project_root_abs):
-        console.print(
-            "\n[bold yellow]⚠️  WARNING: `AI_SESSION.md` is detected but NOT ignored by git.[/bold yellow]"
-        )
-        console.print("   This file is intended for ephemeral scratchpad data.")
-        console.print("   Please add it to your `.gitignore` to prevent accidental commits.\n")
-        # We continue execution, just warning.
-        input("Press Enter to continue...")
-
     files_to_include: List[FileTuple] = []
     web_contents: Dict[str, Tuple[FileTuple, str]] = {}
     current_char_count = 0

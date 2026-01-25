@@ -36,6 +36,27 @@ The workflow is a fast, iterative cycle:
 3.  **Patch:** Press `p` in `kopipasta` and paste the LLM's response to apply changes locally.
 4.  **Iterate:** Review with `git diff`, then repeat for the next step.
 
+## Session Management
+
+`kopipasta` introduces a **Quad-Memory Architecture** to prevent context drift in long tasks.
+
+### 🧠 Sessions (`AI_SESSION.md`)
+Instead of re-explaining the task in every prompt, use a Session to maintain state.
+
+1.  **Start (`n`)**: Creates `AI_SESSION.md` (a scratchpad) and snapshots your git commit.
+2.  **Work**: The session file is pinned to your prompt. The LLM updates it (via patches) to track progress.
+3.  **Update (`u`)**: Generates a handover prompt to compress the session state for the next LLM window.
+4.  **Finish (`f`)**: Harvests architectural learnings into `AI_CONTEXT.md` (Constitution), deletes the session file, and offers to **squash** your work into a clean commit.
+
+### 📜 Context (`AI_CONTEXT.md`)
+The "Laws of Physics" for your project. This file is **always pinned** to the prompt if it exists. Use it for:
+*   Tech stack constraints (e.g., "Use Poetry", "No React Class Components").
+*   Architecture decisions.
+*   Common pitfalls to avoid.
+
+### 👤 Profile (`~/.config/kopipasta/ai_profile.md`)
+Your global preferences (e.g., "I use VS Code", "I prefer TypeScript"). Injected into every prompt automatically.
+
 ## Use Cases
 
 *   **Targeted Refactoring:** Select just the module you are cleaning up and its immediate dependencies.
@@ -129,5 +150,8 @@ def new_feature():
 | `a` | Add all files in directory |
 | `p` | **Apply Patch** (paste LLM response) |
 | `r` | Reuse selection from previous run |
+| `n` | **Start Session** (Init `AI_SESSION.md`) |
+| `u` | **Update Session** (Handover/Checkpoint) |
+| `f` | **Finish Task** (Harvest & Squash) |
 | `Enter` | Expand/Collapse directory |
 | `q` | Quit and finalize selection |

@@ -65,3 +65,28 @@ def test_parse_llm_output_outside_header():
 
     assert patches[1]["file_path"] == "spaced_out.js"
     assert 'console.log("also found")' in patches[1]["content"]
+
+
+def test_nested_fences_explicit_length():
+    """
+    Tests that the parser handles nested fences when outer fence is longer (standard markdown).
+    This ensures robust parsing without relying on heuristics.
+    """
+    llm_output = """
+    ````python
+    # FILE: nested_explicit.py
+    code = \"\"\"
+    ```
+    inner
+    ```
+    \"\"\"
+    ````
+    """
+    patches = parse_llm_output(llm_output)
+    assert len(patches) == 1
+    content = patches[0]["content"]
+    
+    # Should contain the inner fences
+    assert '```' in content
+    assert 'inner' in content
+    assert '\"\"\"' in content

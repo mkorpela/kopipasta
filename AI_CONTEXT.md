@@ -18,9 +18,14 @@ This project implements the **"Quad-Memory" Architecture** to solve context drif
     *   `u` (Update): Compresses session state for handover to next LLM window.
     *   `f` (Finish): Harvests learnings to `AI_CONTEXT.md`, deletes session file, and offers to squash commits.
 
+### Git Integration
+*   **Auto-Checkpoints**: The tool performs `git commit --no-verify` automatically during patching to prevent data loss.
+*   **Squash on Finish**: The "Harvest" command (`f`) uses `git reset --soft <start_commit>` to squash session iteration commits into a single staged change, keeping history clean.
+
 ### Patching Standards
 *   **Unified Diff**: The patcher supports standard unified diffs (with or without `diff --git` headers).
 *   **Explicit Headers**: Legacy support for `# FILE: path` headers exists but raw diffs are preferred for speed.
+*   **Markdown Robustness**: The patcher handles nested code blocks (e.g., inside docstrings). When generating code that includes markdown fences, use 4+ backticks for the outer container.
 *   **Safety**: Large file changes without diff headers will trigger full overwrites (destructive).
 
 ## 3. Development Workflow

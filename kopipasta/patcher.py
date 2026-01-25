@@ -152,15 +152,17 @@ def parse_llm_output(content: str, console: Console = None) -> List[Patch]:
     while i < len(lines):
         line = lines[i]
 
-        # Detect start of code block: indentation + ``` + info_string
-        fence_match = re.match(r"^(\s*)(`{3,})(.*)$", line)
+        # Detect start of code block: indentation + (``` OR ~~~) + info_string
+        fence_match = re.match(r"^(\s*)([`~]{3,})(.*)$", line)
 
         if fence_match:
             blocks_found += 1
             indent = fence_match.group(1)
+            fence_chars = fence_match.group(2)
+            fence_char_type = fence_chars[0]
+            fence_len = len(fence_chars)
             # Track if this block successfully yields explicit headers
             initial_valid_headers_count = blocks_with_valid_headers
-            fence_len = len(fence_match.group(2))
             info_string = fence_match.group(3)
 
             block_lines = []
@@ -191,9 +193,49 @@ def parse_llm_output(content: str, console: Console = None) -> List[Patch]:
             while i < len(lines):
                 block_line = lines[i]
                 # Check for closing fence of same or greater length
-                closing_match = re.match(r"^(\s*)(`{3,})\s*$", block_line)
-                if closing_match and len(closing_match.group(2)) >= fence_len:
-                    break
+                closing_match = re.match(r"^(\s*)([`~]{3,})\s*$", block_line)
+                
+                is_potential_close = (
+                    closing_match 
+                    and closing_match.group(2)[0] == fence_char_type 
+                    and len(closing_match.group(2)) >= fence_len
+                )
+
+                if is_potential_close:
+                    # Lookahead Heuristic: 
+                    # If we find ANOTHER fence within a short window, and it looks like a closure,
+                    # we assume the current one is inner content.
+                    is_inner = False
+                    peek_idx = i + 1
+                    lines_to_peek = 5 
+                    
+                    while peek_idx < len(lines) and (peek_idx - i) <= lines_to_peek:
+                        peek_line = lines[peek_idx].strip()
+                        
+                        # If we see a File Header in the gap, it's definitely a new block/file
+                        if file_header_regex.search(peek_line):
+                            break
+
+                        # If we hit another fence
+                        peek_fence = re.match(r"^[`~]{3,}(.*)$", peek_line)
+                        if peek_fence:
+                            # If the next fence has an info string (e.g. ```python), it's a start of new block
+                            if peek_fence.group(1).strip():
+                                break
+                            
+                            # It's a generic fence. Likely the real closer.
+                            is_inner = True
+                            break
+                        
+                        # If we hit any non-empty text that is NOT a fence, the gap is populated.
+                        # We assume this text belongs to the chat, not the code block.
+                        if peek_line:
+                            break
+                        
+                        peek_idx += 1
+                    
+                    if not is_inner:
+                        break # Real close found
 
                 # Strip indentation if it matches the fence's indentation
                 if block_line.startswith(indent):

@@ -126,6 +126,7 @@ def main():
         console.print("   This file is intended for ephemeral scratchpad data.")
         console.print("   Please add it to your `.gitignore` to prevent accidental commits.\n")
         # We continue execution, just warning.
+        input("Press Enter to continue...")
 
     files_to_include: List[FileTuple] = []
     web_contents: Dict[str, Tuple[FileTuple, str]] = {}

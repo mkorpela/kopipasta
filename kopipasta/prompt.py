@@ -1,6 +1,7 @@
 import os
 import shutil
 import subprocess
+import uuid
 import sys
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
@@ -415,23 +416,28 @@ def generate_prompt_template(
 
     # 4. Render Template
     template = load_template()
+    
+    # Use a unique marker for this render to prevent collision if the 
+    # CURSOR_MARKER constant string itself appears in the file contents.
+    unique_render_marker = f"{CURSOR_MARKER}_{uuid.uuid4().hex}"
+    
     rendered = template.render(
         structure=structure_tree,
         files=processed_files,
         web_pages=processed_web_pages,
-        cursor_marker=CURSOR_MARKER,
+        cursor_marker=unique_render_marker,
         user_profile=user_profile,
         project_context=project_context,
         session_state=session_state,
     )
 
     # 5. Find and remove cursor marker
-    cursor_position = rendered.find(CURSOR_MARKER)
+    cursor_position = rendered.find(unique_render_marker)
     if cursor_position == -1:
         # Fallback if user deleted marker from template: append to end
         cursor_position = len(rendered)
     else:
-        rendered = rendered.replace(CURSOR_MARKER, "", 1)
+        rendered = rendered.replace(unique_render_marker, "", 1)
 
     return rendered, cursor_position
 

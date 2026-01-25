@@ -144,17 +144,21 @@ def check_session_gitignore_status(project_root: str) -> bool:
     if not os.path.exists(session_path):
         return True
 
-    if not shutil.which("git"):
+    git_executable = shutil.which("git")
+    if not git_executable:
         return True
 
     try:
         # git check-ignore returns 0 if ignored, 1 if not ignored
         result = subprocess.run(
-            ["git", "check-ignore", "AI_SESSION.md"], cwd=project_root, capture_output=True
+            [git_executable, "check-ignore", "AI_SESSION.md"],
+            cwd=project_root,
+            capture_output=True
         )
         return result.returncode == 0
-    except Exception:
-        return True
+    except Exception as e:
+        print(f"Warning: Could not check git status: {e}")
+        return False
 
 
 def propose_and_add_dependencies(

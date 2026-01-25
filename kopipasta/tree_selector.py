@@ -20,6 +20,7 @@ from kopipasta.ops import (
     select_from_grep_results,
     sanitize_string,
 )
+from kopipasta.session import init_session, auto_commit_changes, get_session_metadata, SESSION_FILENAME
 
 
 ALWAYS_VISIBLE_FILES = {"AI_SESSION.md", "AI_CONTEXT.md"}
@@ -345,9 +346,17 @@ class TreeSelector:
 
     def _show_help(self) -> Panel:
         """Create help panel"""
-        help_text = """[bold]Navigation:[/bold]  ↑/k: Up  ↓/j: Down  →/l/Enter: Expand  ←/h: Collapse
+        is_session = os.path.exists(os.path.join(self.project_root_abs, SESSION_FILENAME))
+        
+        actions = "r: Reuse   g: Grep   p: Patch   d: Deps"
+        if is_session:
+            actions += "   u: Update Session   f: Finish Task"
+        else:
+            actions += "   n: Start Session"
+
+        help_text = f"""[bold]Navigation:[/bold]  ↑/k: Up  ↓/j: Down  →/l/Enter: Expand  ←/h: Collapse
 [bold]Selection:[/bold]  Space: Toggle selection  a: Add all in dir     s: Snippet mode
-[bold]Actions:[/bold]    r: Reuse   g: Grep   p: Patch   d: Deps   u: Update Session   f: Finish Task
+[bold]Actions:[/bold]    {actions}
 q: Quit and finalize"""
 
         return Panel(
@@ -371,9 +380,12 @@ q: Quit and finalize"""
         else:
             current_info = "No selection"
 
+        is_session = os.path.exists(os.path.join(self.project_root_abs, SESSION_FILENAME))
+        session_indicator = "[bold green]SESSION ON[/bold green]" if is_session else "[dim]Session Off[/dim]"
+
         selection_info = f"[dim]Selected:[/dim] {full_count} full, {snippet_count} snippets | ~{self.char_count:,} chars (~{self.char_count//4:,} tokens)"
 
-        return f"\n{current_info} | {selection_info}\n"
+        return f"\n{current_info} | {selection_info} | {session_indicator}\n"
 
     def _handle_grep(self, node: FileNode):
         """Handle grep search in directory"""
@@ -450,6 +462,12 @@ q: Quit and finalize"""
 
             patches = parse_llm_output(content, self.console)
             apply_patches(patches)
+
+            # --- Auto-Commit Logic ---
+            session_path = os.path.join(self.project_root_abs, SESSION_FILENAME)
+            if os.path.exists(session_path):
+                auto_commit_changes(self.project_root_abs)
+
             self.console.print(
                 "\n[bold]Review the changes above with `git diff` before committing.[/bold]"
             )
@@ -459,6 +477,12 @@ q: Quit and finalize"""
 
     def _handle_session_update(self):
         """Handles 'u' key: Updates AI_SESSION.md (Handover/Checkpoint)."""
+        session_path = os.path.join(self.project_root_abs, SESSION_FILENAME)
+        if not os.path.exists(session_path):
+            self.console.print("[yellow]No active session to update.[/yellow]")
+            click.pause("Press any key to continue...")
+            return
+            
         prompt_text = (
             "Update `AI_SESSION.md` to compress the relevant findings and state from this session. "
             "Include 1. Current Progress, 2. Next Steps. Preserve checkbox state."
@@ -467,6 +491,16 @@ q: Quit and finalize"""
 
     def _handle_task_completion(self):
         """Handles 'f' key: Merges session to context and clears session (Harvest)."""
+        session_path = os.path.join(self.project_root_abs, SESSION_FILENAME)
+        if not os.path.exists(session_path):
+            self.console.print("[yellow]No active session to finish.[/yellow]")
+            click.pause("Press any key to continue...")
+            return
+        
+        # Capture metadata before potential file deletion
+        metadata = get_session_metadata(self.project_root_abs)
+        start_commit = metadata.get("start_commit") if metadata else None
+        
         prompt_text = (
             "Task Complete.\n"
             "1. Review `AI_SESSION.md`.\n"
@@ -475,16 +509,30 @@ q: Quit and finalize"""
         )
         self._run_gardener_cycle(prompt_text, "Finish Task / Harvest")
 
-        # Post-patch cleanup: Ask to delete the file physically if it's empty/cleared
-        session_path = os.path.join(self.project_root_abs, "AI_SESSION.md")
+        # Post-patch cleanup: Check if file still exists (user might have deleted it via patch, but unlikely)
         if os.path.exists(session_path):
-            if click.confirm("\n🗑️  Delete `AI_SESSION.md` now?", default=True):
+            if click.confirm("\n🗑️  Delete `AI_SESSION.md` and finish session?", default=True):
                 try:
                     os.remove(session_path)
                     # Also clear cache since session is done
                     clear_cache()
-                    self.console.print("[dim]Cache cleared.[/dim]")
                     self.console.print("[green]Deleted AI_SESSION.md[/green]")
+
+                    # --- Squash Logic ---
+                    if start_commit and start_commit != "NO_GIT":
+                        self.console.print(f"\n[bold]Session started at commit: {start_commit[:7]}[/bold]")
+                        if click.confirm("Squash session commits (soft reset) to this point?", default=True):
+                            try:
+                                subprocess.run(
+                                    ["git", "reset", "--soft", start_commit],
+                                    cwd=self.project_root_abs,
+                                    check=True
+                                )
+                                self.console.print("[green]Commits squashed. Changes are staged.[/green]")
+                                self.console.print("Run `git commit` to finalize the feature.")
+                            except subprocess.CalledProcessError as e:
+                                self.console.print(f"[red]Squash failed: {e}[/red]")
+
                 except OSError as e:
                     self.console.print(f"[red]Error deleting file: {e}[/red]")
 
@@ -873,6 +921,13 @@ q: Quit and finalize"""
                 elif key == "d":  # Dependencies
                     self.console.print()  # Add some space
                     self._show_dependencies(current_node)
+                    click.pause("Press any key to continue...")
+                elif key == "n":  # Start Session
+                    if init_session(self.project_root_abs):
+                        # If successful, ensure the new file is visible and selected
+                        session_path = os.path.join(self.project_root_abs, SESSION_FILENAME)
+                        if os.path.exists(session_path):
+                            self._ensure_path_visible(session_path)
                     click.pause("Press any key to continue...")
                 elif key == "u":  # Update Session (Handover)
                     self._handle_session_update()

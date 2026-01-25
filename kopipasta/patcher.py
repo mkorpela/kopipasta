@@ -457,8 +457,6 @@ def _apply_diff_patch(
         replacements.append((start_idx, end_idx, hunk["new_lines"]))
         hunks_applied_count += 1
 
-        # console.print(f"    [dim]Hunk #{i+1} applied via {match_type} match at line {start_idx+1}.[/dim]")
-
     if hunks_applied_count == 0:
         console.print(
             f"❌ [bold red]Failed to apply patch to {file_path}:[/bold red] No applicable hunks found."

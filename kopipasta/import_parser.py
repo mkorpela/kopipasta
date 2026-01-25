@@ -198,7 +198,6 @@ def parse_typescript_imports(
     if relevant_tsconfig_abs_path:
         abs_base_url, alias_map = load_tsconfig_config(relevant_tsconfig_abs_path)
     else:
-        # print(f"Warning: No tsconfig.json found for {os.path.relpath(file_path_abs, project_root_abs)}. Import resolution might be limited.")
         abs_base_url = project_root_abs
 
     import_regex = re.compile(
@@ -300,7 +299,6 @@ def parse_python_imports(
     try:
         tree = ast.parse(file_content, filename=file_path_abs)
     except SyntaxError:
-        # print(f"Warning: Syntax error in {file_path_abs}, cannot parse Python imports.")
         return resolved_imports
 
     for node in ast.walk(tree):

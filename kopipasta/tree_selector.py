@@ -11,7 +11,7 @@ import pyperclip
 import click
 
 from kopipasta.patcher import apply_patches, parse_llm_output
-from kopipasta.file import FileTuple, is_binary, is_ignored, get_human_readable_size
+from kopipasta.file import FileTuple, is_binary, is_ignored, get_human_readable_size, read_file_contents
 from kopipasta.prompt import get_file_snippet, get_language_for_file
 from kopipasta.cache import load_selection_from_cache, clear_cache
 from kopipasta.ops import (
@@ -482,8 +482,15 @@ q: Quit and finalize"""
             self.console.print("[yellow]No active session to update.[/yellow]")
             click.pause("Press any key to continue...")
             return
-            
+        
+        # READ CONTENT TO INJECT
+        session_content = read_file_contents(session_path)
+
         prompt_text = (
+            "# Session Handover\n"
+            "## Current Session State (AI_SESSION.md)\n"
+            f"```markdown\n{session_content}\n```\n\n"
+            "# Instructions\n"
             "Update `AI_SESSION.md` to compress the relevant findings and state from this session. "
             "Include 1. Current Progress, 2. Next Steps. Preserve checkbox state."
         )
@@ -497,15 +504,31 @@ q: Quit and finalize"""
             click.pause("Press any key to continue...")
             return
         
+        # READ CONTENTS TO INJECT
+        session_content = read_file_contents(session_path)
+        
+        context_path = os.path.join(self.project_root_abs, "AI_CONTEXT.md")
+        context_content = ""
+        if os.path.exists(context_path):
+            context_content = read_file_contents(context_path)
+        else:
+            context_content = "(File does not exist yet)"
+
         # Capture metadata before potential file deletion
         metadata = get_session_metadata(self.project_root_abs)
         start_commit = metadata.get("start_commit") if metadata else None
         
         prompt_text = (
-            "Task Complete.\n"
-            "1. Review `AI_SESSION.md`.\n"
-            "2. Generate a patch to merge learnings/constraints into `AI_CONTEXT.md` (or `~/.config/kopipasta/ai_profile.md` if personal preference).\n"
-            "3. Generate a patch to EMPTY (delete content of) `AI_SESSION.md`."
+            "# Task Completion & Harvest\n\n"
+            "## Session Data (AI_SESSION.md)\n"
+            f"```markdown\n{session_content}\n```\n\n"
+            "## Project Context (AI_CONTEXT.md)\n"
+            f"```markdown\n{context_content}\n```\n\n"
+            "# Instructions\n"
+            "The task is complete. We need to consolidate knowledge.\n"
+            "1. Review the Session Data for architectural decisions, constraints, or new patterns.\n"
+            "2. Generate a Unified Diff patch to update `AI_CONTEXT.md` (or create it if missing) with these learnings.\n"
+            "3. DO NOT patch AI_SESSION.md; it will be deleted locally."
         )
         self._run_gardener_cycle(prompt_text, "Finish Task / Harvest")
 

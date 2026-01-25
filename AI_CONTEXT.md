@@ -20,6 +20,12 @@ This project strictly adheres to the **"Quad-Memory" Architecture** to manage co
 *   **Session Exclusion**: `AI_SESSION.md` is strictly ephemeral. Git operations (add/commit) must ensure it is never committed.
 *   **Pathspec Safety**: When programmatic git commands exclude files (e.g., `git add . :!AI_SESSION.md`), code must first verify the file is NOT already ignored by `.gitignore`. Git throws errors if you try to exclude a path that is already ignored.
 
+### Filesystem Safety
+*   **Heuristic Overwrite Protection**: The patcher must guard against "snippet hallucinations" (where an LLM outputs a snippet instead of the full file).
+*   **Trigger Conditions**: A safety check (user confirmation `y/N`) is mandatory for "Full File" overwrites if:
+    1.  The target file is non-trivial (> 200 chars) and the new content shrinks it by > 50%.
+    2.  The content contains diff markers (e.g., `@@ ... @@`), indicating a parsing failure of a diff block.
+
 ### Development Standards
 *   **Language**: Python 3.8+.
 *   **Typing**: Strict type hints (`mypy` compliant) are mandatory for all function signatures.

@@ -3,6 +3,7 @@ import re
 from typing import List, Union, TypedDict, Tuple, Optional
 from difflib import SequenceMatcher
 
+import click
 from rich.console import Console
 
 
@@ -533,6 +534,29 @@ def apply_patches(patches: List[Patch]) -> None:
                 final_content = patch_content
                 if original_content.endswith("\n") and not final_content.endswith("\n"):
                     final_content += "\n"
+
+                # --- Safety Check: Suspicious Overwrite ---
+                original_len = len(original_content)
+                new_len = len(final_content)
+                
+                # Heuristics:
+                # 1. Significant size reduction (> 200 chars originally, < 50% new size)
+                # 2. Diff markers in a full file block (LLM likely meant a diff but messed up format)
+                is_shrinkage = original_len > 200 and new_len < (original_len * 0.5)
+                has_diff_markers = bool(re.search(r"^@@\s+-\d", final_content, re.MULTILINE))
+
+                if is_shrinkage or has_diff_markers:
+                    console.print(f"\n[bold yellow]⚠️  Safety Check for {file_path}[/bold yellow]")
+                    if is_shrinkage:
+                        console.print(f"   • File shrinking significantly: {original_len} -> {new_len} chars (-{100 - int(new_len/original_len*100)}%)")
+                    if has_diff_markers:
+                        console.print(f"   • Content looks like a Diff/Patch but was parsed as a Full File.")
+                    
+                    console.print(f"   [dim]Preview (first 3 lines):[/dim]\n" + "\n".join(f"   | {line}" for line in final_content.splitlines()[:3]))
+                    
+                    if not click.confirm(f"   Are you sure you want to overwrite {file_path}?", default=False):
+                        console.print(f"   [red]Skipped {file_path}[/red]")
+                        continue
 
                 with open(file_path, "w", encoding="utf-8") as f:
                     f.write(final_content)

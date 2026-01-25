@@ -2,6 +2,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+import sys
 from typing import Dict, List, Optional, Set, Tuple
 
 from kopipasta.file import (
@@ -27,8 +28,16 @@ def sanitize_string(text: str) -> str:
         return text
 
 
+def estimate_tokens(char_count: int) -> int:
+    """
+    Estimates token count based on character count.
+    Code files (with whitespace/syntax) average ~3.6 characters per token.
+    """
+    return int(char_count / 3.6)
+
+
 def print_char_count(count: int):
-    token_estimate = count // 4
+    token_estimate = estimate_tokens(count)
     print(
         f"\rCurrent prompt size: {count} characters (~ {token_estimate} tokens)",
         flush=True,
@@ -436,7 +445,7 @@ def select_from_grep_results(
                 file_size = os.path.getsize(file_path)
                 file_size_readable = get_human_readable_size(file_size)
                 file_char_estimate = file_size
-                file_token_estimate = file_char_estimate // 4
+                file_token_estimate = estimate_tokens(file_char_estimate)
 
                 print(
                     f"\n{os.path.relpath(file_path)} ({file_size_readable}, ~{file_char_estimate} chars, ~{file_token_estimate} tokens)"

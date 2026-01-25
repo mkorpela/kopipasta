@@ -20,6 +20,7 @@ from kopipasta.ops import (
     grep_files_in_directory,
     select_from_grep_results,
     sanitize_string,
+    estimate_tokens,
 )
 from kopipasta.session import init_session, auto_commit_changes, get_session_metadata, SESSION_FILENAME
 
@@ -384,7 +385,7 @@ q: Quit and finalize"""
         is_session = os.path.exists(os.path.join(self.project_root_abs, SESSION_FILENAME))
         session_indicator = "[bold green]SESSION ON[/bold green]" if is_session else "[dim]Session Off[/dim]"
 
-        selection_info = f"[dim]Selected:[/dim] {full_count} full, {snippet_count} snippets | ~{self.char_count:,} chars (~{self.char_count//4:,} tokens)"
+        selection_info = f"[dim]Selected:[/dim] {full_count} full, {snippet_count} snippets | ~{self.char_count:,} chars (~{estimate_tokens(self.char_count):,} tokens)"
 
         return f"\n{current_info} | {selection_info} | {session_indicator}\n"
 

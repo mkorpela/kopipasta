@@ -1,36 +1,28 @@
 # Project Constitution: Quad-Memory Architecture
 
-## 1. Core Philosophy
-This project implements the **"Quad-Memory" Architecture** to solve context drift and repetitive prompting in LLM-assisted development.
+## 1. Architectural Invariants
+This project strictly adheres to the **"Quad-Memory" Architecture** to manage context.
 
-### The Four Memory Layers
-1.  **Global Kernel (`~/.config/kopipasta/ai_profile.md`)**: User-specific preferences (e.g., "I use VS Code", "Prefer TypeScript"). Injected at the top of every prompt. Manage via `kopipasta --edit-profile`.
-2.  **Project Constitution (`./AI_CONTEXT.md`)**: This file. Persistent project constraints, architecture patterns, and "Laws of Physics". **Pinned** to every prompt.
-3.  **Working Memory (`./AI_SESSION.md`)**: Ephemeral scratchpad for the current active task. Tracks progress, next steps, and state. **Pinned** and **Auto-loaded**.
-4.  **The Gardener**: The maintenance loop (User + CLI) that updates Session state (`u`) and harvests knowledge into Context (`f`).
+### The Four Layers
+1.  **Global Kernel**: User identity & preferences (injected via `~/.config/kopipasta/ai_profile.md`).
+2.  **Project Constitution**: This file (`./AI_CONTEXT.md`). Persistent architectural decisions, immutable constraints, and domain definitions.
+3.  **Working Memory**: Ephemeral state (`./AI_SESSION.md`). Tracks the *current* task's progress. Must be git-ignored.
+4.  **The Gardener**: The lifecycle loop (`Start` -> `Update` -> `Finish`) that moves state from Memory to Context.
 
-## 2. Technical Constraints & Patterns
+## 2. Technical Contracts
 
-### Session Management
-*   **Ephemeral State**: `AI_SESSION.md` is strictly for *current* task state. It must be added to `.gitignore`.
-*   **Metadata**: The session file tracks the start commit hash and ISO timestamp in a hidden HTML comment block.
-*   **Lifecycle**:
-    *   `n` (Init): Creates session file, snapshots git commit.
-    *   `u` (Update): Compresses session state for handover to next LLM window.
-    *   `f` (Finish): Harvests learnings to `AI_CONTEXT.md`, deletes session file, and offers to squash commits.
+### Session Metadata
+*   `AI_SESSION.md` **must** store session metadata in a hidden HTML comment on the first line:
+    `<!-- KOPIPASTA_METADATA {"start_commit": "hash", "timestamp": "iso8601"} -->`
+*   This metadata is used for squashing commits upon task completion.
 
-### Git Integration
-*   **Auto-Checkpoints**: The tool performs `git commit --no-verify` automatically during patching to prevent data loss.
-*   **Squash on Finish**: The "Harvest" command (`f`) uses `git reset --soft <start_commit>` to squash session iteration commits into a single staged change, keeping history clean.
+### Development Standards
+*   **Language**: Python 3.8+.
+*   **Typing**: Strict type hints (`mypy` compliant) are mandatory for all function signatures.
+*   **Paradigm**: Functional over OOP. Use `TypedDict` or `dataclass` for state, and pure functions for logic. Avoid complex class hierarchies unless interacting with an OOP-heavy library.
+*   **UI**: Use `rich` library for all terminal output.
+*   **Dependencies**: Managed via `requirements.txt` (currently) or `poetry` / `uv`.
 
-### Patching Standards
-*   **Unified Diff**: The patcher supports standard unified diffs (with or without `diff --git` headers).
-*   **Explicit Headers**: Legacy support for `# FILE: path` headers exists but raw diffs are preferred for speed.
-*   **Markdown Robustness**: The patcher handles nested code blocks (e.g., inside docstrings). When generating code that includes markdown fences, use 4+ backticks for the outer container.
-*   **Safety**: Large file changes without diff headers will trigger full overwrites (destructive).
-
-## 3. Development Workflow
-1.  **Start**: Run `kopipasta` and press `n` to begin a task.
-2.  **Iterate**: Use the "Gardener" loop. Keep `AI_SESSION.md` updated via patches.
-3.  **Commit**: The tool handles auto-checkpoints.
-4.  **Harvest**: Press `f` to merge architectural changes here and clear the scratchpad.
+## 3. Anti-Patterns (Do Not Do)
+*   Do not hardcode directory trees in documentation; `kopipasta` generates them dynamically in the prompt.
+*   Do not duplicate prompt instructions (e.g., "How to patch") in this file; they belong in `prompt_template.j2`.

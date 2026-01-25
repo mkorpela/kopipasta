@@ -28,6 +28,7 @@ from kopipasta.ops import (
     read_project_context,
     read_session_state,
     check_session_gitignore_status,
+    estimate_tokens,
 )
 from kopipasta.tree_selector import TreeSelector
 from kopipasta.prompt import (
@@ -330,7 +331,7 @@ def main():
         print(separator)
 
         final_char_count = len(final_prompt)
-        final_token_estimate = final_char_count // 4
+        final_token_estimate = estimate_tokens(final_char_count)
         print(
             f"Prompt has been copied to clipboard. Final size: {final_char_count} characters (~ {final_token_estimate} tokens)"
         )

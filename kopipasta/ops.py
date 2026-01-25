@@ -201,10 +201,6 @@ def check_session_gitignore_status(project_root: str) -> bool:
     Returns True if ignored (Safe), False if not ignored (Warning needed).
     Returns True if file doesn't exist or git is not present (Skipping check).
     """
-    session_path = os.path.join(project_root, "AI_SESSION.md")
-    if not os.path.exists(session_path):
-        return True
-
     git_executable = shutil.which("git")
     if not git_executable:
         return True

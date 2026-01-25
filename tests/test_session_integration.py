@@ -3,6 +3,7 @@ import subprocess
 import pytest
 from pathlib import Path
 from kopipasta.session import init_session, get_session_metadata, SESSION_FILENAME, auto_commit_changes
+from unittest.mock import patch
 
 def run_git(cmd: list, cwd: Path):
     subprocess.run(["git"] + cmd, cwd=cwd, check=True, capture_output=True)
@@ -36,6 +37,9 @@ def test_session_lifecycle(git_repo):
     # 1. Capture initial hash
     result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=git_repo, capture_output=True, text=True)
     initial_hash = result.stdout.strip()
+    
+    # Pre-configure .gitignore to prevent interactive prompt during init
+    (git_repo / ".gitignore").write_text(SESSION_FILENAME)
     
     # 2. Init Session
     # Change CWD for the session functions relying on os.getcwd() or absolute paths
@@ -104,3 +108,24 @@ def test_auto_commit_changes(git_repo):
     # Run again with no changes -> should return False
     committed_again = auto_commit_changes(str(git_repo))
     assert committed_again is False
+
+def test_init_session_gitignore_check(git_repo):
+    """
+    Tests that init_session detects if AI_SESSION.md is not ignored
+    even if the file doesn't exist yet, and adds it if confirmed.
+    """
+    # Ensure clean state (git_repo fixture has no .gitignore by default)
+    
+    # Mock click.confirm to return True (User says "Yes, add to .gitignore")
+    with patch("click.confirm", return_value=True) as mock_confirm:
+        # This should trigger the check, fail it, ask user, and update gitignore
+        assert init_session(str(git_repo)) is True
+        
+        # Check that we were actually prompted
+        args, _ = mock_confirm.call_args
+        assert "Add AI_SESSION.md to .gitignore" in args[0]
+        
+        # Verify .gitignore was created and populated
+        gitignore_path = git_repo / ".gitignore"
+        assert gitignore_path.exists()
+        assert SESSION_FILENAME in gitignore_path.read_text()

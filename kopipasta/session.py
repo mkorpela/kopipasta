@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Optional, TypedDict
 from rich.console import Console
 import click
+from kopipasta.ops import check_session_gitignore_status, add_to_gitignore
 
 # Use a local console instance
 console = Console()
@@ -68,7 +69,6 @@ def init_session(project_root: str) -> bool:
         return False
 
     # --- Safety Check: Ensure ignored ---
-    from kopipasta.ops import check_session_gitignore_status, add_to_gitignore
     if not check_session_gitignore_status(project_root):
         console.print(f"\n[bold yellow]⚠ {SESSION_FILENAME} is NOT ignored by git.[/bold yellow]")
         if click.confirm(f"Add {SESSION_FILENAME} to .gitignore now?", default=True):
@@ -124,10 +124,15 @@ def auto_commit_changes(project_root: str, message: str = "kopipasta: auto-check
         return False
 
     try:
-        # Stage everything EXCEPT the session file using pathspec magic
-        # ":!AI_SESSION.md" tells git to exclude this file even if it's currently tracked or unignored
+        # Determine correct add command based on ignore status
+        # If ignored: 'git add .' is safe (git skips ignored files)
+        # If NOT ignored: we must explicitly exclude it via magic pathspec
+        cmd = ["git", "add", "."]
+        if not check_session_gitignore_status(project_root):
+            cmd.append(f":!{SESSION_FILENAME}")
+
         subprocess.run(
-            ["git", "add", ".", f":!{SESSION_FILENAME}"], 
+            cmd, 
             cwd=project_root, check=True, capture_output=True
         )
         
@@ -144,5 +149,6 @@ def auto_commit_changes(project_root: str, message: str = "kopipasta: auto-check
             return True
             
     except subprocess.CalledProcessError as e:
-        console.print(f"[yellow]Auto-commit failed: {e.stderr}[/yellow]")
+        error_msg = e.stderr.decode("utf-8", errors="replace") if e.stderr else str(e)
+        console.print(f"[yellow]Auto-commit failed: {error_msg}[/yellow]")
     return False

@@ -16,6 +16,10 @@ This project strictly adheres to the **"Quad-Memory" Architecture** to manage co
     `<!-- KOPIPASTA_METADATA {"start_commit": "hash", "timestamp": "iso8601"} -->`
 *   This metadata is used for squashing commits upon task completion.
 
+### Git Operations
+*   **Session Exclusion**: `AI_SESSION.md` is strictly ephemeral. Git operations (add/commit) must ensure it is never committed.
+*   **Pathspec Safety**: When programmatic git commands exclude files (e.g., `git add . :!AI_SESSION.md`), code must first verify the file is NOT already ignored by `.gitignore`. Git throws errors if you try to exclude a path that is already ignored.
+
 ### Development Standards
 *   **Language**: Python 3.8+.
 *   **Typing**: Strict type hints (`mypy` compliant) are mandatory for all function signatures.

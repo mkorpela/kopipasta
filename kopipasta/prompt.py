@@ -420,7 +420,6 @@ def generate_prompt_template(
     # Use a unique marker for this render to prevent collision if the 
     # CURSOR_MARKER constant string itself appears in the file contents.
     unique_render_marker = f"{CURSOR_MARKER}_{uuid.uuid4().hex}"
-    
     rendered = template.render(
         structure=structure_tree,
         files=processed_files,
@@ -442,12 +441,14 @@ def generate_prompt_template(
     return rendered, cursor_position
 
 
-def get_task_from_user_interactive(console: Console) -> str:
+def get_task_from_user_interactive(console: Console, default_text: str = "") -> str:
     """
     Prompts the user for a multiline task description using an interactive
     terminal prompt instead of an external editor.
     """
     console.print("\n[bold cyan]📝 Please enter your task instructions.[/bold cyan]")
+    if default_text:
+        console.print(f"   [dim](Pre-filled from previous session. Edit or clear as needed.)[/dim]")
     console.print(
         "   - Press [bold]Meta+Enter[/bold] or [bold]Esc[/bold] then [bold]Enter[/bold] to submit."
     )
@@ -461,6 +462,7 @@ def get_task_from_user_interactive(console: Console) -> str:
             multiline=True,
             prompt_continuation="  ",
             style=style,
+            default=default_text,
         )
         return task.strip()
     except KeyboardInterrupt:

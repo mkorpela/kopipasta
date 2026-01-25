@@ -86,7 +86,6 @@ def read_gitignore() -> List[str]:
         "target",
         ".DS_Store",
         "Thumbs.db",
-        "AI_SESSION.md",
     ]
     gitignore_patterns = default_ignore_patterns.copy()
 

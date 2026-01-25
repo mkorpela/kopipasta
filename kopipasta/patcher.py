@@ -70,6 +70,52 @@ def _parse_diff_hunks(diff_content: str) -> List[Hunk]:
     return hunks
 
 
+def _parse_raw_unified_diff(content: str) -> List[Patch]:
+    """
+    Attempts to parse content as a multi-file unified diff.
+    Looks for `diff --git` or `--- a/` + `+++ b/` headers.
+    """
+    patches: List[Patch] = []
+    
+    # Detect chunks starting with `diff --git ...`
+    # We assume standard git diff output format
+    git_diff_starts = [m.start() for m in re.finditer(r"^diff --git ", content, re.MULTILINE)]
+    
+    if git_diff_starts:
+        # Split by git diff headers
+        indices = git_diff_starts + [len(content)]
+        for k in range(len(indices) - 1):
+            chunk = content[indices[k]:indices[k+1]]
+            # Extract filename from `+++ b/...` inside chunk
+            # Matches "+++ b/src/main.py" or "+++ src/main.py"
+            m = re.search(r"^\+\+\+ (?:b/)?([^\s\n]+)", chunk, re.MULTILINE)
+            if m:
+                path = m.group(1).strip()
+                hunks = _parse_diff_hunks(chunk)
+                if hunks:
+                    patches.append({"file_path": path, "type": "diff", "content": hunks})
+        return patches
+
+    # Fallback: Detect chunks starting with `--- ...` then `+++ ...`
+    # This handles non-git unified diffs (e.g. `diff -u file1 file2`)
+    # We look for the `---` header at start of line
+    unified_starts = [m.start() for m in re.finditer(r"^--- (?:a/)?\S+", content, re.MULTILINE)]
+    if unified_starts:
+        indices = unified_starts + [len(content)]
+        for k in range(len(indices) - 1):
+            chunk = content[indices[k]:indices[k+1]]
+            # Must have a +++ line
+            m = re.search(r"^\+\+\+ (?:b/)?([^\s\n]+)", chunk, re.MULTILINE)
+            if m:
+                path = m.group(1).strip()
+                hunks = _parse_diff_hunks(chunk)
+                if hunks:
+                    patches.append({"file_path": path, "type": "diff", "content": hunks})
+        return patches
+
+    return []
+
+
 def parse_llm_output(content: str, console: Console = None) -> List[Patch]:
     """
     Parses LLM markdown output to find file patches.
@@ -112,6 +158,8 @@ def parse_llm_output(content: str, console: Console = None) -> List[Patch]:
         if fence_match:
             blocks_found += 1
             indent = fence_match.group(1)
+            # Track if this block successfully yields explicit headers
+            initial_valid_headers_count = blocks_with_valid_headers
             fence_len = len(fence_match.group(2))
             info_string = fence_match.group(3)
 
@@ -188,23 +236,31 @@ def parse_llm_output(content: str, console: Console = None) -> List[Patch]:
             if current_file_path:
                 finalize(current_file_path, current_content_lines)
 
-            # --- DIAGNOSTICS: If block ended but we never found a file path ---
-            elif console:
-                # Check for near misses to give helpful hints
-                preview = "\n".join(block_lines[:2]).strip()
-                hint = ""
-                if "FILE:" in info_string or any("FILE:" in l for l in block_lines[:2]):
-                    hint = " (Found 'FILE:' keyword but syntax was incorrect. Check comment style?)"
-                elif "filename" in info_string.lower() or any(
-                    "filename" in l.lower() for l in block_lines[:2]
-                ):
-                    hint = " (Found 'filename' keyword. Please use 'FILE:' instead.)"
+            # If we didn't find any explicit FILE: headers, try parsing as a raw unified diff
+            elif blocks_with_valid_headers == initial_valid_headers_count:
+                # Re-assemble block content to check for raw diffs
+                raw_block_content = "\n".join(block_lines).strip()
+                raw_diff_patches = _parse_raw_unified_diff(raw_block_content)
+                
+                if raw_diff_patches:
+                    patches.extend(raw_diff_patches)
+                elif console:
+                    # --- DIAGNOSTICS: Failed to parse anything ---
+                    # Check for near misses to give helpful hints
+                    preview = "\n".join(block_lines[:2]).strip()
+                    hint = ""
+                    if "FILE:" in info_string or any("FILE:" in l for l in block_lines[:2]):
+                        hint = " (Found 'FILE:' keyword but syntax was incorrect. Check comment style?)"
+                    elif "filename" in info_string.lower() or any(
+                        "filename" in l.lower() for l in block_lines[:2]
+                    ):
+                        hint = " (Found 'filename' keyword. Please use 'FILE:' instead.)"
 
-                console.print(
-                    f"[dim yellow]⚠ Skipped code block at line {i}: No valid '# FILE: path' header found.{hint}[/dim yellow]"
-                )
-                if preview:
-                    console.print(f"[dim]   Preview: {preview}[/dim]")
+                    console.print(
+                        f"[dim yellow]⚠ Skipped code block at line {i}: No valid '# FILE: path' header found.{hint}[/dim yellow]"
+                    )
+                    if preview:
+                        console.print(f"[dim]   Preview: {preview}[/dim]")
 
         i += 1
 

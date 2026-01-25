@@ -36,7 +36,12 @@ from kopipasta.prompt import (
     reset_template,
     open_template_in_editor,
 )
-from kopipasta.cache import save_selection_to_cache
+from kopipasta.cache import (
+    save_selection_to_cache,
+    load_selection_from_cache,
+    load_task_from_cache,
+    save_task_to_cache,
+)
 
 
 def get_colored_code(file_path, code):
@@ -117,6 +122,7 @@ def main():
     ignore_patterns = read_gitignore()
     env_vars = read_env_file()
     project_root_abs = os.path.abspath(os.getcwd())
+    session_path = os.path.join(project_root_abs, "AI_SESSION.md")
 
     # --- Safety Check: AI_SESSION.md ---
     if not check_session_gitignore_status(project_root_abs):
@@ -135,6 +141,22 @@ def main():
     # Separate URLs from file/directory paths
     paths_for_tree = []
     files_to_preselect = []
+
+    # --- Auto-load Session State ---
+    is_ongoing_session = os.path.exists(session_path)
+    if is_ongoing_session:
+        # 1. Load previous file selection
+        cached_paths = load_selection_from_cache()
+        for p in cached_paths:
+            abs_p = os.path.abspath(p)
+            if os.path.exists(abs_p):
+                files_to_preselect.append(abs_p)
+        
+        # 2. Force Context and Session files into selection if they exist
+        files_to_preselect.append(session_path)
+        context_path = os.path.join(project_root_abs, "AI_CONTEXT.md")
+        if os.path.exists(context_path):
+            files_to_preselect.append(context_path)
 
     for input_path in args.inputs:
         if input_path.startswith(("http://", "https://")):
@@ -216,6 +238,11 @@ def main():
     if files_to_include:
         save_selection_to_cache(files_to_include)
 
+    # Load default task if session is ongoing
+    cached_task = None
+    if is_ongoing_session and not args.task:
+        cached_task = load_task_from_cache()
+
     print("\nFile and web content selection complete.")
     print_char_count(current_char_count)
 
@@ -245,11 +272,14 @@ def main():
             "\n[bold cyan]Using task description from --task argument.[/bold cyan]"
         )
     else:
-        task_description = get_task_from_user_interactive(console)
+        task_description = get_task_from_user_interactive(console, default_text=cached_task or "")
 
     if not task_description:
         console.print("\n[bold red]No task provided. Aborting.[/bold red]")
         return
+    
+    # Save task to cache
+    save_task_to_cache(task_description)
 
     final_prompt = (
         prompt_template[:cursor_position]

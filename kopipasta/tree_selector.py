@@ -13,7 +13,7 @@ import click
 from kopipasta.patcher import apply_patches, parse_llm_output
 from kopipasta.file import FileTuple, is_binary, is_ignored, get_human_readable_size
 from kopipasta.prompt import get_file_snippet, get_language_for_file
-from kopipasta.cache import load_selection_from_cache
+from kopipasta.cache import load_selection_from_cache, clear_cache
 from kopipasta.ops import (
     propose_and_add_dependencies,
     grep_files_in_directory,
@@ -21,6 +21,8 @@ from kopipasta.ops import (
     sanitize_string,
 )
 
+
+ALWAYS_VISIBLE_FILES = {"AI_SESSION.md", "AI_CONTEXT.md"}
 
 class FileNode:
     """Represents a file or directory in the tree"""
@@ -136,9 +138,11 @@ class TreeSelector:
         for path in paths:
             abs_path = os.path.abspath(path)
             node = None
+            basename = os.path.basename(abs_path)
             if os.path.isfile(abs_path):
-                if not is_ignored(
-                    abs_path, self.ignore_patterns, self.project_root_abs
+                if basename in ALWAYS_VISIBLE_FILES or (
+                    not is_ignored(abs_path, self.ignore_patterns, self.project_root_abs)
+                    and not is_binary(abs_path)
                 ) and not is_binary(abs_path):
                     node = FileNode(abs_path, False, root)
             elif os.path.isdir(abs_path):
@@ -168,7 +172,10 @@ class TreeSelector:
 
         for item in items:
             item_path = os.path.join(abs_dir_path, item)
-            if is_ignored(item_path, self.ignore_patterns, self.project_root_abs):
+            if item in ALWAYS_VISIBLE_FILES:
+                # Explicitly allow key memory files
+                pass
+            elif is_ignored(item_path, self.ignore_patterns, self.project_root_abs):
                 continue
 
             if os.path.isdir(item_path):
@@ -474,6 +481,9 @@ q: Quit and finalize"""
             if click.confirm("\n🗑️  Delete `AI_SESSION.md` now?", default=True):
                 try:
                     os.remove(session_path)
+                    # Also clear cache since session is done
+                    clear_cache()
+                    self.console.print("[dim]Cache cleared.[/dim]")
                     self.console.print("[green]Deleted AI_SESSION.md[/green]")
                 except OSError as e:
                     self.console.print(f"[red]Error deleting file: {e}[/red]")

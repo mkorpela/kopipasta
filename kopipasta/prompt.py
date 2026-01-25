@@ -3,7 +3,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 from jinja2 import Template
 
@@ -14,7 +14,22 @@ from rich.console import Console
 
 CURSOR_MARKER = "<<CURSOR_POSITION>>"
 
-DEFAULT_TEMPLATE = """# Project Overview
+DEFAULT_TEMPLATE = """{% if user_profile -%}
+# User Profile & Preferences
+{{ user_profile }}
+
+{% endif -%}
+{% if project_context -%}
+# Project Constitution (AI_CONTEXT.md)
+{{ project_context }}
+
+{% endif -%}
+{% if session_state -%}
+# Current Working Session (AI_SESSION.md)
+{{ session_state }}
+
+{% endif -%}
+# Project Overview
 
 ## Project Structure
 
@@ -341,6 +356,9 @@ def generate_prompt_template(
     web_contents: Dict[str, Tuple[FileTuple, str]],
     env_vars: Dict[str, str],
     search_paths: List[str] = None,
+    user_profile: Optional[str] = None,
+    project_context: Optional[str] = None,
+    session_state: Optional[str] = None,
 ) -> Tuple[str, int]:
     """
     Generates the prompt using the Jinja2 template.
@@ -401,7 +419,10 @@ def generate_prompt_template(
         structure=structure_tree,
         files=processed_files,
         web_pages=processed_web_pages,
-        cursor_marker=CURSOR_MARKER
+        cursor_marker=CURSOR_MARKER,
+        user_profile=user_profile,
+        project_context=project_context,
+        session_state=session_state,
     )
 
     # 5. Find and remove cursor marker

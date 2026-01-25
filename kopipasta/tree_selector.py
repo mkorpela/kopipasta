@@ -7,6 +7,7 @@ from rich.console import Console
 from rich.tree import Tree
 from rich.panel import Panel
 from rich.text import Text
+import pyperclip
 import click
 
 from kopipasta.patcher import apply_patches, parse_llm_output
@@ -339,7 +340,7 @@ class TreeSelector:
         """Create help panel"""
         help_text = """[bold]Navigation:[/bold]  ↑/k: Up  ↓/j: Down  →/l/Enter: Expand  ←/h: Collapse
 [bold]Selection:[/bold]  Space: Toggle selection  a: Add all in dir     s: Snippet mode
-[bold]Actions:[/bold]    r: Reuse last selection  g: Grep in directory   p: Apply patch
+[bold]Actions:[/bold]    r: Reuse   g: Grep   p: Patch   d: Deps   u: Update Session   f: Finish Task
 q: Quit and finalize"""
 
         return Panel(
@@ -448,6 +449,59 @@ q: Quit and finalize"""
 
         except KeyboardInterrupt:
             self.console.print("\n[red]Patch application cancelled.[/red]")
+
+    def _handle_session_update(self):
+        """Handles 'u' key: Updates AI_SESSION.md (Handover/Checkpoint)."""
+        prompt_text = (
+            "Update `AI_SESSION.md` to compress the relevant findings and state from this session. "
+            "Include 1. Current Progress, 2. Next Steps. Preserve checkbox state."
+        )
+        self._run_gardener_cycle(prompt_text, "Update Session / Handover")
+
+    def _handle_task_completion(self):
+        """Handles 'f' key: Merges session to context and clears session (Harvest)."""
+        prompt_text = (
+            "Task Complete.\n"
+            "1. Review `AI_SESSION.md`.\n"
+            "2. Generate a patch to merge learnings/constraints into `AI_CONTEXT.md` (or `~/.config/kopipasta/ai_profile.md` if personal preference).\n"
+            "3. Generate a patch to EMPTY (delete content of) `AI_SESSION.md`."
+        )
+        self._run_gardener_cycle(prompt_text, "Finish Task / Harvest")
+
+        # Post-patch cleanup: Ask to delete the file physically if it's empty/cleared
+        session_path = os.path.join(self.project_root_abs, "AI_SESSION.md")
+        if os.path.exists(session_path):
+            if click.confirm("\n🗑️  Delete `AI_SESSION.md` now?", default=True):
+                try:
+                    os.remove(session_path)
+                    self.console.print("[green]Deleted AI_SESSION.md[/green]")
+                except OSError as e:
+                    self.console.print(f"[red]Error deleting file: {e}[/red]")
+
+    def _run_gardener_cycle(self, prompt_text: str, title: str):
+        """Helper to copy prompt, pause, and run patcher."""
+        self.console.clear()
+        self.console.print(
+            Panel(
+                f"[bold]{prompt_text}[/bold]",
+                title=f"🌱 Gardener: {title}",
+                border_style="green",
+            )
+        )
+        
+        try:
+            pyperclip.copy(prompt_text)
+            self.console.print("\n[green]📋 Prompt copied to clipboard![/green]")
+        except pyperclip.PyperclipException:
+            self.console.print("\n[yellow]Could not copy to clipboard. Please copy the text above manually.[/yellow]")
+
+        self.console.print("\n1. Paste this into your LLM.")
+        self.console.print("2. Copy the LLM's Markdown response (Diffs/Code blocks).")
+        self.console.print("3. Press [bold]Enter[/bold] here to paste and apply patches.")
+        
+        click.pause()
+        self._handle_apply_patches()
+        click.pause("Press any key to return to file selector...")
 
     def _toggle_selection(self, node: FileNode, snippet_mode: bool = False):
         """Toggle selection of a file or directory"""
@@ -810,6 +864,10 @@ q: Quit and finalize"""
                     self.console.print()  # Add some space
                     self._show_dependencies(current_node)
                     click.pause("Press any key to continue...")
+                elif key == "u":  # Update Session (Handover)
+                    self._handle_session_update()
+                elif key == "f":  # Finish Task (Harvest)
+                    self._handle_task_completion()
                 elif key == "q":  # Quit
                     self.quit_selection = True
                 elif key == "\x03":  # Ctrl+C

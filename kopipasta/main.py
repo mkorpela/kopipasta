@@ -23,6 +23,10 @@ from kopipasta.ops import (
     read_env_file,
     read_gitignore,
     sanitize_string,
+    read_global_profile,
+    read_project_context,
+    read_session_state,
+    check_session_gitignore_status,
 )
 from kopipasta.tree_selector import TreeSelector
 from kopipasta.prompt import (
@@ -114,6 +118,15 @@ def main():
     env_vars = read_env_file()
     project_root_abs = os.path.abspath(os.getcwd())
 
+    # --- Safety Check: AI_SESSION.md ---
+    if not check_session_gitignore_status(project_root_abs):
+        console.print(
+            "\n[bold yellow]⚠️  WARNING: `AI_SESSION.md` is detected but NOT ignored by git.[/bold yellow]"
+        )
+        console.print("   This file is intended for ephemeral scratchpad data.")
+        console.print("   Please add it to your `.gitignore` to prevent accidental commits.\n")
+        # We continue execution, just warning.
+
     files_to_include: List[FileTuple] = []
     web_contents: Dict[str, Tuple[FileTuple, str]] = {}
     current_char_count = 0
@@ -193,6 +206,11 @@ def main():
         print("No files or web content were selected. Exiting.")
         return
 
+    # --- Quad-Memory: Auto-Load Context ---
+    user_profile = read_global_profile()
+    project_context = read_project_context(project_root_abs)
+    session_state = read_session_state(project_root_abs)
+
     # Save the final selection for the next run
     if files_to_include:
         save_selection_to_cache(files_to_include)
@@ -206,8 +224,18 @@ def main():
         f"Summary: Added {added_files_count} files/patches and {added_web_count} web sources."
     )
 
+    # Deduplicate auto-loaded files if selected in tree
+    files_to_include = [
+        f for f in files_to_include
+        if not (os.path.basename(f[0]) == "AI_CONTEXT.md" and project_context)
+        and not (os.path.basename(f[0]) == "AI_SESSION.md" and session_state)
+    ]
+
     prompt_template, cursor_position = generate_prompt_template(
-        files_to_include, ignore_patterns, web_contents, env_vars, paths_for_tree
+        files_to_include, ignore_patterns, web_contents, env_vars, paths_for_tree,
+        user_profile=user_profile,
+        project_context=project_context,
+        session_state=session_state
     )
 
     if args.task:

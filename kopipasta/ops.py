@@ -1,7 +1,8 @@
 import os
 import shutil
 import subprocess
-from typing import Dict, List, Set, Tuple
+from pathlib import Path
+from typing import Dict, List, Optional, Set, Tuple
 
 from kopipasta.file import (
     FileTuple,
@@ -85,6 +86,7 @@ def read_gitignore() -> List[str]:
         "target",
         ".DS_Store",
         "Thumbs.db",
+        "AI_SESSION.md",
     ]
     gitignore_patterns = default_ignore_patterns.copy()
 
@@ -100,6 +102,59 @@ def read_gitignore() -> List[str]:
             print(f"Warning: Could not read .gitignore: {e}")
 
     return gitignore_patterns
+
+
+def read_global_profile() -> Optional[str]:
+    """Reads ~/.config/kopipasta/ai_profile.md (XDG compliant only)."""
+    # Check XDG config location
+    config_home = os.environ.get("XDG_CONFIG_HOME")
+    if config_home:
+        config_path = Path(config_home) / "kopipasta" / "ai_profile.md"
+    else:
+        config_path = Path.home() / ".config" / "kopipasta" / "ai_profile.md"
+
+    if config_path.exists():
+        return read_file_contents(str(config_path))
+    return None
+
+
+def read_project_context(project_root: str) -> Optional[str]:
+    """Reads AI_CONTEXT.md from project root."""
+    path = os.path.join(project_root, "AI_CONTEXT.md")
+    if os.path.exists(path):
+        return read_file_contents(path)
+    return None
+
+
+def read_session_state(project_root: str) -> Optional[str]:
+    """Reads AI_SESSION.md from project root."""
+    path = os.path.join(project_root, "AI_SESSION.md")
+    if os.path.exists(path):
+        return read_file_contents(path)
+    return None
+
+
+def check_session_gitignore_status(project_root: str) -> bool:
+    """
+    Checks if AI_SESSION.md is ignored by git.
+    Returns True if ignored (Safe), False if not ignored (Warning needed).
+    Returns True if file doesn't exist or git is not present (Skipping check).
+    """
+    session_path = os.path.join(project_root, "AI_SESSION.md")
+    if not os.path.exists(session_path):
+        return True
+
+    if not shutil.which("git"):
+        return True
+
+    try:
+        # git check-ignore returns 0 if ignored, 1 if not ignored
+        result = subprocess.run(
+            ["git", "check-ignore", "AI_SESSION.md"], cwd=project_root, capture_output=True
+        )
+        return result.returncode == 0
+    except Exception:
+        return True
 
 
 def propose_and_add_dependencies(

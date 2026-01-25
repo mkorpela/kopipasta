@@ -5,3 +5,4 @@ __pycache__/
 dist/
 build/
 .venv
+AI_SESSION.md

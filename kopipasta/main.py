@@ -24,6 +24,7 @@ from kopipasta.ops import (
     read_gitignore,
     sanitize_string,
     read_global_profile,
+    open_profile_in_editor,
     read_project_context,
     read_session_state,
     check_session_gitignore_status,
@@ -103,6 +104,7 @@ def main():
     parser.add_argument("-t", "--task", help="Task description for the AI prompt")
     parser.add_argument("--reset-template", action="store_true", help="Reset the prompt template to default")
     parser.add_argument("--edit-template", action="store_true", help="Open the template file in default editor")
+    parser.add_argument("--edit-profile", action="store_true", help="Open the global user profile (AI Identity) in default editor")
     args = parser.parse_args()
 
     # Handle Template Management Arguments
@@ -112,6 +114,10 @@ def main():
 
     if args.edit_template:
         open_template_in_editor()
+        return
+
+    if args.edit_profile:
+        open_profile_in_editor()
         return
 
     # Default to the current directory if no inputs are provided

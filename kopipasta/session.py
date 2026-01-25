@@ -2,6 +2,7 @@ import os
 import re
 import subprocess
 import json
+from datetime import datetime
 from typing import Optional, TypedDict
 from rich.console import Console
 
@@ -68,7 +69,7 @@ def init_session(project_root: str) -> bool:
 
     metadata = {
         "start_commit": head_hash,
-        "timestamp": "TODO_TIMESTAMP" 
+        "timestamp": datetime.now().isoformat()
     }
     
     # Create the file with hidden metadata

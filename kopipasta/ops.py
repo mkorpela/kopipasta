@@ -103,18 +103,54 @@ def read_gitignore() -> List[str]:
     return gitignore_patterns
 
 
-def read_global_profile() -> Optional[str]:
-    """Reads ~/.config/kopipasta/ai_profile.md (XDG compliant only)."""
-    # Check XDG config location
+def get_global_profile_path() -> Path:
     config_home = os.environ.get("XDG_CONFIG_HOME")
     if config_home:
-        config_path = Path(config_home) / "kopipasta" / "ai_profile.md"
+        return Path(config_home) / "kopipasta" / "ai_profile.md"
     else:
-        config_path = Path.home() / ".config" / "kopipasta" / "ai_profile.md"
+        return Path.home() / ".config" / "kopipasta" / "ai_profile.md"
+
+
+def read_global_profile() -> Optional[str]:
+    """Reads ~/.config/kopipasta/ai_profile.md (XDG compliant only)."""
+    config_path = get_global_profile_path()
 
     if config_path.exists():
         return read_file_contents(str(config_path))
     return None
+
+
+def open_profile_in_editor():
+    """Opens the global profile in the default editor, creating it if needed."""
+    config_path = get_global_profile_path()
+    
+    if not config_path.exists():
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        default_content = (
+            "# Global AI Profile\n"
+            "This file is injected into the top of every prompt.\n"
+            "Use it for your identity and global preferences.\n\n"
+            "- I am a Senior Python Developer.\n"
+            "- I prefer functional programming patterns where possible.\n"
+            "- I use VS Code on MacOS.\n"
+            "- Always type annotate Python code.\n"
+        )
+        try:
+            with open(config_path, "w", encoding="utf-8") as f:
+                f.write(default_content)
+            print(f"Created new profile at: {config_path}")
+        except IOError as e:
+            print(f"Error creating profile: {e}")
+            return
+
+    editor = os.environ.get("EDITOR", "code" if shutil.which("code") else "vim")
+    
+    if sys.platform == "win32":
+        os.startfile(config_path)
+    elif sys.platform == "darwin":
+        subprocess.call(("open", config_path))
+    else:
+        subprocess.call((editor, config_path))
 
 
 def read_project_context(project_root: str) -> Optional[str]:

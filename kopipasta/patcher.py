@@ -29,6 +29,195 @@ class Patch(TypedDict):
     content: PatchContent
 
 
+class PatchParser:
+    """
+    State machine for parsing LLM markdown output into patches.
+    Handles nested code blocks, various comment styles, and multiple files per block.
+    """
+
+    FILE_HEADER_REGEX = re.compile(
+        r"\s*(?:#|//|--|/\*|<!--)\s*FILE:\s*(.+?)(?:\s|\*\/|-->)*$", re.IGNORECASE
+    )
+    DIFF_HUNK_HEADER_REGEX = re.compile(
+        r"^@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@", re.MULTILINE
+    )
+
+    def __init__(self, content: str, console: Optional[Console] = None):
+        self.lines = content.splitlines()
+        self.console = console
+        self.patches: List[Patch] = []
+        self.blocks_found = 0
+        self.current_line_idx = 0
+
+    def parse(self) -> List[Patch]:
+        while self.current_line_idx < len(self.lines):
+            line = self.lines[self.current_line_idx]
+            fence_match = re.match(r"^(\s*)([`~]{3,})(.*)$", line)
+
+            if fence_match:
+                self._process_code_block(fence_match)
+            else:
+                self.current_line_idx += 1
+
+        self._report_diagnostics()
+        return self.patches
+
+    def _process_code_block(self, fence_match):
+        self.blocks_found += 1
+        indent = fence_match.group(1)
+        fence_chars = fence_match.group(2)
+        info_string = fence_match.group(3)
+
+        # 1. Look for header in info string or preceding lines
+        initial_file_path = self._find_header_context(info_string)
+        
+        # 2. Extract block content
+        self.current_line_idx += 1
+        block_lines = self._extract_block_content(indent, fence_chars)
+
+        # 3. Parse content into patches
+        self._parse_block_content(block_lines, initial_file_path, info_string)
+
+    def _find_header_context(self, info_string: str) -> Optional[str]:
+        # Check inline: ```python # FILE: foo.py
+        header_match = self.FILE_HEADER_REGEX.search(info_string)
+        if header_match:
+            return header_match.group(1).strip()
+
+        # Check preceding lines
+        k = self.current_line_idx - 1
+        while k >= 0 and not self.lines[k].strip():
+            k -= 1
+        if k >= 0:
+            prev_match = self.FILE_HEADER_REGEX.search(self.lines[k])
+            if prev_match:
+                return prev_match.group(1).strip()
+        return None
+
+    def _extract_block_content(self, indent: str, fence_chars: str) -> List[str]:
+        block_lines = []
+        fence_char_type = fence_chars[0]
+        fence_len = len(fence_chars)
+
+        while self.current_line_idx < len(self.lines):
+            line = self.lines[self.current_line_idx]
+            
+            # Check for closing fence
+            closing_match = re.match(r"^(\s*)([`~]{3,})\s*$", line)
+            if (closing_match 
+                and closing_match.group(2)[0] == fence_char_type 
+                and len(closing_match.group(2)) >= fence_len):
+                
+                if not self._is_inner_fence_heuristic(fence_chars):
+                    self.current_line_idx += 1
+                    break
+
+            # Strip indentation
+            if line.startswith(indent):
+                block_lines.append(line[len(indent):])
+            else:
+                block_lines.append(line)
+            
+            self.current_line_idx += 1
+            
+        return block_lines
+
+    def _is_inner_fence_heuristic(self, outer_fence: str) -> bool:
+        """
+        Lookahead to see if this closing fence is actually part of the content 
+        (nested markdown) rather than the end of the block.
+        """
+        peek_idx = self.current_line_idx + 1
+        lines_to_peek = 5
+        
+        while peek_idx < len(self.lines) and (peek_idx - self.current_line_idx) <= lines_to_peek:
+            line = self.lines[peek_idx].strip()
+            if self.FILE_HEADER_REGEX.search(line):
+                return False # Found a new file header, so the current fence WAS a close.
+            
+            # Found another start fence
+            fence_match = re.match(r"^[`~]{3,}(.*)$", line)
+            if fence_match:
+                if fence_match.group(1).strip():
+                    return False # New block start
+                return True # Likely generic fence inside content
+            
+            if line:
+                return False # Found regular text, so gap is populated.
+            
+            peek_idx += 1
+        return False
+
+    def _parse_block_content(self, lines: List[str], initial_path: Optional[str], info_string: str):
+        current_path = initial_path
+        current_lines = []
+        valid_headers_found = 0
+
+        if current_path:
+            valid_headers_found += 1
+
+        for line in lines:
+            match = self.FILE_HEADER_REGEX.match(line)
+            if match:
+                if current_path:
+                    self._finalize_patch(current_path, current_lines)
+                current_path = match.group(1).strip()
+                current_lines = []
+                valid_headers_found += 1
+            else:
+                if current_path:
+                    current_lines.append(line)
+        
+        if current_path:
+            self._finalize_patch(current_path, current_lines)
+        
+        # Fallback: Raw Unified Diff
+        elif valid_headers_found == 0:
+            raw_content = "\n".join(lines).strip()
+            raw_patches = _parse_raw_unified_diff(raw_content)
+            if raw_patches:
+                self.patches.extend(raw_patches)
+            else:
+                self._log_skip_warning(lines, info_string)
+
+    def _finalize_patch(self, path: str, lines: List[str]):
+        if not path:
+            return
+        content = "\n".join(lines).strip()
+        if self.DIFF_HUNK_HEADER_REGEX.search(content):
+            hunks = _parse_diff_hunks(content)
+            if hunks:
+                self.patches.append({"file_path": path, "type": "diff", "content": hunks})
+        else:
+            self.patches.append({"file_path": path, "type": "full", "content": content})
+
+    def _log_skip_warning(self, lines: List[str], info_string: str):
+        if not self.console:
+            return
+        
+        preview = "\n".join(lines[:2]).strip()
+        hint = ""
+        if "FILE:" in info_string or any("FILE:" in l for l in lines[:2]):
+            hint = " (Check comment syntax?)"
+        elif "filename" in info_string.lower():
+            hint = " (Use 'FILE:' instead of 'filename')"
+            
+        self.console.print(
+            f"[dim yellow]⚠ Skipped block near line {self.current_line_idx}: No valid header found.{hint}[/dim yellow]"
+        )
+
+    def _report_diagnostics(self):
+        if self.console and self.blocks_found == 0:
+            self.console.print("[dim yellow]⚠ No markdown code blocks found.[/dim yellow]")
+        elif self.console and self.blocks_found > 0 and not self.patches:
+            self.console.print(f"[bold red]Found {self.blocks_found} blocks but no valid patches.[/bold red]")
+
+
+def parse_llm_output(content: str, console: Console = None) -> List[Patch]:
+    parser = PatchParser(content, console)
+    return parser.parse()
+
+
 def _parse_diff_hunks(diff_content: str) -> List[Hunk]:
     """Parses the content of a diff block into a list of Hunks."""
     hunks: List[Hunk] = []
@@ -115,208 +304,6 @@ def _parse_raw_unified_diff(content: str) -> List[Patch]:
         return patches
 
     return []
-
-
-def parse_llm_output(content: str, console: Console = None) -> List[Patch]:
-    """
-    Parses LLM markdown output to find file patches.
-    Handles:
-    - Indented code blocks.
-    - Multiple files in a single block.
-    - Various comment styles (#, //, --, <!--).
-    - Nested backticks (by matching fence length).
-    - File headers on the fence line.
-    - File headers immediately preceding the code block.
-    Returns a list of structured Patch objects.
-    """
-    patches: List[Patch] = []
-    blocks_found = 0
-    blocks_with_valid_headers = 0
-
-    lines = content.splitlines()
-    i = 0
-
-    # Regex for file headers:
-    # - Allow leading whitespace (^\s*)
-    # - Support #, //, --, /*, <!--
-    # - Capture filename lazily (.+?)
-    # - Handle trailing comment closers like */ or -->
-    file_header_regex = re.compile(
-        r"\s*(?:#|//|--|/\*|<!--)\s*FILE:\s*(.+?)(?:\s|\*\/|-->)*$", re.IGNORECASE
-    )
-
-    # Regex to detect unified diff hunks
-    diff_hunk_header_regex = re.compile(
-        r"^@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@", re.MULTILINE
-    )
-
-    while i < len(lines):
-        line = lines[i]
-
-        # Detect start of code block: indentation + (``` OR ~~~) + info_string
-        fence_match = re.match(r"^(\s*)([`~]{3,})(.*)$", line)
-
-        if fence_match:
-            blocks_found += 1
-            indent = fence_match.group(1)
-            fence_chars = fence_match.group(2)
-            fence_char_type = fence_chars[0]
-            fence_len = len(fence_chars)
-            # Track if this block successfully yields explicit headers
-            initial_valid_headers_count = blocks_with_valid_headers
-            info_string = fence_match.group(3)
-
-            block_lines = []
-            current_file_path = None
-
-            # 1. Check if fence line itself has a file header
-            #    e.g. ```python # FILE: foo.py
-            header_match = file_header_regex.search(info_string)
-            if header_match:
-                current_file_path = header_match.group(1).strip()
-                blocks_with_valid_headers += 1
-            else:
-                # 2. Check preceding lines for a file header
-                #    e.g. # FILE: foo.py
-                #         ```python
-                k = i - 1
-                while k >= 0 and not lines[k].strip():
-                    k -= 1
-                if k >= 0:
-                    prev_match = file_header_regex.search(lines[k])
-                    if prev_match:
-                        current_file_path = prev_match.group(1).strip()
-                        blocks_with_valid_headers += 1
-
-            i += 1
-
-            # Capture block content until closing fence
-            while i < len(lines):
-                block_line = lines[i]
-                # Check for closing fence of same or greater length
-                closing_match = re.match(r"^(\s*)([`~]{3,})\s*$", block_line)
-                
-                is_potential_close = (
-                    closing_match 
-                    and closing_match.group(2)[0] == fence_char_type 
-                    and len(closing_match.group(2)) >= fence_len
-                )
-
-                if is_potential_close:
-                    # Lookahead Heuristic: 
-                    # If we find ANOTHER fence within a short window, and it looks like a closure,
-                    # we assume the current one is inner content.
-                    is_inner = False
-                    peek_idx = i + 1
-                    lines_to_peek = 5 
-                    
-                    while peek_idx < len(lines) and (peek_idx - i) <= lines_to_peek:
-                        peek_line = lines[peek_idx].strip()
-                        
-                        # If we see a File Header in the gap, it's definitely a new block/file
-                        if file_header_regex.search(peek_line):
-                            break
-
-                        # If we hit another fence
-                        peek_fence = re.match(r"^[`~]{3,}(.*)$", peek_line)
-                        if peek_fence:
-                            # If the next fence has an info string (e.g. ```python), it's a start of new block
-                            if peek_fence.group(1).strip():
-                                break
-                            
-                            # It's a generic fence. Likely the real closer.
-                            is_inner = True
-                            break
-                        
-                        # If we hit any non-empty text that is NOT a fence, the gap is populated.
-                        # We assume this text belongs to the chat, not the code block.
-                        if peek_line:
-                            break
-                        
-                        peek_idx += 1
-                    
-                    if not is_inner:
-                        break # Real close found
-
-                # Strip indentation if it matches the fence's indentation
-                if block_line.startswith(indent):
-                    block_lines.append(block_line[len(indent) :])
-                else:
-                    block_lines.append(block_line)
-                i += 1
-
-            # Inner function to finalize a collected patch
-            def finalize(path, collected_lines):
-                if not path:
-                    return
-                content_str = "\n".join(collected_lines).strip()
-                if diff_hunk_header_regex.search(content_str):
-                    hunks = _parse_diff_hunks(content_str)
-                    if hunks:
-                        patches.append(
-                            {"file_path": path, "type": "diff", "content": hunks}
-                        )
-                else:
-                    patches.append(
-                        {"file_path": path, "type": "full", "content": content_str}
-                    )
-
-            # Process lines to split multiple files
-            current_content_lines = []
-            for bline in block_lines:
-                match = file_header_regex.match(bline)
-                if match:
-                    if current_file_path:
-                        finalize(current_file_path, current_content_lines)
-                    current_file_path = match.group(1).strip()
-                    blocks_with_valid_headers += 1
-                    current_content_lines = []
-                else:
-                    if current_file_path:
-                        current_content_lines.append(bline)
-
-            # Save the last file in the block
-            if current_file_path:
-                finalize(current_file_path, current_content_lines)
-
-            # If we didn't find any explicit FILE: headers, try parsing as a raw unified diff
-            elif blocks_with_valid_headers == initial_valid_headers_count:
-                # Re-assemble block content to check for raw diffs
-                raw_block_content = "\n".join(block_lines).strip()
-                raw_diff_patches = _parse_raw_unified_diff(raw_block_content)
-                
-                if raw_diff_patches:
-                    patches.extend(raw_diff_patches)
-                elif console:
-                    # --- DIAGNOSTICS: Failed to parse anything ---
-                    # Check for near misses to give helpful hints
-                    preview = "\n".join(block_lines[:2]).strip()
-                    hint = ""
-                    if "FILE:" in info_string or any("FILE:" in l for l in block_lines[:2]):
-                        hint = " (Found 'FILE:' keyword but syntax was incorrect. Check comment style?)"
-                    elif "filename" in info_string.lower() or any(
-                        "filename" in l.lower() for l in block_lines[:2]
-                    ):
-                        hint = " (Found 'filename' keyword. Please use 'FILE:' instead.)"
-
-                    console.print(
-                        f"[dim yellow]⚠ Skipped code block at line {i}: No valid '# FILE: path' header found.{hint}[/dim yellow]"
-                    )
-                    if preview:
-                        console.print(f"[dim]   Preview: {preview}[/dim]")
-
-        i += 1
-
-    if blocks_found == 0 and console:
-        console.print(
-            "[dim yellow]⚠ No markdown code blocks (```) found in the pasted content.[/dim yellow]"
-        )
-    elif blocks_found > 0 and len(patches) == 0 and console:
-        console.print(
-            f"[bold red]Found {blocks_found} code blocks, but none contained valid file headers.[/bold red]"
-        )
-
-    return patches
 
 
 def _find_all_sublist_indices(

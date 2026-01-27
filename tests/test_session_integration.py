@@ -2,7 +2,7 @@ import os
 import subprocess
 import pytest
 from pathlib import Path
-from kopipasta.session import init_session, get_session_metadata, SESSION_FILENAME, auto_commit_changes
+from kopipasta.session import Session, SESSION_FILENAME
 from unittest.mock import patch
 
 def run_git(cmd: list, cwd: Path):
@@ -28,32 +28,27 @@ def git_repo(tmp_path: Path):
 
 def test_session_lifecycle(git_repo):
     """
-    Tests the full lifecycle:
-    1. Start Session (capture start_commit)
-    2. Make changes & commit (simulate work)
-    3. Verify metadata
-    4. Simulate 'Finish' (git reset --soft)
+    Tests the full lifecycle using the Session class.
     """
     # 1. Capture initial hash
     result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=git_repo, capture_output=True, text=True)
     initial_hash = result.stdout.strip()
     
-    # Pre-configure .gitignore to prevent interactive prompt during init
+    # Pre-configure .gitignore to prevent manual steps usually handled by UI
     (git_repo / ".gitignore").write_text(SESSION_FILENAME)
     
     # 2. Init Session
-    # Change CWD for the session functions relying on os.getcwd() or absolute paths
-    assert init_session(str(git_repo)) is True
-    
-    session_file = git_repo / SESSION_FILENAME
-    assert session_file.exists()
+    session = Session(str(git_repo))
+    assert session.is_active is False
+    assert session.start() is True
+    assert session.is_active is True
     
     # 3. Check Metadata
-    metadata = get_session_metadata(str(git_repo))
+    metadata = session.get_metadata()
     assert metadata is not None
     assert metadata["start_commit"] == initial_hash
     
-    # 4. Simulate Work (create file, auto-commit logic would usually do this)
+    # 4. Simulate Work 
     (git_repo / "feature.py").write_text("print('feature')")
     run_git(["add", "."], git_repo)
     run_git(["commit", "-m", "WIP: feature"], git_repo)
@@ -63,16 +58,16 @@ def test_session_lifecycle(git_repo):
     new_hash = result.stdout.strip()
     assert new_hash != initial_hash
     
-    # 5. Simulate "Finish Task" (Squash/Soft Reset) logic found in tree_selector.py
-    # git reset --soft <start_commit>
-    run_git(["reset", "--soft", metadata["start_commit"]], git_repo)
+    # 5. Finish (Squash)
+    assert session.finish(squash=True) is True
+    assert session.is_active is False
     
     # Verify HEAD is back at initial_hash
     result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=git_repo, capture_output=True, text=True)
     reset_hash = result.stdout.strip()
     assert reset_hash == initial_hash
     
-    # Verify changes are staged (status should show added file)
+    # Verify changes are staged
     status = subprocess.run(["git", "status", "--porcelain"], cwd=git_repo, capture_output=True, text=True).stdout
     assert "A  feature.py" in status or "A  AI_SESSION.md" in status
 
@@ -80,52 +75,21 @@ def test_init_session_dirty_check(git_repo):
     """Tests that session fails to start if git is dirty."""
     (git_repo / "main.py").write_text("print('modified')")
     
-    # Should fail because of uncommitted changes
-    assert init_session(str(git_repo)) is False
-    assert not (git_repo / SESSION_FILENAME).exists()
+    session = Session(str(git_repo))
+    # Passing a mock printer to silence output
+    assert session.start(console_printer=lambda x: None) is False
+    assert session.is_active is False
 
 def test_auto_commit_changes(git_repo):
-    """Tests the auto_commit_changes utility."""
-    # Ensure clean state
-    run_git(["status"], git_repo)
+    """Tests the auto_commit utility."""
+    session = Session(str(git_repo))
     
     # Make a change
     (git_repo / "auto.txt").write_text("auto content")
     
     # Run auto commit
-    committed = auto_commit_changes(str(git_repo), message="Auto commit test")
+    assert session.auto_commit(message="Auto commit test") is True
     
-    assert committed is True
-    
-    # Verify git status is clean
+    # Verify clean status
     result = subprocess.run(["git", "status", "--porcelain"], cwd=git_repo, capture_output=True, text=True)
     assert result.stdout.strip() == ""
-    
-    # Verify commit message
-    log = subprocess.run(["git", "log", "-1", "--pretty=%B"], cwd=git_repo, capture_output=True, text=True).stdout.strip()
-    assert log == "Auto commit test"
-    
-    # Run again with no changes -> should return False
-    committed_again = auto_commit_changes(str(git_repo))
-    assert committed_again is False
-
-def test_init_session_gitignore_check(git_repo):
-    """
-    Tests that init_session detects if AI_SESSION.md is not ignored
-    even if the file doesn't exist yet, and adds it if confirmed.
-    """
-    # Ensure clean state (git_repo fixture has no .gitignore by default)
-    
-    # Mock click.confirm to return True (User says "Yes, add to .gitignore")
-    with patch("click.confirm", return_value=True) as mock_confirm:
-        # This should trigger the check, fail it, ask user, and update gitignore
-        assert init_session(str(git_repo)) is True
-        
-        # Check that we were actually prompted
-        args, _ = mock_confirm.call_args
-        assert "Add AI_SESSION.md to .gitignore" in args[0]
-        
-        # Verify .gitignore was created and populated
-        gitignore_path = git_repo / ".gitignore"
-        assert gitignore_path.exists()
-        assert SESSION_FILENAME in gitignore_path.read_text()

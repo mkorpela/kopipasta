@@ -16,13 +16,15 @@ from kopipasta.file import FileTuple, is_binary, is_ignored, get_human_readable_
 from kopipasta.prompt import get_file_snippet, get_language_for_file
 from kopipasta.cache import load_selection_from_cache, clear_cache
 from kopipasta.ops import (
-    propose_and_add_dependencies,
-    grep_files_in_directory,
-    select_from_grep_results,
     sanitize_string,
     estimate_tokens,
 )
-from kopipasta.session import init_session, auto_commit_changes, get_session_metadata, SESSION_FILENAME
+from kopipasta.analysis import (
+    propose_and_add_dependencies,
+    grep_files_in_directory,
+    select_from_grep_results,
+)
+from kopipasta.session import Session, SESSION_FILENAME
 
 
 ALWAYS_VISIBLE_FILES = {"AI_SESSION.md", "AI_CONTEXT.md"}
@@ -75,10 +77,12 @@ class TreeSelector:
         self.current_index = 0
         self.nodes: List[FileNode] = []
         self.visible_nodes: List[FileNode] = []
+        self.session = Session(project_root_abs)
         self.char_count = 0
         self.quit_selection = False
         self.viewport_offset = 0  # First visible item index
         self._metrics_cache: Dict[str, Tuple[int, int]] = {}
+        self._init_key_bindings()
 
     def _calculate_directory_metrics(self, node: FileNode) -> Tuple[int, int]:
         """Recursively calculate total and selected size for a directory."""
@@ -348,10 +352,9 @@ class TreeSelector:
 
     def _show_help(self) -> Panel:
         """Create help panel"""
-        is_session = os.path.exists(os.path.join(self.project_root_abs, SESSION_FILENAME))
         
         actions = "r: Reuse   g: Grep   p: Patch   d: Deps"
-        if is_session:
+        if self.session.is_active:
             actions += "   u: Update Session   f: Finish Task"
         else:
             actions += "   n: Start Session"
@@ -382,8 +385,7 @@ q: Quit and finalize"""
         else:
             current_info = "No selection"
 
-        is_session = os.path.exists(os.path.join(self.project_root_abs, SESSION_FILENAME))
-        session_indicator = "[bold green]SESSION ON[/bold green]" if is_session else "[dim]Session Off[/dim]"
+        session_indicator = "[bold green]SESSION ON[/bold green]" if self.session.is_active else "[dim]Session Off[/dim]"
 
         selection_info = f"[dim]Selected:[/dim] {full_count} full, {snippet_count} snippets | ~{self.char_count:,} chars (~{estimate_tokens(self.char_count):,} tokens)"
 
@@ -466,9 +468,8 @@ q: Quit and finalize"""
             apply_patches(patches)
 
             # --- Auto-Commit Logic ---
-            session_path = os.path.join(self.project_root_abs, SESSION_FILENAME)
-            if os.path.exists(session_path):
-                auto_commit_changes(self.project_root_abs)
+            if self.session.is_active:
+                self.session.auto_commit()
 
             self.console.print(
                 "\n[bold]Review the changes above with `git diff` before committing.[/bold]"
@@ -479,14 +480,13 @@ q: Quit and finalize"""
 
     def _handle_session_update(self):
         """Handles 'u' key: Updates AI_SESSION.md (Handover/Checkpoint)."""
-        session_path = os.path.join(self.project_root_abs, SESSION_FILENAME)
-        if not os.path.exists(session_path):
+        if not self.session.is_active:
             self.console.print("[yellow]No active session to update.[/yellow]")
             click.pause("Press any key to continue...")
             return
         
         # READ CONTENT TO INJECT
-        session_content = read_file_contents(session_path)
+        session_content = self.session.content
 
         prompt_text = (
             "# Session Handover\n"
@@ -502,14 +502,13 @@ q: Quit and finalize"""
 
     def _handle_task_completion(self):
         """Handles 'f' key: Merges session to context and clears session (Harvest)."""
-        session_path = os.path.join(self.project_root_abs, SESSION_FILENAME)
-        if not os.path.exists(session_path):
+        if not self.session.is_active:
             self.console.print("[yellow]No active session to finish.[/yellow]")
             click.pause("Press any key to continue...")
             return
         
         # READ CONTENTS TO INJECT
-        session_content = read_file_contents(session_path)
+        session_content = self.session.content
         
         context_path = os.path.join(self.project_root_abs, "AI_CONTEXT.md")
         context_content = ""
@@ -518,9 +517,8 @@ q: Quit and finalize"""
         else:
             context_content = "(File does not exist yet)"
 
-        # Capture metadata before potential file deletion
-        metadata = get_session_metadata(self.project_root_abs)
-        start_commit = metadata.get("start_commit") if metadata else None
+        metadata = self.session.get_metadata()
+        start_commit = metadata.get("start_commit") if metadata else "NO_GIT"
         
         prompt_text = (
             "# Task Completion & Harvest\n\n"
@@ -537,31 +535,20 @@ q: Quit and finalize"""
         self._run_gardener_cycle(prompt_text, "Finish Task / Harvest")
 
         # Post-patch cleanup: Check if file still exists (user might have deleted it via patch, but unlikely)
-        if os.path.exists(session_path):
+        if self.session.is_active:
             if click.confirm("\n🗑️  Delete `AI_SESSION.md` and finish session?", default=True):
-                try:
-                    os.remove(session_path)
-                    # Also clear cache since session is done
-                    clear_cache()
+                clear_cache()
+                
+                should_squash = False
+                if start_commit and start_commit != "NO_GIT":
+                    self.console.print(f"\n[bold]Session started at commit: {start_commit[:7]}[/bold]")
+                    should_squash = click.confirm("Squash session commits (soft reset) to this point?", default=True)
+
+                if self.session.finish(squash=should_squash, console_printer=self.console.print):
                     self.console.print("[green]Deleted AI_SESSION.md[/green]")
-
-                    # --- Squash Logic ---
-                    if start_commit and start_commit != "NO_GIT":
-                        self.console.print(f"\n[bold]Session started at commit: {start_commit[:7]}[/bold]")
-                        if click.confirm("Squash session commits (soft reset) to this point?", default=True):
-                            try:
-                                subprocess.run(
-                                    ["git", "reset", "--soft", start_commit],
-                                    cwd=self.project_root_abs,
-                                    check=True
-                                )
-                                self.console.print("[green]Commits squashed. Changes are staged.[/green]")
-                                self.console.print("Run `git commit` to finalize the feature.")
-                            except subprocess.CalledProcessError as e:
-                                self.console.print(f"[red]Squash failed: {e}[/red]")
-
-                except OSError as e:
-                    self.console.print(f"[red]Error deleting file: {e}[/red]")
+                    if should_squash:
+                         self.console.print("[green]Commits squashed. Changes are staged.[/green]")
+                         self.console.print("Run `git commit` to finalize the feature.")
 
     def _run_gardener_cycle(self, prompt_text: str, title: str):
         """Helper to copy prompt, pause, and run patcher."""
@@ -850,6 +837,151 @@ q: Quit and finalize"""
                 added_count += 1
                 self._ensure_path_visible(abs_path)
 
+    def _init_key_bindings(self):
+        """Initializes the keyboard command dispatch table."""
+        self.key_map = {}
+        
+        # Helper to register multiple keys for one action
+        def bind(keys: List[str], action):
+            for key in keys:
+                self.key_map[key] = action
+
+        # Navigation
+        bind(["\x1b[A", "\xe0H", "k"], self._nav_up)
+        bind(["\x1b[B", "\xe0P", "j"], self._nav_down)
+        bind(["\x1b[5~"], self._nav_page_up)
+        bind(["\x1b[6~"], self._nav_page_down)
+        bind(["\x1b[H"], self._nav_home)
+        bind(["\x1b[F", "G"], self._nav_end)
+        bind(["\x1b[C", "l", "\r", "\xe0M"], self._nav_expand)
+        bind(["\x1b[D", "h", "\xe0K"], self._nav_collapse)
+
+        # Selection
+        bind([" "], self._action_toggle)
+        bind(["s"], self._action_snippet)
+        bind(["a"], self._action_add_all)
+
+        # Actions
+        bind(["r"], self._propose_and_apply_last_selection)
+        bind(["g"], self._action_grep)
+        bind(["p"], self._action_patch)
+        bind(["d"], self._action_deps)
+        bind(["n"], self._action_session_start)
+        bind(["u"], self._handle_session_update)
+        bind(["f"], self._handle_task_completion)
+        
+        # Meta
+        bind(["q"], self._action_quit)
+        bind(["\x03"], self._action_interrupt) # Ctrl+C
+
+    def _get_current_node(self) -> Optional[FileNode]:
+        if self.visible_nodes and 0 <= self.current_index < len(self.visible_nodes):
+            return self.visible_nodes[self.current_index]
+        return None
+
+    # --- Navigation Actions ---
+    
+    def _nav_up(self):
+        self.current_index = max(0, self.current_index - 1)
+
+    def _nav_down(self):
+        self.current_index = min(len(self.visible_nodes) - 1, self.current_index + 1)
+
+    def _nav_page_up(self):
+        _, term_height = shutil.get_terminal_size()
+        page_size = max(1, term_height - 15)
+        self.current_index = max(0, self.current_index - page_size)
+
+    def _nav_page_down(self):
+        _, term_height = shutil.get_terminal_size()
+        page_size = max(1, term_height - 15)
+        self.current_index = min(len(self.visible_nodes) - 1, self.current_index + page_size)
+
+    def _nav_home(self):
+        self.current_index = 0
+
+    def _nav_end(self):
+        self.current_index = len(self.visible_nodes) - 1
+
+    def _nav_expand(self):
+        node = self._get_current_node()
+        if node and node.is_dir:
+            node.expanded = True
+
+    def _nav_collapse(self):
+        node = self._get_current_node()
+        if not node:
+            return
+        if node.is_dir and node.expanded:
+            node.expanded = False
+        elif node.parent:
+            # Jump to parent
+            parent_idx = next(
+                (i for i, n in enumerate(self.visible_nodes) if n == node.parent),
+                None
+            )
+            if parent_idx is not None:
+                self.current_index = parent_idx
+
+    # --- Interaction Actions ---
+
+    def _action_toggle(self):
+        node = self._get_current_node()
+        if node:
+            self._toggle_selection(node)
+
+    def _action_snippet(self):
+        node = self._get_current_node()
+        if node and not node.is_dir:
+            self._toggle_selection(node, snippet_mode=True)
+
+    def _action_add_all(self):
+        node = self._get_current_node()
+        if not node:
+            return
+        target_node = node if node.is_dir else node.parent
+        if target_node:
+            self._toggle_directory(target_node)
+
+    def _action_grep(self):
+        node = self._get_current_node()
+        if node:
+            self.console.print()
+            self._handle_grep(node)
+
+    def _action_patch(self):
+        self._handle_apply_patches()
+        click.pause("Press any key to return to the file selector...")
+
+    def _action_deps(self):
+        node = self._get_current_node()
+        if node:
+            self.console.print()
+            self._show_dependencies(node)
+            click.pause("Press any key to continue...")
+
+    def _action_session_start(self):
+        # Pre-check for gitignore to be interactive
+        from kopipasta.git_utils import check_session_gitignore_status, add_to_gitignore
+        
+        if not check_session_gitignore_status(self.project_root_abs):
+            self.console.print(f"\n[bold yellow]⚠ {SESSION_FILENAME} is NOT ignored by git.[/bold yellow]")
+            if click.confirm(f"Add {SESSION_FILENAME} to .gitignore now?", default=True):
+                add_to_gitignore(self.project_root_abs, SESSION_FILENAME)
+            else:
+                return
+
+        if self.session.start(console_printer=self.console.print):
+            if self.session.is_active:
+                self._ensure_path_visible(self.session.path)
+        click.pause("Press any key to continue...")
+
+    def _action_quit(self):
+        self.quit_selection = True
+
+    def _action_interrupt(self):
+        raise KeyboardInterrupt()
+
     def run(
         self, initial_paths: List[str], files_to_preselect: Optional[List[str]] = None
     ) -> Tuple[List[FileTuple], int]:
@@ -878,92 +1010,8 @@ q: Quit and finalize"""
                 # Get keyboard input
                 key = click.getchar()
 
-                if not self.visible_nodes:
-                    continue
-
-                current_node = self.visible_nodes[self.current_index]
-
-                # Handle navigation
-                if key in ["\x1b[A", "\xe0H", "k"]:  # Up arrow or k
-                    self.current_index = max(0, self.current_index - 1)
-                elif key in ["\x1b[B", "\xe0P", "j"]:  # Down arrow or j
-                    self.current_index = min(
-                        len(self.visible_nodes) - 1, self.current_index + 1
-                    )
-                elif key == "\x1b[5~":  # Page Up
-                    term_width, term_height = shutil.get_terminal_size()
-                    page_size = max(1, term_height - 15)
-                    self.current_index = max(0, self.current_index - page_size)
-                elif key == "\x1b[6~":  # Page Down
-                    term_width, term_height = shutil.get_terminal_size()
-                    page_size = max(1, term_height - 15)
-                    self.current_index = min(
-                        len(self.visible_nodes) - 1, self.current_index + page_size
-                    )
-                elif key == "\x1b[H":  # Home - go to top
-                    self.current_index = 0
-                elif key == "\x1b[F":  # End - go to bottom
-                    self.current_index = len(self.visible_nodes) - 1
-                elif key == "G":  # Shift+G - go to bottom (vim style)
-                    self.current_index = len(self.visible_nodes) - 1
-                elif key in ["\x1b[C", "l", "\r", "\xe0M"]:  # Right arrow, l, or Enter
-                    if current_node.is_dir:
-                        current_node.expanded = True
-                elif key in ["\x1b[D", "h", "\xe0K"]:  # Left arrow or h
-                    if current_node.is_dir and current_node.expanded:
-                        current_node.expanded = False
-                    elif current_node.parent:
-                        # Jump to parent
-                        parent_idx = next(
-                            (
-                                i
-                                for i, n in enumerate(self.visible_nodes)
-                                if n == current_node.parent
-                            ),
-                            None,
-                        )
-                        if parent_idx is not None:
-                            self.current_index = parent_idx
-
-                # Handle selection
-                elif key == " ":  # Space - toggle selection
-                    self._toggle_selection(current_node)
-                elif key == "s":  # Snippet mode
-                    if not current_node.is_dir:
-                        self._toggle_selection(current_node, snippet_mode=True)
-                elif key == "a":  # Add all in directory
-                    target_node = current_node if current_node.is_dir else current_node.parent
-                    if target_node:
-                        self._toggle_directory(target_node)
-
-                # Handle actions
-                elif key == "r":  # Reuse last selection
-                    self._propose_and_apply_last_selection()
-                elif key == "g":  # Grep
-                    self.console.print()  # Add some space
-                    self._handle_grep(current_node)
-                elif key == "p":  # Apply Patches
-                    self._handle_apply_patches()
-                    click.pause("Press any key to return to the file selector...")
-                elif key == "d":  # Dependencies
-                    self.console.print()  # Add some space
-                    self._show_dependencies(current_node)
-                    click.pause("Press any key to continue...")
-                elif key == "n":  # Start Session
-                    if init_session(self.project_root_abs):
-                        # If successful, ensure the new file is visible and selected
-                        session_path = os.path.join(self.project_root_abs, SESSION_FILENAME)
-                        if os.path.exists(session_path):
-                            self._ensure_path_visible(session_path)
-                    click.pause("Press any key to continue...")
-                elif key == "u":  # Update Session (Handover)
-                    self._handle_session_update()
-                elif key == "f":  # Finish Task (Harvest)
-                    self._handle_task_completion()
-                elif key == "q":  # Quit
-                    self.quit_selection = True
-                elif key == "\x03":  # Ctrl+C
-                    raise KeyboardInterrupt()
+                if key in self.key_map:
+                    self.key_map[key]()
 
             except Exception as e:
                 self.console.print(f"[red]Error: {e}[/red]")

@@ -4,151 +4,184 @@ import subprocess
 import json
 from datetime import datetime
 from typing import Optional, TypedDict
-from rich.console import Console
-import click
-from kopipasta.ops import check_session_gitignore_status, add_to_gitignore
+from pathlib import Path
 
-# Use a local console instance
-console = Console()
+from kopipasta.git_utils import check_session_gitignore_status, add_to_gitignore
 
 SESSION_FILENAME = "AI_SESSION.md"
+
 
 class SessionMetadata(TypedDict):
     start_commit: str
     timestamp: str
 
-def get_git_head_hash(project_root: str) -> Optional[str]:
-    """Returns the current HEAD commit hash."""
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=project_root,
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        return result.stdout.strip()
-    except subprocess.CalledProcessError:
+
+class Session:
+    """
+    Domain Entity representing a working session.
+    Encapsulates state (AI_SESSION.md), lifecycle, and git integration.
+    """
+
+    def __init__(self, project_root: str):
+        self.project_root = project_root
+        self.path = os.path.join(project_root, SESSION_FILENAME)
+
+    @property
+    def is_active(self) -> bool:
+        return os.path.exists(self.path)
+
+    @property
+    def content(self) -> str:
+        if not self.is_active:
+            return ""
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                return f.read()
+        except IOError:
+            return ""
+
+    def get_metadata(self) -> Optional[SessionMetadata]:
+        if not self.is_active:
+            return None
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                first_line = f.readline()
+                match = re.search(r"<!-- KOPIPASTA_METADATA (.+) -->", first_line)
+                if match:
+                    return json.loads(match.group(1))
+        except Exception:
+            pass
         return None
 
-def is_git_dirty(project_root: str) -> bool:
-    """Returns True if there are uncommitted changes."""
-    try:
-        # Check for modifications
-        subprocess.run(["git", "diff", "--quiet"], cwd=project_root, check=True)
-        # Check for staged changes
-        subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=project_root, check=True)
-        return False
-    except subprocess.CalledProcessError:
-        return True
-
-def init_session(project_root: str) -> bool:
-    """
-    Initializes a new session:
-    1. Checks for existing session.
-    2. Checks git status.
-    3. Creates AI_SESSION.md with metadata.
-    """
-    session_path = os.path.join(project_root, SESSION_FILENAME)
-    
-    if os.path.exists(session_path):
-        console.print(f"[yellow]Session already active at {SESSION_FILENAME}.[/yellow]")
-        return False
-
-    head_hash = get_git_head_hash(project_root)
-    if not head_hash:
-        console.print("[red]Not a git repository. Cannot track session history.[/red]")
-        # We rely on the caller to handle pauses, but input here is fine for now
-        # Returning True/False allows the UI to refresh
-        return False
-    
-    if is_git_dirty(project_root):
-        console.print("[yellow]Warning: You have uncommitted changes.[/yellow]")
-        console.print("It is recommended to start a session from a clean state for squashing to work correctly.")
-        console.print("[red]Aborting session start. Please commit or stash changes.[/red]")
-        return False
-
-    # --- Safety Check: Ensure ignored ---
-    if not check_session_gitignore_status(project_root):
-        console.print(f"\n[bold yellow]⚠ {SESSION_FILENAME} is NOT ignored by git.[/bold yellow]")
-        if click.confirm(f"Add {SESSION_FILENAME} to .gitignore now?", default=True):
-            add_to_gitignore(project_root, SESSION_FILENAME)
-            console.print(f"[green]Added {SESSION_FILENAME} to .gitignore[/green]")
-        else:
-            console.print("[red]Safety check failed.[/red]")
-            console.print(f"Please manually add {SESSION_FILENAME} to your .gitignore before starting a session.")
+    def start(self, console_printer=print) -> bool:
+        """
+        Initializes a new session.
+        Returns True if successful.
+        """
+        if self.is_active:
+            console_printer(f"Session already active at {SESSION_FILENAME}.")
             return False
 
+        if not self._check_git_status(console_printer):
+            return False
 
-    metadata = {
-        "start_commit": head_hash,
-        "timestamp": datetime.now().isoformat()
-    }
-    
-    # Create the file with hidden metadata
-    content = (
-        f"<!-- KOPIPASTA_METADATA {json.dumps(metadata)} -->\n"
-        "# Current Working Session\n\n"
-        "## Current Progress\n- [ ] Session Started\n\n"
-        "## Next Steps\n- [ ] Define Task\n"
-    )
-    
-    try:
-        with open(session_path, "w", encoding="utf-8") as f:
-            f.write(content)
-        console.print(f"[green]Session initialized: {SESSION_FILENAME}[/green]")
-        return True
-    except IOError as e:
-        console.print(f"[red]Failed to create session file: {e}[/red]")
-        return False
+        # --- Safety Check: Ensure ignored ---
+        if not check_session_gitignore_status(self.project_root):
+            # We assume the UI handled the confirmation prompt before calling this, 
+            # or we handle it here if we inject an interaction callback.
+            # For simplicity in this domain class, we'll try to add it blindly 
+            # if the caller didn't, or rely on the caller to have checked.
+            # Ideally, the Controller ensures this. We will just attempt to add it.
+            add_to_gitignore(self.project_root, SESSION_FILENAME)
 
-def get_session_metadata(project_root: str) -> Optional[SessionMetadata]:
-    """Reads metadata from AI_SESSION.md."""
-    session_path = os.path.join(project_root, SESSION_FILENAME)
-    if not os.path.exists(session_path):
-        return None
-    
-    try:
-        with open(session_path, "r", encoding="utf-8") as f:
-            first_line = f.readline()
-            match = re.search(r"<!-- KOPIPASTA_METADATA (.+) -->", first_line)
-            if match:
-                return json.loads(match.group(1))
-    except Exception:
-        pass
-    return None
+        head_hash = self._get_git_head()
+        metadata = {
+            "start_commit": head_hash or "NO_GIT",
+            "timestamp": datetime.now().isoformat(),
+        }
 
-def auto_commit_changes(project_root: str, message: str = "kopipasta: auto-checkpoint") -> bool:
-    """Adds all changes and commits them (no-verify)."""
-    if not get_git_head_hash(project_root):
-        return False
-
-    try:
-        # Determine correct add command based on ignore status
-        # If ignored: 'git add .' is safe (git skips ignored files)
-        # If NOT ignored: we must explicitly exclude it via magic pathspec
-        cmd = ["git", "add", "."]
-        if not check_session_gitignore_status(project_root):
-            cmd.append(f":!{SESSION_FILENAME}")
-
-        subprocess.run(
-            cmd, 
-            cwd=project_root, check=True, capture_output=True
+        file_content = (
+            f"<!-- KOPIPASTA_METADATA {json.dumps(metadata)} -->\n"
+            "# Current Working Session\n\n"
+            "## Current Progress\n- [ ] Session Started\n\n"
+            "## Next Steps\n- [ ] Define Task\n"
         )
-        
-        # Check if anything is staged
-        result = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=project_root)
-        if result.returncode != 0: # 1 means diff found (dirty)
-            subprocess.run(
-                ["git", "commit", "--no-verify", "--no-gpg-sign", "-m", message],
-                cwd=project_root,
-                check=True,
-                capture_output=True
-            )
-            console.print(f"[dim]Auto-committed changes.[/dim]")
+
+        try:
+            with open(self.path, "w", encoding="utf-8") as f:
+                f.write(file_content)
             return True
-            
-    except subprocess.CalledProcessError as e:
-        error_msg = e.stderr.decode("utf-8", errors="replace") if e.stderr else str(e)
-        console.print(f"[yellow]Auto-commit failed: {error_msg}[/yellow]")
-    return False
+        except IOError as e:
+            console_printer(f"Failed to create session file: {e}")
+            return False
+
+    def finish(self, squash: bool = False, console_printer=print) -> bool:
+        """
+        Ends the session. Deletes the session file and optionally squashes commits.
+        """
+        if not self.is_active:
+            return False
+
+        metadata = self.get_metadata()
+        start_commit = metadata.get("start_commit") if metadata else None
+
+        # 1. Delete File
+        try:
+            os.remove(self.path)
+        except OSError as e:
+            console_printer(f"Error deleting session file: {e}")
+            return False
+
+        # 2. Squash (Soft Reset)
+        if squash and start_commit and start_commit != "NO_GIT":
+            try:
+                subprocess.run(
+                    ["git", "reset", "--soft", start_commit],
+                    cwd=self.project_root,
+                    check=True,
+                    capture_output=True
+                )
+                return True
+            except subprocess.CalledProcessError as e:
+                console_printer(f"Squash failed: {e}")
+                return False
+        
+        return True
+
+    def auto_commit(self, message: str = "kopipasta: auto-checkpoint") -> bool:
+        """
+        Adds all changes (excluding session file if not ignored) and commits.
+        """
+        if not self._get_git_head():
+            return False
+
+        try:
+            cmd = ["git", "add", "."]
+            if not check_session_gitignore_status(self.project_root):
+                cmd.append(f":!{SESSION_FILENAME}")
+
+            subprocess.run(cmd, cwd=self.project_root, check=True, capture_output=True)
+
+            # Check for staged changes
+            result = subprocess.run(
+                ["git", "diff", "--cached", "--quiet"], 
+                cwd=self.project_root
+            )
+            if result.returncode != 0:  # 1 means diff found (dirty)
+                subprocess.run(
+                    ["git", "commit", "--no-verify", "--no-gpg-sign", "-m", message],
+                    cwd=self.project_root,
+                    check=True,
+                    capture_output=True,
+                )
+                return True
+        except subprocess.CalledProcessError:
+            pass
+        return False
+
+    def _get_git_head(self) -> Optional[str]:
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=self.project_root,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            return result.stdout.strip()
+        except subprocess.CalledProcessError:
+            return None
+
+    def _check_git_status(self, console_printer) -> bool:
+        if not self._get_git_head():
+            console_printer("Not a git repository. Cannot track session history.")
+            return False
+
+        # Check modifications
+        try:
+            subprocess.run(["git", "diff", "--quiet"], cwd=self.project_root, check=True)
+            subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=self.project_root, check=True)
+            return True
+        except subprocess.CalledProcessError:
+            console_printer("Warning: You have uncommitted changes. Commit or stash them before starting.")
+            return False

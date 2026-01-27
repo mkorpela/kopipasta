@@ -85,6 +85,7 @@ class Session:
             "# Current Working Session\n\n"
             "## Current Progress\n- [ ] Session Started\n\n"
             "## Next Steps\n- [ ] Define Task\n"
+            "- [ ] Refactor / Simplify Code?\n"
         )
 
         try:

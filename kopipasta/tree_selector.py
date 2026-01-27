@@ -493,8 +493,10 @@ q: Quit and finalize"""
             "## Current Session State (AI_SESSION.md)\n"
             f"```markdown\n{session_content}\n```\n\n"
             "# Instructions\n"
-            "Update `AI_SESSION.md` to compress the relevant findings and state from this session. "
-            "Include 1. Current Progress, 2. Next Steps. Preserve checkbox state."
+            "Update `AI_SESSION.md` to compress the relevant findings and state from this session.\n"
+            "1. Include: Current Progress, Next Steps.\n"
+            "2. Preserve checkbox state.\n"
+            "3. **IMPORTANT**: Return the result as a Markdown code block starting with `<!-- FILE: AI_SESSION.md -->`."
         )
         self._run_gardener_cycle(prompt_text, "Update Session / Handover")
 

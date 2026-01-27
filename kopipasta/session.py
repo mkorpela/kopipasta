@@ -140,7 +140,7 @@ def auto_commit_changes(project_root: str, message: str = "kopipasta: auto-check
         result = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=project_root)
         if result.returncode != 0: # 1 means diff found (dirty)
             subprocess.run(
-                ["git", "commit", "--no-verify", "-m", message],
+                ["git", "commit", "--no-verify", "--no-gpg-sign", "-m", message],
                 cwd=project_root,
                 check=True,
                 capture_output=True

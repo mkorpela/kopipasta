@@ -24,6 +24,16 @@ This document tracks planned features and architectural improvements for `kopipa
 - Update `kopipasta` UI to parse these blocks.
 - Add a hotkey (e.g., `v`) in the interactive menu to execute the suggested command immediately after patching.
 
+### 3. Intelligent Selection Import (The "Director" Pattern)
+**Problem:** After the LLM analyzes a broad context and requests specific files for the deep-dive, the user must manually find and select them in the tree. This is slow and error-prone.
+**Solution:**
+- **Action:** New hotkey (e.g., `i` for Import) in Tree View.
+- **Input:** User pastes the raw LLM response (text).
+- **Logic:** `kopipasta` regex-scans the text for strings matching valid paths in the project tree.
+- **Result:** Automatically toggles selection for those files.
+- **Benefit:** Allows the LLM to "drive" the context window for the next turn.
+
+
 ## 💡 Future Ideas
 
 ### Dynamic Environment Context

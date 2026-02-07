@@ -35,11 +35,18 @@ class PatchParser:
     Handles nested code blocks, various comment styles, and multiple files per block.
     """
 
+    # Explicit comments: # FILE: path/to/file.ext
     FILE_HEADER_REGEX = re.compile(
         r"\s*(?:#|//|--|/\*|<!--)\s*FILE:\s*(.+?)(?:\s|\*\/|-->)*$", re.IGNORECASE
     )
+    # Unified Diff Header: @@ -1,2 +1,2 @@
     DIFF_HUNK_HEADER_REGEX = re.compile(
         r"^@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@", re.MULTILINE
+    )
+    # Markdown Header Heuristic: ### path/to/file.ext
+    # Matches "### src/file.py" allowing for optional leading/trailing whitespace.
+    MARKDOWN_FILE_HEADER_REGEX = re.compile(
+        r"^#{1,6}\s+([\w\-\./\\]+\.\w+)\s*$"
     )
 
     def __init__(self, content: str, console: Optional[Console] = None):
@@ -48,7 +55,8 @@ class PatchParser:
         self.patches: List[Patch] = []
         self.blocks_found = 0
         self.current_line_idx = 0
-
+        self.last_block_end_idx = -1
+    
     def parse(self) -> List[Patch]:
         while self.current_line_idx < len(self.lines):
             line = self.lines[self.current_line_idx]
@@ -69,30 +77,51 @@ class PatchParser:
         info_string = fence_match.group(3)
 
         # 1. Look for header in info string or preceding lines
-        initial_file_path = self._find_header_context(info_string)
+        initial_file_path, initial_is_explicit = self._find_header_context(info_string)
         
         # 2. Extract block content
         self.current_line_idx += 1
         block_lines = self._extract_block_content(indent, fence_chars)
 
-        # 3. Parse content into patches
-        self._parse_block_content(block_lines, initial_file_path, info_string)
+        # Track where this block ended for the next lookback
+        self.last_block_end_idx = self.current_line_idx
 
-    def _find_header_context(self, info_string: str) -> Optional[str]:
-        # Check inline: ```python # FILE: foo.py
+        # 3. Parse content into patches
+        self._parse_block_content(block_lines, initial_file_path, initial_is_explicit, info_string)
+
+    def _find_header_context(self, info_string: str) -> Tuple[Optional[str], bool]:
+        # Check inline: backtick backtick backtick python # FILE: foo.py
         header_match = self.FILE_HEADER_REGEX.search(info_string)
         if header_match:
-            return header_match.group(1).strip()
+            return header_match.group(1).strip(), True
 
         # Check preceding lines
+        # ONLY look at lines between this block and the previous block.
+        # Never look inside a prior block's content.
         k = self.current_line_idx - 1
-        while k >= 0 and not self.lines[k].strip():
-            k -= 1
-        if k >= 0:
-            prev_match = self.FILE_HEADER_REGEX.search(self.lines[k])
+        lines_to_check = 5 # Look back limit
+        while k >= 0 and (self.current_line_idx - k) <= lines_to_check:
+            if k <= self.last_block_end_idx:
+                break
+
+            line = self.lines[k].strip()
+            if not line:
+                k -= 1
+                continue
+                
+            # Check Explicit Header (# FILE: ...)
+            prev_match = self.FILE_HEADER_REGEX.search(line)
             if prev_match:
-                return prev_match.group(1).strip()
-        return None
+                return prev_match.group(1).strip(), True
+            
+            # Check Markdown Header (### src/file.py)
+            md_match = self.MARKDOWN_FILE_HEADER_REGEX.match(line)
+            if md_match:
+                return md_match.group(1).strip(), False
+
+            k -= 1
+
+        return None, False
 
     def _extract_block_content(self, indent: str, fence_chars: str) -> List[str]:
         block_lines = []
@@ -155,48 +184,68 @@ class PatchParser:
             peek_idx += 1
         return False
 
-    def _parse_block_content(self, lines: List[str], initial_path: Optional[str], info_string: str):
+    def _parse_block_content(self, lines: List[str], initial_path: Optional[str], initial_is_explicit: bool, info_string: str):
         current_path = initial_path
         current_lines = []
         valid_headers_found = 0
-
+        
         if current_path:
             valid_headers_found += 1
-
+        
         for line in lines:
             match = self.FILE_HEADER_REGEX.match(line)
             if match:
-                if current_path:
+                # If current_path came from a non-explicit source (markdown header)
+                # and has no content yet, just override it — don't finalize empty patch.
+                if current_path and (initial_is_explicit or current_lines):
                     self._finalize_patch(current_path, current_lines)
                 current_path = match.group(1).strip()
                 current_lines = []
                 valid_headers_found += 1
+                initial_is_explicit = True
             else:
                 if current_path:
                     current_lines.append(line)
         
         if current_path:
             self._finalize_patch(current_path, current_lines)
-        
-        # Fallback: Raw Unified Diff
+
+        # Fallback: Try Raw Parsing strategies
         elif valid_headers_found == 0:
             raw_content = "\n".join(lines).strip()
+            
+            # Strategy A: Unified Diff
             raw_patches = _parse_raw_unified_diff(raw_content)
             if raw_patches:
                 self.patches.extend(raw_patches)
-            else:
-                self._log_skip_warning(lines, info_string)
+                return
+
+            # Note: Search/Replace blocks (<<<< ==== >>>>) are handled inside _finalize_patch.
+            # If we are here (valid_headers_found == 0), it means we have no file context at all,
+            # so we can't attach a search/replace block to a file. 
+            
+            self._log_skip_warning(lines, info_string)
 
     def _finalize_patch(self, path: str, lines: List[str]):
         if not path:
             return
         content = "\n".join(lines).strip()
+        
+        # 1. Check for Unified Diff
         if self.DIFF_HUNK_HEADER_REGEX.search(content):
             hunks = _parse_diff_hunks(content)
             if hunks:
                 self.patches.append({"file_path": path, "type": "diff", "content": hunks})
-        else:
-            self.patches.append({"file_path": path, "type": "full", "content": content})
+                return
+
+        # 2. Check for Search/Replace Block (<<<< ... ==== ... >>>>)
+        search_replace_hunks = _parse_search_replace_block(lines)
+        if search_replace_hunks:
+            self.patches.append({"file_path": path, "type": "diff", "content": search_replace_hunks})
+            return
+
+        # 3. Default to Full File
+        self.patches.append({"file_path": path, "type": "full", "content": content})
 
     def _log_skip_warning(self, lines: List[str], info_string: str):
         if not self.console:
@@ -264,6 +313,60 @@ def _parse_diff_hunks(diff_content: str) -> List[Hunk]:
     if current_hunk:
         hunks.append(current_hunk)
 
+    return hunks
+
+
+def _parse_search_replace_block(lines: List[str]) -> List[Hunk]:
+    """
+    Parses a block using <<<< ==== >>>> markers (Aider style).
+    Returns a list of Hunks where start_line is None (pure content matching).
+    """
+    hunks: List[Hunk] = []
+    
+    # State constants
+    S_TEXT = 0
+    S_ORIG = 1
+    S_NEW = 2
+    
+    state = S_TEXT
+    current_orig = []
+    current_new = []
+    
+    # Regex for markers (allow 4 or more chars)
+    re_start = re.compile(r"^<{4,}\s*$")
+    re_mid = re.compile(r"^={4,}\s*$")
+    re_end = re.compile(r"^>{4,}\s*$")
+
+    for line in lines:
+        if state == S_TEXT:
+            if re_start.match(line):
+                state = S_ORIG
+                current_orig = []
+            # Ignore text outside of blocks
+        elif state == S_ORIG:
+            if re_mid.match(line):
+                state = S_NEW
+                current_new = []
+            else:
+                current_orig.append(line)
+        elif state == S_NEW:
+            if re_end.match(line):
+                # End of block, finalize hunk
+                hunks.append({
+                    "original_lines": current_orig,
+                    "new_lines": current_new,
+                    "start_line": None # Signal to use content-matching only
+                })
+                state = S_TEXT
+                current_orig = []
+                current_new = []
+            elif re_start.match(line):
+                # Error: Unexpected start marker inside new block. 
+                # Treat as content to be safe.
+                current_new.append(line)
+            else:
+                current_new.append(line)
+    
     return hunks
 
 
@@ -364,15 +467,14 @@ def _apply_diff_patch(
 
     for i, hunk in enumerate(hunks):
         hunk_original = hunk["original_lines"]
-        target_line = hunk.get("start_line", 1) - 1  # 0-indexed
+        
+        # Get hint from hunk header, default to 1 if None (Search/Replace style)
+        target_line_hint = hunk.get("start_line") or 1
+        target_line_index = target_line_hint - 1 # 0-indexed
 
         if not hunk_original:
             # An insert-only hunk (no context lines).
-            # These are rare in unified diffs without context, usually @@ ... @@ is followed by lines.
-            # If context is strictly empty, we can only rely on line number.
-            # However, standard unified diffs usually provide context.
-            # If we really have no context, we insert at the line number provided.
-            replacements.append((target_line, target_line, hunk["new_lines"]))
+            replacements.append((target_line_index, target_line_index, hunk["new_lines"]))
             hunks_applied_count += 1
             continue
 
@@ -394,8 +496,6 @@ def _apply_diff_patch(
 
         if not candidates:
             # --- Phase 4: Fuzzy Fallback (difflib) ---
-            # This handles cases where comments changed slightly, or variable names changed.
-            # It's risky but better than failing if the LLM wasn't perfect.
             matcher = SequenceMatcher(
                 None, original_lines, hunk_original, autojunk=False
             )
@@ -423,14 +523,16 @@ def _apply_diff_patch(
             # If multiple, pick the one closest to the target_line reported in diff header.
             if len(candidates) == 1:
                 selected_index = candidates[0]
-            else:
+            elif hunk.get("start_line") is not None:
                 # Find candidate with minimum distance to target_line
-                best_cand = min(candidates, key=lambda idx: abs(idx - target_line))
+                best_cand = min(candidates, key=lambda idx: abs(idx - target_line_index))
                 selected_index = best_cand
-                if match_type == "exact":
-                    match_type = "exact (disambiguated)"
-                else:
-                    match_type = "loose (disambiguated)"
+                match_type += " (disambiguated by line #)"
+            else:
+                # No line number hint (Search/Replace) and multiple matches.
+                # Default to the first one for deterministic behavior.
+                selected_index = candidates[0]
+                match_type += " (first occurrence)"
 
         # --- Validation: Check Overlaps ---
         # The range we propose to replace in the original file:

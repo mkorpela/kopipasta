@@ -26,11 +26,17 @@ This project strictly adheres to the **"Quad-Memory" Architecture** to manage co
     1.  The target file is non-trivial (> 200 chars) and the new content shrinks it by > 50%.
     2.  The content contains diff markers (e.g., `@@ ... @@`), indicating a parsing failure of a diff block.
 
+    1.  The target file is non-trivial (> 200 chars) and the new content shrinks it by > 50%.
+    2.  The content contains diff markers (e.g., `@@ ... @@`), indicating a parsing failure of a diff block.
+### Patcher: Header Resolution
+*   **Block Boundary Safety**: `_find_header_context` lookback must NEVER cross into a previous code block's content. The parser tracks `last_block_end_idx` to enforce this boundary.
+*   **Header Precedence**: Explicit `# FILE:` headers (inside block content) override non-explicit markdown headers (`### path/file.ext`) found via lookback. The parser distinguishes these via a `(path, is_explicit)` tuple from `_find_header_context`.
+*   **Empty Patch Prevention**: When a markdown header provides `initial_path` but an explicit `# FILE:` inside the block overrides it, the parser must NOT finalize an empty patch for the markdown header's path. Instead, it skips finalization when `initial_is_explicit=False` and `current_lines` is empty.
+*   **Lookback Blank Line Handling**: The blank-line skip in `_find_header_context` must `continue` after decrementing `k`, or it double-decrements and skips the actual header line.
+
 ### Development Standards
 *   **Language**: Python 3.10+.
 *   **Typing**: Strict type hints (`mypy` compliant) are mandatory for all function signatures.
-*   **Paradigm**: Functional over OOP. Use `TypedDict` or `dataclass` for state, and pure functions for logic. Avoid complex class hierarchies unless interacting with an OOP-heavy library.
-*   **UI**: Use `rich` library for all terminal output.
 *   **Dependencies**: Managed via `uv` (`pyproject.toml`).
 
 ## 3. Anti-Patterns (Do Not Do)

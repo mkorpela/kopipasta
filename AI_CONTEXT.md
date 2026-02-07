@@ -27,11 +27,11 @@ This project strictly adheres to the **"Quad-Memory" Architecture** to manage co
     2.  The content contains diff markers (e.g., `@@ ... @@`), indicating a parsing failure of a diff block.
 
 ### Development Standards
-*   **Language**: Python 3.8+.
+*   **Language**: Python 3.10+.
 *   **Typing**: Strict type hints (`mypy` compliant) are mandatory for all function signatures.
 *   **Paradigm**: Functional over OOP. Use `TypedDict` or `dataclass` for state, and pure functions for logic. Avoid complex class hierarchies unless interacting with an OOP-heavy library.
 *   **UI**: Use `rich` library for all terminal output.
-*   **Dependencies**: Managed via `requirements.txt` (currently) or `poetry` / `uv`.
+*   **Dependencies**: Managed via `uv` (`pyproject.toml`).
 
 ## 3. Anti-Patterns (Do Not Do)
 *   Do not hardcode directory trees in documentation; `kopipasta` generates them dynamically in the prompt.

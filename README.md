@@ -65,15 +65,15 @@ Your global preferences (e.g., "I use VS Code", "I prefer TypeScript"). Injected
 *   **Bug Fixing:** Grab the relevant traceback files and the config to diagnose issues without distracting the LLM with the whole repo.
 
 ## Installation
+Installation
 
 ```bash
-# Using pipx (recommended for CLI tools)
-pipx install kopipasta
+# Using uv (recommended)
+uv tool install kopipasta
 
-# Or using standard pip
-pip install kopipasta
+# For development
+uv sync
 ```
-
 ## Usage
 
 `kopipasta` has two main modes: creating prompts and applying patches.

@@ -108,7 +108,14 @@ class PatchParser:
                 and closing_match.group(2)[0] == fence_char_type 
                 and len(closing_match.group(2)) >= fence_len):
                 
-                if not self._is_inner_fence_heuristic(fence_chars):
+                # Check indentation level relative to start fence
+                closing_indent_len = len(closing_match.group(1))
+                start_indent_len = len(indent)
+
+                # If the closing fence is MORE indented than the start, it's likely nested content.
+                if closing_indent_len > start_indent_len:
+                    pass # Treat as content
+                elif not self._is_inner_fence_heuristic(fence_chars):
                     self.current_line_idx += 1
                     break
 

@@ -2,13 +2,6 @@
 
 This document tracks planned features and architectural improvements for `kopipasta`.
 
-### 1. Explicit File Deletion Support
-**Problem:** The Patcher can create and edit files, but cannot delete them. Architectural refactors (e.g., migrating build systems) often require removing legacy files (`setup.py`, `requirements.txt`), forcing the user to manually intervene.
-**Solution:**
-- Define a syntax for deletion, e.g., a specific marker content like `<<<DELETE>>>` or a header flag `<!-- ACTION: DELETE -->`.
-- Update `kopipasta/patcher.py` to recognize this signal.
-- Prompt user for confirmation before deletion (`🗑️ Delete setup.py? y/N`).
-
 ### 2. Extend Context Mode (`e` hotkey)
 **Problem:** Mid-conversation you often need to add a file or two to the LLM's context. Today this means regenerating the entire prompt (tree, task instructions, patching rules) just to get the raw content of one file. This is wasteful and breaks conversational flow.
 **Solution:**

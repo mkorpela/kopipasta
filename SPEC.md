@@ -1,6 +1,6 @@
 # Specification: Kopipasta Smart Context (v0.6.0)
 
-**Status:** Final
+**Status:** In Progress
 **Core Philosophy:**
 
 1. **State-Awareness:** Distinguish between **Base** (Background/Synced) and **Delta** (Focus/Unsynced) context.
@@ -15,14 +15,14 @@
 * **Base (Blue):** Files previously sent to the LLM. "Background Context."
 * **Delta (Green):** Files newly selected, imported, or modified. "Active Focus."
 
-### 1.2 Transitions
+### 1.2 Transitions (Implemented vs. Planned)
 
 * **Selection (`Space`):** Unselected  **Delta**  **Base**  Unselected.
 * *Logic:* Tapping a Blue file promotes it to Green (Focus). Tapping it again removes it.
 
 
 * **Process (`p`):** Patched/Imported files  **Delta**.
-* **Extend (`e`):** **Delta**  **Base** (after copy).
+* **Extend (`e`):** **Delta**  **Base** (after copy). 
 * **Clear (`c`):** **Base**  Unselected. (Keeps Delta).
 
 ---
@@ -33,21 +33,17 @@
 
 **Goal:** Handle *any* LLM text response intelligently.
 
-**Logic:**
+**Logic (Markers Implemented):**
 
-1. **Reset Scan:** Check for `<<<RESET>>>`. If found, ignore all text preceding it.
-2. **Patch Scan:** Check for code blocks with headers (`# FILE: ...`) or diffs.
-* **If Patches Found:** Apply them.
-* **Action:** Mark success files as **Delta**.
-* **Safety:** If block is `<<<DELETE>>>`, prompt for deletion.
+1. **Reset Scan:** `<<<RESET>>>` logic is active.
+2. **Patch Scan:** Patch application and `<<<DELETE>>>` logic are active.
 
-
-
-
-3. **Path Scan:** If *no* patches are found, regex-scan for file paths.
+**Next Logic (Path Scanning):**
+3. **Path Scan:** If *no* patches are found, regex-scan for file paths in the pasted text.
 * **If Paths Found:**
 * **Prompt:** `Found X paths. [A]ppend to current or [R]eplace selection?`
 * **Action (Append):** Add files to **Delta**.
+* **Action (Replace):** Clear *all* selection, then add files to **Delta**.
 * **Action (Replace):** Clear *all* selection, then add files to **Delta**.
 
 

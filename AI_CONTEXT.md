@@ -22,11 +22,26 @@ Selection is managed via a three-state engine to distinguish between background 
     - `Space` cycle: `Unselected` -> `Delta` -> `Unselected`. If `Base`, toggles to `Delta`.
     - **Promotion**: Files transition `Delta` -> `Base` during "Extend Context" (`e`), "Patch" (`p`), or "Quit" (`q`) to mark them as synced for the next turn.
 
+### Fix Workflow (`x` hotkey)
+The fix workflow runs a command, captures errors, detects affected files, and generates a diagnostic prompt.
+*   **Command Resolution** (3-tier fallback):
+    1.  HTML comment in `AI_CONTEXT.md`: `<!-- KOPIPASTA_FIX_CMD: your command here -->`
+    2.  `.git/hooks/pre-commit` (platform-aware: POSIX checks `+x` bit; Windows invokes via `sh`/`bash`).
+    3.  `git diff --check HEAD` (universal fallback).
+*   **Path Detection**: `find_paths_in_text` is reused from Intelligent Import. Its delimiter regex includes `:;,` to support linter output formats (e.g., `path/file.py:10:5: E302`).
+*   **Prompt Assembly**: Error output + `git diff HEAD` + content of affected Delta files. Uses `FIX_TEMPLATE` in `prompt.py`.
+*   **State Transitions**: Detected files are added to **Delta**. Base files found in errors are promoted to Delta. The user then pastes the fix prompt into the LLM, copies the response, and uses `p` to apply patches.
+*   **Configuration Pattern**: The `<!-- KOPIPASTA_FIX_CMD: ... -->` HTML comment is machine-parseable, invisible in rendered markdown, and consistent with the `KOPIPASTA_METADATA` pattern used in `AI_SESSION.md`.
+*   **No auto-commit**: Unlike the `p` handler, `x` does not auto-commit. The user reviews and commits manually after applying the LLM's fix.
+
 ### Intelligent Import (Universal Intake)
 The `p` (Process) command acts as a universal intake for LLM output:
 *   **Fallback**: If no code blocks (patches) are detected, the tool must regex-scan the text for valid project paths.
 *   **Normalization**: All path matching must be cross-platform. Normalize both the source text and local project paths to forward slashes (`/`) during scanning to ensure compatibility between LLM output and local OS (Windows/POSIX) path separators.
 *   **Visibility**: When a path is imported, the UI must ensure the path is visible in the tree (auto-expand parents).
+
+### Path Matching Delimiters
+*   The `find_paths_in_text` regex boundary character class must include: whitespace, quotes, backticks, brackets, **and** `:;,` — to handle linter/compiler output where paths are followed by `:line:col:`.
 
 ### Session Metadata
 *   `AI_SESSION.md` **must** store session metadata in a hidden HTML comment on the first line:

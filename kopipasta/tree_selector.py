@@ -1,5 +1,6 @@
 import os
 import subprocess
+import platform
 import shutil
 from typing import Dict, List, Optional, Tuple
 from prompt_toolkit import prompt as prompt_toolkit_prompt
@@ -14,6 +15,7 @@ import click
 from kopipasta.patcher import apply_patches, parse_llm_output
 from kopipasta.file import FileTuple, is_binary, is_ignored, get_human_readable_size, read_file_contents
 from kopipasta.prompt import get_file_snippet, get_language_for_file
+from kopipasta.prompt import generate_fix_prompt
 from kopipasta.cache import load_selection_from_cache, clear_cache
 from kopipasta.ops import (
     sanitize_string,
@@ -27,6 +29,7 @@ from kopipasta.analysis import (
 from kopipasta.selection import SelectionManager, FileState
 from kopipasta.session import Session, SESSION_FILENAME
 from kopipasta.patcher import find_paths_in_text
+from kopipasta.config import read_fix_command
 from kopipasta.prompt import generate_extension_prompt
 
 ALWAYS_VISIBLE_FILES = {"AI_SESSION.md", "AI_CONTEXT.md"}
@@ -358,7 +361,7 @@ class TreeSelector:
     def _show_help(self) -> Panel:
         """Create help panel"""
         
-        action_list = ["r: Reuse", "g: Grep", "p: Patch"]
+        action_list = ["r: Reuse", "g: Grep", "p: Patch", "x: Fix"]
         if self.manager.delta_count > 0:
             action_list.append("e: Extend")
         action_list.append("d: Deps")
@@ -514,6 +517,126 @@ q: Quit and finalize"""
                 self.console.print("\n[yellow]No patches or valid project paths detected in pasted content.[/yellow]")
         except KeyboardInterrupt:
             self.console.print("\n[red]Patch application cancelled.[/red]")
+
+    def _handle_fix(self):
+        """
+        Handles the 'x' keypress: Run a fix command, capture errors,
+        detect affected files, generate a diagnostic prompt, and copy to clipboard.
+        """
+        fix_cmd = read_fix_command(self.project_root_abs)
+
+        self.console.clear()
+        self.console.print(
+            Panel(
+                f"[bold cyan]🔧 Fix Workflow[/bold cyan]\n\n"
+                f"   Command: [bold]{fix_cmd}[/bold]\n\n"
+                f"   Press [bold]Enter[/bold] to run, or [bold]Ctrl-C[/bold] to cancel.\n"
+                f"   [dim]Configure via AI_CONTEXT.md: <!-- KOPIPASTA_FIX_CMD: your command -->[/dim]",
+                title="Fix",
+                border_style="yellow",
+            )
+        )
+
+        try:
+            click.pause()
+        except KeyboardInterrupt:
+            self.console.print("\n[red]Fix cancelled.[/red]")
+            return
+
+        # --- Run the command ---
+        self.console.print(f"\n[bold]Running:[/bold] {fix_cmd}\n")
+        try:
+            # Use shell=True for complex commands (pipes, &&, etc.)
+            # Set cwd to project root for consistent behavior
+            result = subprocess.run(
+                fix_cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                cwd=self.project_root_abs,
+                timeout=120,
+            )
+        except subprocess.TimeoutExpired:
+            self.console.print("[bold red]Command timed out after 120 seconds.[/bold red]")
+            return
+        except Exception as e:
+            self.console.print(f"[bold red]Failed to run command: {e}[/bold red]")
+            return
+
+        combined_output = ""
+        if result.stdout:
+            combined_output += result.stdout
+        if result.stderr:
+            combined_output += result.stderr
+
+        if result.returncode == 0:
+            self.console.print("[bold green]✅ Command succeeded! No errors to fix.[/bold green]")
+            if combined_output.strip():
+                # Show truncated output even on success
+                preview_lines = combined_output.strip().splitlines()[:10]
+                self.console.print("[dim]" + "\n".join(preview_lines) + "[/dim]")
+            return
+
+        # --- Command failed: show output ---
+        self.console.print(f"[bold yellow]⚠ Command exited with code {result.returncode}[/bold yellow]\n")
+        output_lines = combined_output.strip().splitlines()
+        # Show a reasonable preview
+        for line in output_lines[:30]:
+            self.console.print(f"  [dim]{line}[/dim]")
+        if len(output_lines) > 30:
+            self.console.print(f"  [dim]... ({len(output_lines) - 30} more lines)[/dim]")
+
+        # --- Detect affected files from error output ---
+        all_project_files = self._get_all_unignored_files()
+        found_paths = find_paths_in_text(combined_output, all_project_files)
+
+        if found_paths:
+            self.console.print(f"\n[bold cyan]🔍 Detected {len(found_paths)} affected file(s):[/bold cyan]")
+            for p in sorted(found_paths)[:15]:
+                self.console.print(f"  • {p}")
+            if len(found_paths) > 15:
+                self.console.print(f"  ... and {len(found_paths) - 15} more.")
+
+            # Add to Delta
+            for path in found_paths:
+                abs_p = os.path.abspath(os.path.join(self.project_root_abs, path))
+                if os.path.isfile(abs_p):
+                    self._ensure_path_visible(abs_p)
+                    if self.manager.get_state(abs_p) == FileState.UNSELECTED:
+                        self.manager.set_state(abs_p, FileState.DELTA)
+                    elif self.manager.get_state(abs_p) == FileState.BASE:
+                        self.manager.mark_as_delta(abs_p)
+        else:
+            self.console.print("\n[yellow]Could not auto-detect affected files from error output.[/yellow]")
+
+        # --- Capture git diff ---
+        git_diff = ""
+        try:
+            diff_result = subprocess.run(
+                ["git", "diff", "HEAD"],
+                capture_output=True, text=True,
+                cwd=self.project_root_abs, timeout=30,
+            )
+            git_diff = diff_result.stdout.strip()
+        except Exception:
+            pass  # Non-fatal: diff is optional context
+
+        # --- Generate and copy prompt ---
+        affected_file_tuples = self.manager.get_delta_files()
+        prompt_text = generate_fix_prompt(
+            command=fix_cmd,
+            error_output=combined_output.strip(),
+            git_diff=git_diff,
+            affected_files=affected_file_tuples,
+            env_vars={},  # env_vars are handled at the prompt layer
+        )
+
+        try:
+            pyperclip.copy(prompt_text)
+            self.console.print(f"\n[bold green]📋 Fix prompt copied to clipboard![/bold green]")
+            self.console.print(f"[dim]Contains: error output + git diff + {len(affected_file_tuples)} file(s)[/dim]")
+        except pyperclip.PyperclipException:
+            self.console.print("\n[red]Failed to copy to clipboard. Prompt printed above.[/red]")
 
     def _get_all_unignored_files(self) -> List[str]:
         """Walks the project to find all non-binary, non-ignored files for path scanning."""
@@ -918,6 +1041,7 @@ q: Quit and finalize"""
         bind(["p"], self._action_patch)
         bind(["e"], self._action_extend)
         bind(["d"], self._action_deps)
+        bind(["x"], self._action_fix)
         bind(["n"], self._action_session_start)
         bind(["c"], self._action_clear_base)
         bind(["u"], self._handle_session_update)
@@ -1004,6 +1128,10 @@ q: Quit and finalize"""
 
     def _action_patch(self):
         self._handle_apply_patches()
+        click.pause("Press any key to return to the file selector...")
+
+    def _action_fix(self):
+        self._handle_fix()
         click.pause("Press any key to return to the file selector...")
 
     def _action_deps(self):

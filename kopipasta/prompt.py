@@ -101,6 +101,44 @@ EXTENSION_TEMPLATE = """Here are the additional files you requested:
 {% endfor -%}"""
 
 
+FIX_TEMPLATE = """# Fix Errors
+
+The following command failed:
+
+```
+$ {{ command }}
+```
+
+## Error Output
+
+```
+{{ error_output }}
+```
+{% if git_diff %}
+## Current Uncommitted Changes (`git diff`)
+
+```diff
+{{ git_diff }}
+```
+{% endif %}
+{% if files %}
+## Affected Files
+
+{% for file in files -%}
+# FILE: {{ file.path }}
+```{{ file.language }}
+{{ file.content }}
+```
+
+{% endfor -%}
+{% endif -%}
+## Instructions
+
+Analyze the error output above. Identify the root cause(s) and provide fixes as Unified Diffs.
+Focus on the actual errors — do not refactor unrelated code. If the error is ambiguous or you need more files, list exactly which files you need and end with [AWAITING USER RESPONSE].
+"""
+
+
 def _get_config_dir() -> Path:
     """Returns the configuration directory, creating it if necessary."""
     config_home = os.environ.get("XDG_CONFIG_HOME")
@@ -516,3 +554,48 @@ def get_task_from_user_interactive(console: Console, default_text: str = "") -> 
         return task.strip()
     except KeyboardInterrupt:
         return ""
+
+
+def generate_fix_prompt(
+    command: str,
+    error_output: str,
+    git_diff: str,
+    affected_files: List[FileTuple],
+    env_vars: Dict[str, str],
+) -> str:
+    """
+    Generates a prompt for the fix workflow.
+    Includes error output, git diff, and content of affected files.
+    """
+    env_decisions: Dict[str, str] = {}
+    processed_files = []
+
+    for file, use_snippet, chunks, content_type in affected_files:
+        relative_path = os.path.relpath(file)
+        language = content_type if content_type else get_language_for_file(file)
+
+        if chunks is not None:
+            content = "\n".join(chunks)
+        elif use_snippet:
+            content = get_file_snippet(file)
+        else:
+            raw_content = read_file_contents(file)
+            content = handle_env_variables(raw_content, env_vars, env_decisions)
+
+        processed_files.append({
+            "path": relative_path,
+            "language": language,
+            "content": content,
+        })
+
+    # Sanitize error output for env vars too
+    safe_error = handle_env_variables(error_output, env_vars, env_decisions)
+    safe_diff = handle_env_variables(git_diff, env_vars, env_decisions)
+
+    template = Template(FIX_TEMPLATE, keep_trailing_newline=True)
+    return template.render(
+        command=command,
+        error_output=safe_error,
+        git_diff=safe_diff,
+        files=processed_files,
+    )

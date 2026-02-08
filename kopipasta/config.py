@@ -1,4 +1,6 @@
 import os
+import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -142,3 +144,43 @@ def read_session_state(project_root: str) -> Optional[str]:
     if os.path.exists(path):
         return read_file_contents(path)
     return None
+
+
+def read_fix_command(project_root: str) -> str:
+    """
+    Reads the fix command for the 'x' hotkey.
+
+    Resolution order:
+    1. AI_CONTEXT.md HTML comment: <!-- KOPIPASTA_FIX_CMD: your command here -->
+    2. .git/hooks/pre-commit (platform-aware executable check)
+    3. git diff --check HEAD (universal fallback)
+    """
+    # 1. Parse AI_CONTEXT.md for explicit config
+    context_path = os.path.join(project_root, "AI_CONTEXT.md")
+    if os.path.exists(context_path):
+        try:
+            content = read_file_contents(context_path)
+            match = re.search(
+                r"<!--\s*KOPIPASTA_FIX_CMD:\s*(.+?)\s*-->", content
+            )
+            if match:
+                return match.group(1).strip()
+        except Exception:
+            pass
+
+    # 2. Check for git pre-commit hook
+    hook_path = os.path.join(project_root, ".git", "hooks", "pre-commit")
+    if os.path.exists(hook_path):
+        if platform.system() == "Windows":
+            # On Windows, hooks need to be invoked through the shell
+            # (git bash / sh). Check the shebang or just invoke via sh.
+            git_sh = shutil.which("sh") or shutil.which("bash")
+            if git_sh:
+                return f"{git_sh} {hook_path}"
+        else:
+            # POSIX: just needs to be executable
+            if os.access(hook_path, os.X_OK):
+                return hook_path
+
+    # 3. Universal fallback
+    return "git diff --check HEAD"

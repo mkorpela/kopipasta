@@ -309,7 +309,7 @@ def find_paths_in_text(text: str, valid_paths: List[str]) -> List[str]:
         search_path = path.replace('\\', '/')
         
         # Match path surrounded by quotes, whitespace, or delimiters
-        pattern = re.compile(rf'(?:^|[\s"\'`\(\)\[\]])({re.escape(search_path)})(?:$|[\s"\'`\(\)\[\]])')
+        pattern = re.compile(rf'(?:^|[\s"\'`\(\)\[\]:;,])({re.escape(search_path)})(?:$|[\s"\'`\(\)\[\]:;,])')
         if pattern.search(normalized_text):
             found.append(path)
     return found

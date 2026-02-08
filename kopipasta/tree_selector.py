@@ -537,6 +537,10 @@ q: Quit and finalize"""
         fix_cmd = read_fix_command(self.project_root_abs)
 
         self.console.clear()
+        
+        session_active = self.session.is_active
+        start_commit = None
+        current_head = None
         self.console.print(
             Panel(
                 f"[bold cyan]🔧 Fix Workflow[/bold cyan]\n\n"
@@ -556,27 +560,64 @@ q: Quit and finalize"""
 
         # --- Run the command ---
         self.console.print(f"\n[bold]Running:[/bold] {fix_cmd}\n")
+        
+        # --- Session-aware git state management ---
+        if session_active:
+            metadata = self.session.get_metadata()
+            start_commit = metadata.get("start_commit") if metadata else None
+            if start_commit and start_commit != "NO_GIT":
+                try:
+                    result = subprocess.run(
+                        ["git", "rev-parse", "HEAD"],
+                        capture_output=True, text=True,
+                        cwd=self.project_root_abs, check=True,
+                    )
+                    current_head = result.stdout.strip()
+                except subprocess.CalledProcessError:
+                    current_head = None
+
+                if current_head:
+                    # Soft reset: session work becomes staged for pre-commit
+                    try:
+                        subprocess.run(
+                            ["git", "reset", "--soft", start_commit],
+                            cwd=self.project_root_abs, check=True, capture_output=True,
+                        )
+                    except subprocess.CalledProcessError as e:
+                        self.console.print(f"[yellow]Warning: Could not prepare git state: {e}[/yellow]")
+                        current_head = None  # Skip restore
 
         combined_output = ""
         try:
-            # Stream output in real-time while capturing it
-            process = subprocess.Popen(
-                fix_cmd,
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                cwd=self.project_root_abs,
-            )
+            try:
+                # Stream output in real-time while capturing it
+                process = subprocess.Popen(
+                    fix_cmd,
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    cwd=self.project_root_abs,
+                )
 
-            # Read and display output line by line in real-time
-            if process.stdout:
-                for line in process.stdout:
-                    self.console.print(f"  [dim]{line.rstrip()}[/dim]")
-                    combined_output += line
+                # Read and display output line by line in real-time
+                if process.stdout:
+                    for line in process.stdout:
+                        self.console.print(f"  [dim]{line.rstrip()}[/dim]")
+                        combined_output += line
 
-            # Wait for process to complete
-            return_code = process.wait(timeout=120)
+                # Wait for process to complete
+                return_code = process.wait(timeout=120)
+            finally:
+                # --- Always restore git state ---
+                if session_active and current_head:
+                    try:
+                        subprocess.run(
+                            ["git", "reset", "--soft", current_head],
+                            cwd=self.project_root_abs, check=True, capture_output=True,
+                        )
+                    except subprocess.CalledProcessError as e:
+                        self.console.print(f"[bold red]CRITICAL: Could not restore git state! Run: git reset --soft {current_head}[/bold red]")
 
         except subprocess.TimeoutExpired:
             self.console.print(
@@ -593,6 +634,9 @@ q: Quit and finalize"""
             self.console.print(
                 "[bold green]✅ Command succeeded! No errors to fix.[/bold green]"
             )
+            # Auto-commit any formatter changes (e.g. ruff --fix)
+            if session_active and current_head:
+                self.session.auto_commit("kopipasta: auto-format fixes")
             return
 
         # --- Command failed: show output ---
@@ -630,8 +674,11 @@ q: Quit and finalize"""
         # --- Capture git diff ---
         git_diff = ""
         try:
+            diff_ref = "HEAD"
+            if session_active and start_commit and start_commit != "NO_GIT":
+                diff_ref = start_commit
             diff_result = subprocess.run(
-                ["git", "diff", "HEAD"],
+                ["git", "diff", diff_ref],
                 capture_output=True,
                 text=True,
                 cwd=self.project_root_abs,
@@ -640,6 +687,10 @@ q: Quit and finalize"""
             git_diff = diff_result.stdout.strip()
         except Exception:
             pass  # Non-fatal: diff is optional context
+
+        # Auto-commit any formatter changes before generating prompt
+        if session_active and current_head:
+            self.session.auto_commit("kopipasta: auto-format fixes")
 
         # --- Generate and copy prompt ---
         affected_file_tuples = self.manager.get_delta_files()

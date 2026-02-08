@@ -2,22 +2,7 @@
 
 This document tracks planned features and architectural improvements for `kopipasta`.
 
-### 2. Extend Context Mode (`e` hotkey)
-**Problem:** Mid-conversation you often need to add a file or two to the LLM's context. Today this means regenerating the entire prompt (tree, task instructions, patching rules) just to get the raw content of one file. This is wasteful and breaks conversational flow.
-**Solution:**
-- **Interactive mode**: New hotkey `e` in the tree selector. Opens a minimal prompt that copies only the selected files' contents, formatted for pasting as a follow-up message.
-- **Template**: A separate lightweight Jinja2 template (`extend_template.j2`) containing only the file content blocks, e.g.:
-  ```
-  Here are the additional files you requested:
-  
-  ### {{ file.path }}
-  ```{{ file.language }}
-  {{ file.content }}
-  ```
-  ```
-- **Benefit**: Turns a multi-minute regeneration cycle into a 5-second hotkey press.
-
-### 4. Fix Hotkey — Pre-commit / Lint Integration (`x`)
+### Fix Hotkey — Pre-commit / Lint Integration (`x`)
 **Problem:** After applying patches, the user tries to commit. Pre-commit hooks (ruff, prettier, mypy, etc.) fail. The user must manually copy error output, switch back to the LLM, paste it, get fixes, then apply patches again. This loop happens on almost every commit.
 **Solution:**
 - **New hotkey `x`** ("fi**x**") in the tree selector that:

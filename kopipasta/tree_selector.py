@@ -537,7 +537,7 @@ q: Quit and finalize"""
         fix_cmd = read_fix_command(self.project_root_abs)
 
         self.console.clear()
-        
+
         session_active = self.session.is_active
         start_commit = None
         current_head = None
@@ -560,7 +560,7 @@ q: Quit and finalize"""
 
         # --- Run the command ---
         self.console.print(f"\n[bold]Running:[/bold] {fix_cmd}\n")
-        
+
         # --- Session-aware git state management ---
         if session_active:
             metadata = self.session.get_metadata()
@@ -569,8 +569,10 @@ q: Quit and finalize"""
                 try:
                     result = subprocess.run(
                         ["git", "rev-parse", "HEAD"],
-                        capture_output=True, text=True,
-                        cwd=self.project_root_abs, check=True,
+                        capture_output=True,
+                        text=True,
+                        cwd=self.project_root_abs,
+                        check=True,
                     )
                     current_head = result.stdout.strip()
                 except subprocess.CalledProcessError:
@@ -581,10 +583,14 @@ q: Quit and finalize"""
                     try:
                         subprocess.run(
                             ["git", "reset", "--soft", start_commit],
-                            cwd=self.project_root_abs, check=True, capture_output=True,
+                            cwd=self.project_root_abs,
+                            check=True,
+                            capture_output=True,
                         )
                     except subprocess.CalledProcessError as e:
-                        self.console.print(f"[yellow]Warning: Could not prepare git state: {e}[/yellow]")
+                        self.console.print(
+                            f"[yellow]Warning: Could not prepare git state: {e}[/yellow]"
+                        )
                         current_head = None  # Skip restore
 
         combined_output = ""
@@ -614,10 +620,14 @@ q: Quit and finalize"""
                     try:
                         subprocess.run(
                             ["git", "reset", "--soft", current_head],
-                            cwd=self.project_root_abs, check=True, capture_output=True,
+                            cwd=self.project_root_abs,
+                            check=True,
+                            capture_output=True,
                         )
-                    except subprocess.CalledProcessError as e:
-                        self.console.print(f"[bold red]CRITICAL: Could not restore git state! Run: git reset --soft {current_head}[/bold red]")
+                    except subprocess.CalledProcessError:
+                        self.console.print(
+                            f"[bold red]CRITICAL: Could not restore git state! Run: git reset --soft {current_head}[/bold red]"
+                        )
 
         except subprocess.TimeoutExpired:
             self.console.print(

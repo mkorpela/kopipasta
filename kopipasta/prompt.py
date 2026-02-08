@@ -146,7 +146,7 @@ def _get_config_dir() -> Path:
         config_dir = Path(config_home) / "kopipasta"
     else:
         config_dir = Path.home() / ".config" / "kopipasta"
-    
+
     config_dir.mkdir(parents=True, exist_ok=True)
     return config_dir
 
@@ -178,9 +178,9 @@ def open_template_in_editor():
     """Opens the template file in the system default editor."""
     ensure_template_exists()
     template_path = get_template_path()
-    
+
     editor = os.environ.get("EDITOR", "code" if shutil.which("code") else "vim")
-    
+
     if sys.platform == "win32":
         os.startfile(template_path)
     elif sys.platform == "darwin":
@@ -416,7 +416,7 @@ def generate_prompt_template(
     Returns (rendered_prompt_string, cursor_position_index).
     """
     env_decisions = {}
-    
+
     # 1. Prepare Project Structure
     structure_tree = get_project_structure(ignore_patterns, search_paths)
 
@@ -439,13 +439,15 @@ def generate_prompt_template(
             raw_content = read_file_contents(file)
             content = handle_env_variables(raw_content, env_vars, env_decisions)
 
-        processed_files.append({
-            "path": relative_path,
-            "relative_path": relative_path,
-            "description": description,
-            "language": language,
-            "content": content
-        })
+        processed_files.append(
+            {
+                "path": relative_path,
+                "relative_path": relative_path,
+                "description": description,
+                "language": language,
+                "content": content,
+            }
+        )
 
     # 3. Prepare Web Contents List
     processed_web_pages = []
@@ -453,21 +455,23 @@ def generate_prompt_template(
         for url, (file_tuple, raw_content) in web_contents.items():
             _, is_snippet, _, content_type = file_tuple
             safe_content = handle_env_variables(raw_content, env_vars, env_decisions)
-            
+
             # Default empty lang for HTML/Web content unless specified (json/csv)
             language = content_type if content_type in ["json", "csv"] else ""
-            
-            processed_web_pages.append({
-                "url": url,
-                "description": " (snippet)" if is_snippet else "",
-                "language": language,
-                "content": safe_content
-            })
+
+            processed_web_pages.append(
+                {
+                    "url": url,
+                    "description": " (snippet)" if is_snippet else "",
+                    "language": language,
+                    "content": safe_content,
+                }
+            )
 
     # 4. Render Template
     template = load_template()
-    
-    # Use a unique marker for this render to prevent collision if the 
+
+    # Use a unique marker for this render to prevent collision if the
     # CURSOR_MARKER constant string itself appears in the file contents.
     unique_render_marker = f"{CURSOR_MARKER}_{uuid.uuid4().hex}"
     rendered = template.render(
@@ -492,8 +496,7 @@ def generate_prompt_template(
 
 
 def generate_extension_prompt(
-    files_to_include: List[FileTuple], 
-    env_vars: Dict[str, str]
+    files_to_include: List[FileTuple], env_vars: Dict[str, str]
 ) -> str:
     """
     Generates a minimal prompt containing only file content blocks.
@@ -501,12 +504,12 @@ def generate_extension_prompt(
     """
     env_decisions = {}
     processed_files = []
-    
+
     for file, use_snippet, chunks, content_type in files_to_include:
         relative_path = os.path.relpath(file)
         language = content_type if content_type else get_language_for_file(file)
         description = ""
-        
+
         if chunks is not None:
             description = " (selected patches)"
             content = "\n".join(chunks)
@@ -517,12 +520,14 @@ def generate_extension_prompt(
             raw_content = read_file_contents(file)
             content = handle_env_variables(raw_content, env_vars, env_decisions)
 
-        processed_files.append({
-            "path": relative_path,
-            "description": description,
-            "language": language,
-            "content": content
-        })
+        processed_files.append(
+            {
+                "path": relative_path,
+                "description": description,
+                "language": language,
+                "content": content,
+            }
+        )
 
     template = Template(EXTENSION_TEMPLATE, keep_trailing_newline=True)
     return template.render(files=processed_files)
@@ -535,7 +540,9 @@ def get_task_from_user_interactive(console: Console, default_text: str = "") -> 
     """
     console.print("\n[bold cyan]📝 Please enter your task instructions.[/bold cyan]")
     if default_text:
-        console.print(f"   [dim](Pre-filled from previous session. Edit or clear as needed.)[/dim]")
+        console.print(
+            "   [dim](Pre-filled from previous session. Edit or clear as needed.)[/dim]"
+        )
     console.print(
         "   - Press [bold]Meta+Enter[/bold] or [bold]Esc[/bold] then [bold]Enter[/bold] to submit."
     )
@@ -582,11 +589,13 @@ def generate_fix_prompt(
             raw_content = read_file_contents(file)
             content = handle_env_variables(raw_content, env_vars, env_decisions)
 
-        processed_files.append({
-            "path": relative_path,
-            "language": language,
-            "content": content,
-        })
+        processed_files.append(
+            {
+                "path": relative_path,
+                "language": language,
+                "content": content,
+            }
+        )
 
     # Sanitize error output for env vars too
     safe_error = handle_env_variables(error_output, env_vars, env_decisions)

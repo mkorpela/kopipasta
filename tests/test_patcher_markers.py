@@ -1,9 +1,9 @@
-import pytest
 from kopipasta.patcher import parse_llm_output
+
 
 def test_reset_marker_clears_previous_patches():
     """
-    Tests that <<<RESET>>> causes the parser to discard all patches 
+    Tests that <<<RESET>>> causes the parser to discard all patches
     found before the marker.
     """
     llm_output = """
@@ -23,14 +23,15 @@ def test_reset_marker_clears_previous_patches():
     ```
     """
     patches = parse_llm_output(llm_output)
-    
+
     # Should only contain good.py
     assert len(patches) == 1
     assert patches[0]["file_path"] == "good.py"
     assert "real content" in patches[0]["content"]
-    
+
     # bad.py should be nowhere to be found
     assert not any(p["file_path"] == "bad.py" for p in patches)
+
 
 def test_multiple_resets():
     """Ensures multiple resets work correctly, keeping only the final set."""
@@ -49,6 +50,7 @@ def test_multiple_resets():
     patches = parse_llm_output(llm_output)
     assert len(patches) == 1
     assert patches[0]["file_path"] == "v3.py"
+
 
 def test_delete_marker_parsing():
     """Tests that the delete marker is correctly identified across formats."""
@@ -69,9 +71,10 @@ def test_delete_marker_parsing():
         assert patch["type"] == "delete"
         assert patch["content"] == ""
 
+
 def test_reset_inside_code_block_is_ignored():
     """
-    <<<RESET>>> should only work when it's outside a code block, 
+    <<<RESET>>> should only work when it's outside a code block,
     otherwise it might be valid code content (e.g., in a test about resets).
     """
     llm_output = """

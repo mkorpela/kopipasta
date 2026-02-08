@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 import os
 import argparse
-import subprocess
-import shutil
 import sys
 from typing import Dict, List, Optional, Tuple
 import requests
@@ -15,7 +13,6 @@ import pygments.util
 
 from kopipasta.file import (
     FileTuple,
-    read_file_contents,
 )
 from kopipasta.ops import (
     print_char_count,
@@ -33,7 +30,6 @@ from kopipasta.config import (
 from kopipasta.tree_selector import TreeSelector
 from kopipasta.prompt import (
     generate_prompt_template,
-    get_file_snippet,
     get_task_from_user_interactive,
     reset_template,
     open_template_in_editor,
@@ -83,7 +79,7 @@ class KopipastaApp:
     def __init__(self):
         self.console = Console()
         self.args = None
-        
+
         # Core State
         self.project_root_abs = os.path.abspath(os.getcwd())
         self.files_to_include: List[FileTuple] = []
@@ -98,7 +94,7 @@ class KopipastaApp:
         self.user_profile: Optional[str] = None
         self.project_context: Optional[str] = None
         self.session_state: Optional[str] = None
-        
+
         # Session Flags
         self.session_path = os.path.join(self.project_root_abs, "AI_SESSION.md")
         self.is_ongoing_session = False
@@ -107,20 +103,20 @@ class KopipastaApp:
         """Main lifecycle of the application."""
         self._configure_platform()
         self._parse_args()
-        
+
         if self._handle_utility_commands():
             return
 
         self._load_configuration()
         self._load_session_state()
         self._process_inputs()
-        
+
         self._run_interactive_selection()
-        
+
         if not self.files_to_include and not self.web_contents:
             print("No files or web content were selected. Exiting.")
             return
-            
+
         self._finalize_and_output()
 
     def _configure_platform(self):
@@ -144,9 +140,21 @@ class KopipastaApp:
             help="Files, directories, or URLs to include. Defaults to current directory.",
         )
         parser.add_argument("-t", "--task", help="Task description for the AI prompt")
-        parser.add_argument("--reset-template", action="store_true", help="Reset the prompt template to default")
-        parser.add_argument("--edit-template", action="store_true", help="Open the template file in default editor")
-        parser.add_argument("--edit-profile", action="store_true", help="Open the global user profile (AI Identity) in default editor")
+        parser.add_argument(
+            "--reset-template",
+            action="store_true",
+            help="Reset the prompt template to default",
+        )
+        parser.add_argument(
+            "--edit-template",
+            action="store_true",
+            help="Open the template file in default editor",
+        )
+        parser.add_argument(
+            "--edit-profile",
+            action="store_true",
+            help="Open the global user profile (AI Identity) in default editor",
+        )
         self.args = parser.parse_args()
 
         # Default to current dir if no inputs
@@ -166,7 +174,7 @@ class KopipastaApp:
         if self.args.edit_profile:
             open_profile_in_editor()
             return True
-            
+
         return False
 
     def _load_configuration(self):
@@ -187,7 +195,7 @@ class KopipastaApp:
                 abs_p = os.path.abspath(p)
                 if os.path.exists(abs_p):
                     self.files_to_preselect.append(abs_p)
-            
+
             # 2. Force Context and Session files into selection if they exist
             self.files_to_preselect.append(self.session_path)
             context_path = os.path.join(self.project_root_abs, "AI_CONTEXT.md")
@@ -215,7 +223,7 @@ class KopipastaApp:
         result = fetch_web_content(url)
         if not result:
             return
-            
+
         file_tuple, full_content, snippet = result
         is_large = len(full_content) > 10000
         content = full_content
@@ -241,7 +249,7 @@ class KopipastaApp:
 
         # Reconstruct tuple with snippet choice
         final_tuple = (file_tuple[0], is_snippet, file_tuple[2], file_tuple[3])
-        
+
         self.web_contents[url] = (final_tuple, content)
         self.current_char_count += len(content)
         print(f"Added {'snippet of ' if is_snippet else ''}web content from: {url}")
@@ -253,7 +261,9 @@ class KopipastaApp:
             return
 
         print("\nStarting interactive file selection...")
-        print("Use arrow keys to navigate, Space to select, 'q' to finish. See all keys below.\n")
+        print(
+            "Use arrow keys to navigate, Space to select, 'q' to finish. See all keys below.\n"
+        )
 
         tree_selector = TreeSelector(self.ignore_patterns, self.project_root_abs)
         try:
@@ -277,17 +287,23 @@ class KopipastaApp:
 
         added_files_count = len(self.files_to_include)
         added_web_count = len(self.web_contents)
-        print(f"Summary: Added {added_files_count} files/patches and {added_web_count} web sources.")
+        print(
+            f"Summary: Added {added_files_count} files/patches and {added_web_count} web sources."
+        )
 
         # Deduplicate auto-loaded memory files
         self._deduplicate_memory_files()
 
         # Generate Template
         prompt_template, cursor_position = generate_prompt_template(
-            self.files_to_include, self.ignore_patterns, self.web_contents, self.env_vars, self.paths_for_tree,
+            self.files_to_include,
+            self.ignore_patterns,
+            self.web_contents,
+            self.env_vars,
+            self.paths_for_tree,
             user_profile=self.user_profile,
             project_context=self.project_context,
-            session_state=self.session_state
+            session_state=self.session_state,
         )
 
         # Get Task
@@ -309,11 +325,12 @@ class KopipastaApp:
 
     def _deduplicate_memory_files(self):
         """
-        Removes Context/Session files from the generic file list if they are 
+        Removes Context/Session files from the generic file list if they are
         already injected via the quad-memory template slots.
         """
         self.files_to_include = [
-            f for f in self.files_to_include
+            f
+            for f in self.files_to_include
             if not (os.path.basename(f[0]) == "AI_CONTEXT.md" and self.project_context)
             and not (os.path.basename(f[0]) == "AI_SESSION.md" and self.session_state)
         ]
@@ -324,11 +341,15 @@ class KopipastaApp:
             cached_task = load_task_from_cache()
 
         if self.args.task:
-            self.console.print("\n[bold cyan]Using task description from --task argument.[/bold cyan]")
+            self.console.print(
+                "\n[bold cyan]Using task description from --task argument.[/bold cyan]"
+            )
             task = self.args.task
         else:
-            task = get_task_from_user_interactive(self.console, default_text=cached_task or "")
-        
+            task = get_task_from_user_interactive(
+                self.console, default_text=cached_task or ""
+            )
+
         if task:
             save_task_to_cache(task)
         return task
@@ -342,7 +363,9 @@ class KopipastaApp:
         try:
             pyperclip.copy(final_prompt)
             print("\n--- Included Files & Content ---\n")
-            for file_path, is_snippet, chunks, _ in sorted(self.files_to_include, key=lambda x: x[0]):
+            for file_path, is_snippet, chunks, _ in sorted(
+                self.files_to_include, key=lambda x: x[0]
+            ):
                 details = []
                 if is_snippet:
                     details.append("snippet")
@@ -358,7 +381,11 @@ class KopipastaApp:
                 print(f"- {url}{detail_str}")
 
             separator = (
-                "\n" + "=" * 40 + "\n☕🍝       Kopipasta Complete!       🍝☕\n" + "=" * 40 + "\n"
+                "\n"
+                + "=" * 40
+                + "\n☕🍝       Kopipasta Complete!       🍝☕\n"
+                + "=" * 40
+                + "\n"
             )
             print(separator)
 

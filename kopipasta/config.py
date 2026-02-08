@@ -1,5 +1,4 @@
 import os
-import platform
 import re
 import shutil
 import subprocess
@@ -160,9 +159,7 @@ def read_fix_command(project_root: str) -> str:
     if os.path.exists(context_path):
         try:
             content = read_file_contents(context_path)
-            match = re.search(
-                r"<!--\s*KOPIPASTA_FIX_CMD:\s*(.+?)\s*-->", content
-            )
+            match = re.search(r"<!--\s*KOPIPASTA_FIX_CMD:\s*(.+?)\s*-->", content)
             if match:
                 return match.group(1).strip()
         except Exception:

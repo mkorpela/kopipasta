@@ -1,5 +1,5 @@
-import pytest
 from kopipasta.patcher import parse_llm_output
+
 
 def test_nested_indented_markdown_block():
     """
@@ -23,13 +23,13 @@ This content should still be part of ROADMAP.md, but is currently cut off.
 ```
 """
     patches = parse_llm_output(llm_output)
-    
+
     assert len(patches) == 1
     content = patches[0]["content"]
-    
+
     # The nested block should be preserved
     assert 'echo "nested block"' in content
-    
+
     # CRITICAL: The content AFTER the nested block should be present
     assert "## Next Section" in content
     assert "currently cut off" in content

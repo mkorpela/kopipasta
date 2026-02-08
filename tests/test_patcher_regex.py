@@ -85,8 +85,8 @@ def test_nested_fences_explicit_length():
     patches = parse_llm_output(llm_output)
     assert len(patches) == 1
     content = patches[0]["content"]
-    
+
     # Should contain the inner fences
-    assert '```' in content
-    assert 'inner' in content
-    assert '\"\"\"' in content
+    assert "```" in content
+    assert "inner" in content
+    assert '"""' in content

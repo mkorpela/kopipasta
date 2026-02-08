@@ -1,15 +1,14 @@
 """Tests for the fix workflow (x hotkey): config resolution, prompt generation, and path detection."""
 
-import os
 import platform
 import stat
 import textwrap
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
 from kopipasta.config import read_fix_command
-from kopipasta.prompt import generate_fix_prompt, FIX_TEMPLATE
+from kopipasta.prompt import generate_fix_prompt
 from kopipasta.patcher import find_paths_in_text
 
 
@@ -121,6 +120,7 @@ class TestReadFixCommand:
 # 2. generate_fix_prompt — Prompt Assembly
 # ============================================================
 
+
 class TestGenerateFixPrompt:
     """Tests the fix prompt template rendering."""
 
@@ -140,13 +140,15 @@ class TestGenerateFixPrompt:
 
     def test_includes_git_diff_when_present(self):
         """Git diff section appears when diff content is provided."""
-        diff = textwrap.dedent("""\
+        diff = textwrap.dedent(
+            """\
             diff --git a/src/main.py b/src/main.py
             --- a/src/main.py
             +++ b/src/main.py
             @@ -10,1 +10,2 @@
             +import os
-        """)
+        """
+        )
         result = generate_fix_prompt(
             command="make check",
             error_output="error",
@@ -246,14 +248,16 @@ class TestFindPathsInErrorOutput:
 
     def test_python_traceback(self):
         """Detects file paths in a Python traceback."""
-        traceback = textwrap.dedent("""\
+        traceback = textwrap.dedent(
+            """\
             Traceback (most recent call last):
               File "src/main.py", line 42, in <module>
                 result = process(data)
               File "src/utils.py", line 15, in process
                 return transform(data)
             TypeError: expected str, got int
-        """)
+        """
+        )
         valid = ["src/main.py", "src/utils.py", "src/other.py"]
         found = find_paths_in_text(traceback, valid)
         assert "src/main.py" in found
@@ -262,14 +266,16 @@ class TestFindPathsInErrorOutput:
 
     def test_eslint_output(self):
         """Detects paths in ESLint-style output."""
-        output = textwrap.dedent("""\
+        output = textwrap.dedent(
+            """\
             src/components/App.tsx
               10:5  error  'foo' is not defined  no-undef
               22:1  warning  Unexpected console  no-console
 
             src/index.ts
               3:1  error  Missing semicolon  semi
-        """)
+        """
+        )
         valid = ["src/components/App.tsx", "src/index.ts", "src/other.ts"]
         found = find_paths_in_text(output, valid)
         assert "src/components/App.tsx" in found
@@ -278,11 +284,13 @@ class TestFindPathsInErrorOutput:
 
     def test_ruff_output(self):
         """Detects paths in ruff check output."""
-        output = textwrap.dedent("""\
+        output = textwrap.dedent(
+            """\
             kopipasta/config.py:12:1: E302 Expected 2 blank lines, found 1
             kopipasta/prompt.py:45:80: E501 Line too long (95 > 88)
             Found 2 errors.
-        """)
+        """
+        )
         valid = ["kopipasta/config.py", "kopipasta/prompt.py", "kopipasta/main.py"]
         found = find_paths_in_text(output, valid)
         assert "kopipasta/config.py" in found
@@ -291,11 +299,13 @@ class TestFindPathsInErrorOutput:
 
     def test_go_compiler_output(self):
         """Detects paths in Go compiler errors."""
-        output = textwrap.dedent("""\
+        output = textwrap.dedent(
+            """\
             # myproject/cmd/server
             cmd/server/main.go:15:2: undefined: handler
             cmd/server/routes.go:8:5: imported and not used: "fmt"
-        """)
+        """
+        )
         valid = ["cmd/server/main.go", "cmd/server/routes.go", "pkg/handler.go"]
         found = find_paths_in_text(output, valid)
         assert "cmd/server/main.go" in found
@@ -317,25 +327,29 @@ class TestFindPathsInErrorOutput:
 
     def test_duplicate_paths_reported_once(self):
         """Same path appearing multiple times yields one entry."""
-        output = textwrap.dedent("""\
+        output = textwrap.dedent(
+            """\
             src/main.py:10:1: E302
             src/main.py:20:1: E303
             src/main.py:30:1: E302
-        """)
+        """
+        )
         valid = ["src/main.py"]
         found = find_paths_in_text(output, valid)
         assert found == ["src/main.py"]
 
     def test_pre_commit_output(self):
         """Detects paths in pre-commit hook output."""
-        output = textwrap.dedent("""\
+        output = textwrap.dedent(
+            """\
             ruff.....................................................................Failed
             - hook id: ruff
             - exit code: 1
 
             kopipasta/tree_selector.py:3:1: F401 [*] `platform` imported but unused
             kopipasta/config.py:55:5: E722 Do not use bare `except`
-        """)
+        """
+        )
         valid = [
             "kopipasta/tree_selector.py",
             "kopipasta/config.py",

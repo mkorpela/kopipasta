@@ -30,12 +30,12 @@ def patched():
 ```
 """
     patches = parse_llm_output(llm_output)
-    
+
     assert len(patches) == 1
     p = patches[0]
     assert p["file_path"] == "kopipasta/test_file.py"
     assert p["type"] == "diff"
-    
+
     hunks = p["content"]
     assert len(hunks) == 1
     assert hunks[0]["original_lines"] == ["def original():", "    return True"]
@@ -49,12 +49,9 @@ def test_apply_search_replace_patch(search_replace_dir):
     """
     file_path = search_replace_dir / "app.py"
     file_path.write_text(
-        "import os\n\n"
-        "def main():\n"
-        "    print('hello')\n"
-        "    return 0\n"
+        "import os\n\n" "def main():\n" "    print('hello')\n" "    return 0\n"
     )
-    
+
     llm_output = """
 ### app.py
 
@@ -70,13 +67,13 @@ def main():
 >>>>
 ```
 """
-    
+
     original_cwd = os.getcwd()
     os.chdir(search_replace_dir)
     try:
         patches = parse_llm_output(llm_output)
         apply_patches(patches)
-        
+
         content = file_path.read_text()
         assert "print('world')" in content
         assert "return 1" in content
@@ -89,7 +86,7 @@ def test_search_replace_multiple_hunks(search_replace_dir):
     """Tests multiple search/replace blocks in one file."""
     file_path = search_replace_dir / "multi.py"
     file_path.write_text("A\nB\nC\nD\nE\n")
-    
+
     llm_output = """
 ### multi.py
 ```

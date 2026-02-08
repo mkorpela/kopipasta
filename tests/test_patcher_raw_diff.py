@@ -1,9 +1,9 @@
-import pytest
 from kopipasta.patcher import parse_llm_output
+
 
 def test_raw_git_diff_parsing():
     """
-    Tests parsing a block that contains a raw 'git diff' output 
+    Tests parsing a block that contains a raw 'git diff' output
     without explicit '# FILE:' comments.
     """
     # Construct fence to avoid breaking markdown parsers when pasting this test
@@ -33,22 +33,26 @@ index 1111111..2222222 100644
     patches = parse_llm_output(llm_output)
 
     assert len(patches) == 2
-    
+
     # Check first file
     p1 = next(p for p in patches if p["file_path"] == "src/main.py")
     assert p1["type"] == "diff"
     # The parser chunks it into Hunks.
     assert len(p1["content"]) == 1
-    assert p1["content"][0]["new_lines"] == ['def main():', '    print("Hello Raw Diff")']
+    assert p1["content"][0]["new_lines"] == [
+        "def main():",
+        '    print("Hello Raw Diff")',
+    ]
 
     # Check second file
     p2 = next(p for p in patches if p["file_path"] == "README.md")
     assert p2["type"] == "diff"
     assert p2["content"][0]["new_lines"] == ["# Title", "Added description."]
 
+
 def test_raw_diff_no_git_header():
     """
-    Tests parsing a unified diff that lacks the 'diff --git' line 
+    Tests parsing a unified diff that lacks the 'diff --git' line
     but has the '---' / '+++' headers.
     """
     fence = "`" * 3
@@ -66,7 +70,8 @@ def test_raw_diff_no_git_header():
     patches = parse_llm_output(llm_output)
     assert len(patches) == 1
     assert patches[0]["file_path"] == "config.json"
-    assert patches[0]["content"][0]["new_lines"] == ['{', '  "debug": true', '}']
+    assert patches[0]["content"][0]["new_lines"] == ["{", '  "debug": true', "}"]
+
 
 def test_mixed_explicit_and_raw_diff():
     """

@@ -110,13 +110,14 @@ def test_explicit_deletion(patch_test_dir: Path, capsys, monkeypatch):
     Tests handling of the <<<DELETE>>> marker.
     """
     import click
+
     # Mock confirmation to return True
     monkeypatch.setattr(click, "confirm", lambda *args, **kwargs: True)
 
     # Setup file to be deleted
     file_to_delete = patch_test_dir / "unwanted.py"
     file_to_delete.write_text("print('delete me')")
-    
+
     assert file_to_delete.exists()
 
     llm_output = """
@@ -134,7 +135,7 @@ def test_explicit_deletion(patch_test_dir: Path, capsys, monkeypatch):
         os.chdir(cwd)
 
     assert not file_to_delete.exists()
-    
+
     captured = capsys.readouterr()
     assert "Deleted unwanted.py" in captured.out
 

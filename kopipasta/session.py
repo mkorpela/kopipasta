@@ -4,7 +4,6 @@ import subprocess
 import json
 from datetime import datetime
 from typing import Optional, TypedDict
-from pathlib import Path
 
 from kopipasta.git_utils import check_session_gitignore_status, add_to_gitignore
 
@@ -67,9 +66,9 @@ class Session:
 
         # --- Safety Check: Ensure ignored ---
         if not check_session_gitignore_status(self.project_root):
-            # We assume the UI handled the confirmation prompt before calling this, 
+            # We assume the UI handled the confirmation prompt before calling this,
             # or we handle it here if we inject an interaction callback.
-            # For simplicity in this domain class, we'll try to add it blindly 
+            # For simplicity in this domain class, we'll try to add it blindly
             # if the caller didn't, or rely on the caller to have checked.
             # Ideally, the Controller ensures this. We will just attempt to add it.
             add_to_gitignore(self.project_root, SESSION_FILENAME)
@@ -120,13 +119,13 @@ class Session:
                     ["git", "reset", "--soft", start_commit],
                     cwd=self.project_root,
                     check=True,
-                    capture_output=True
+                    capture_output=True,
                 )
                 return True
             except subprocess.CalledProcessError as e:
                 console_printer(f"Squash failed: {e}")
                 return False
-        
+
         return True
 
     def auto_commit(self, message: str = "kopipasta: auto-checkpoint") -> bool:
@@ -145,8 +144,7 @@ class Session:
 
             # Check for staged changes
             result = subprocess.run(
-                ["git", "diff", "--cached", "--quiet"], 
-                cwd=self.project_root
+                ["git", "diff", "--cached", "--quiet"], cwd=self.project_root
             )
             if result.returncode != 0:  # 1 means diff found (dirty)
                 subprocess.run(
@@ -180,9 +178,17 @@ class Session:
 
         # Check modifications
         try:
-            subprocess.run(["git", "diff", "--quiet"], cwd=self.project_root, check=True)
-            subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=self.project_root, check=True)
+            subprocess.run(
+                ["git", "diff", "--quiet"], cwd=self.project_root, check=True
+            )
+            subprocess.run(
+                ["git", "diff", "--cached", "--quiet"],
+                cwd=self.project_root,
+                check=True,
+            )
             return True
         except subprocess.CalledProcessError:
-            console_printer("Warning: You have uncommitted changes. Commit or stash them before starting.")
+            console_printer(
+                "Warning: You have uncommitted changes. Commit or stash them before starting."
+            )
             return False

@@ -22,7 +22,7 @@ def find_local_dependencies(
     excluded_paths: Set[str],
 ) -> List[str]:
     """
-    Pure logic: Analyzes imports in target_file and returns a list of 
+    Pure logic: Analyzes imports in target_file and returns a list of
     local absolute file paths that are not in excluded_paths.
     """
     language = get_language_for_file(target_file)
@@ -48,14 +48,15 @@ def find_local_dependencies(
             [
                 dep
                 for dep in resolved_deps_abs
-                if dep not in excluded_paths
-                and dep != os.path.abspath(target_file)
+                if dep not in excluded_paths and dep != os.path.abspath(target_file)
             ]
         )
     except Exception as e:
         # In a pure function, we might want to log this or re-raise.
         # For now, printing to stderr or returning empty is acceptable safety.
-        print(f"Warning: Dependency analysis failed for {os.path.relpath(target_file)}: {e}")
+        print(
+            f"Warning: Dependency analysis failed for {os.path.relpath(target_file)}: {e}"
+        )
         return []
 
 
@@ -71,11 +72,9 @@ def propose_and_add_dependencies(
     print(f"Analyzing {os.path.relpath(file_just_added)} for local dependencies...")
 
     included_paths = {os.path.abspath(f[0]) for f in files_to_include}
-    
+
     suggested_deps = find_local_dependencies(
-        file_just_added, 
-        project_root_abs, 
-        included_paths
+        file_just_added, project_root_abs, included_paths
     )
 
     if not suggested_deps:
@@ -294,7 +293,7 @@ def select_from_grep_results(
                         if is_large_file(file_path):
                             while True:
                                 snippet_choice = input(
-                                    f"File is large. Use (f)ull content or (s)nippet? "
+                                    "File is large. Use (f)ull content or (s)nippet? "
                                 ).lower()
                                 if snippet_choice in ["f", "s"]:
                                     break

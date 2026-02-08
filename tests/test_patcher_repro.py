@@ -1,4 +1,3 @@
-import pytest
 from kopipasta.patcher import parse_llm_output
 
 

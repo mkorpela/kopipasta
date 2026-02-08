@@ -1,13 +1,14 @@
 from enum import Enum, auto
-from typing import Dict, List, Optional, Tuple, Set
+from typing import Dict, List, Optional, Tuple
 import os
-from kopipasta.file import get_human_readable_size, read_file_contents
 from kopipasta.prompt import get_file_snippet, get_language_for_file
+
 
 class FileState(Enum):
     UNSELECTED = auto()
-    BASE = auto()      # Blue/Cyan: Previously synced context
-    DELTA = auto()     # Green: New changes or active focus
+    BASE = auto()  # Blue/Cyan: Previously synced context
+    DELTA = auto()  # Green: New changes or active focus
+
 
 class SelectionManager:
     def __init__(self):
@@ -25,13 +26,19 @@ class SelectionManager:
         abs_path = os.path.abspath(path)
         return self._files.get(abs_path, (None, False, None))[1]
 
-    def set_state(self, path: str, state: FileState, is_snippet: bool = False, chunks: Optional[List[str]] = None):
+    def set_state(
+        self,
+        path: str,
+        state: FileState,
+        is_snippet: bool = False,
+        chunks: Optional[List[str]] = None,
+    ):
         abs_path = os.path.abspath(path)
-        
+
         # Subtract old size if it existed
         if abs_path in self._files:
             self.char_count -= self._calculate_file_size(abs_path)
-            
+
         if state == FileState.UNSELECTED:
             self._files.pop(abs_path, None)
         else:
@@ -46,7 +53,7 @@ class SelectionManager:
         3. Base -> Delta (Promote to focus)
         """
         current_state = self.get_state(path)
-        
+
         if current_state == FileState.UNSELECTED:
             self.set_state(path, FileState.DELTA, is_snippet=is_snippet)
         elif current_state == FileState.DELTA:
@@ -67,12 +74,17 @@ class SelectionManager:
 
     def get_delta_files(self) -> List[Tuple[str, bool, Optional[List[str]], str]]:
         """Returns only files in DELTA state."""
-        return [(p, s[1], s[2], get_language_for_file(p)) 
-                for p, s in self._files.items() if s[0] == FileState.DELTA]
+        return [
+            (p, s[1], s[2], get_language_for_file(p))
+            for p, s in self._files.items()
+            if s[0] == FileState.DELTA
+        ]
 
     def mark_as_delta(self, path: str):
         """Promotes a file to DELTA state (e.g. after a patch)."""
-        _, is_snippet, chunks = self._files.get(os.path.abspath(path), (None, False, None))
+        _, is_snippet, chunks = self._files.get(
+            os.path.abspath(path), (None, False, None)
+        )
         self.set_state(path, FileState.DELTA, is_snippet=is_snippet, chunks=chunks)
 
     def get_selected_files(self) -> List[Tuple[str, bool, Optional[List[str]], str]]:

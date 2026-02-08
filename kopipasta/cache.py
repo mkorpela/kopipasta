@@ -77,7 +77,7 @@ def clear_cache():
         selection_file = get_selection_cache_file()
         if selection_file.exists():
             os.remove(selection_file)
-        
+
         task_file = get_task_cache_file()
         if task_file.exists():
             os.remove(task_file)

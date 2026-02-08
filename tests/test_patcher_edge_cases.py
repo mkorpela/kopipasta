@@ -121,10 +121,11 @@ def test_safety_check_shrinking_file(edge_case_dir, capsys, monkeypatch):
     overwritten by a very small content (potential snippet error).
     """
     import click
+
     # Setup a large file (> 200 chars)
     file_path = edge_case_dir / "large.py"
     file_path.write_text("a" * 1000)
-    
+
     # Patch replacing it with "b" (very small)
     llm_output = """
 ```python
@@ -134,7 +135,7 @@ b
 """
     # Mock click.confirm to return False (Don't overwrite)
     monkeypatch.setattr(click, "confirm", lambda *args, **kwargs: False)
-    
+
     cwd = os.getcwd()
     os.chdir(edge_case_dir)
     try:
@@ -146,18 +147,19 @@ b
     captured = capsys.readouterr()
     assert "Safety Check" in captured.out
     assert "Skipped large.py" in captured.out
-    assert file_path.read_text() == "a" * 1000 # Unchanged
+    assert file_path.read_text() == "a" * 1000  # Unchanged
 
 
 def test_safety_check_confirmed(edge_case_dir, capsys, monkeypatch):
     """Tests that the user can override the safety check."""
     import click
+
     file_path = edge_case_dir / "large_confirmed.py"
     file_path.write_text("a" * 1000)
     llm_output = "```python\n# FILE: large_confirmed.py\nb\n```"
-    
+
     monkeypatch.setattr(click, "confirm", lambda *args, **kwargs: True)
-    
+
     cwd = os.getcwd()
     os.chdir(edge_case_dir)
     try:

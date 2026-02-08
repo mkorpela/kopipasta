@@ -1,6 +1,5 @@
 import os
 import subprocess
-import platform
 import shutil
 from typing import Dict, List, Optional, Tuple
 from prompt_toolkit import prompt as prompt_toolkit_prompt
@@ -13,8 +12,14 @@ import pyperclip
 import click
 
 from kopipasta.patcher import apply_patches, parse_llm_output
-from kopipasta.file import FileTuple, is_binary, is_ignored, get_human_readable_size, read_file_contents
-from kopipasta.prompt import get_file_snippet, get_language_for_file
+from kopipasta.file import (
+    FileTuple,
+    is_binary,
+    is_ignored,
+    get_human_readable_size,
+    read_file_contents,
+)
+from kopipasta.prompt import get_file_snippet
 from kopipasta.prompt import generate_fix_prompt
 from kopipasta.cache import load_selection_from_cache, clear_cache
 from kopipasta.ops import (
@@ -33,6 +38,7 @@ from kopipasta.config import read_fix_command
 from kopipasta.prompt import generate_extension_prompt
 
 ALWAYS_VISIBLE_FILES = {"AI_SESSION.md", "AI_CONTEXT.md"}
+
 
 class FileNode:
     """Represents a file or directory in the tree"""
@@ -77,7 +83,7 @@ class TreeSelector:
         self.ignore_patterns = ignore_patterns
         self.project_root_abs = project_root_abs
         self.manager = SelectionManager()
-        
+
         self.current_index = 0
         self.nodes: List[FileNode] = []
         self.visible_nodes: List[FileNode] = []
@@ -151,10 +157,16 @@ class TreeSelector:
             node = None
             basename = os.path.basename(abs_path)
             if os.path.isfile(abs_path):
-                if basename in ALWAYS_VISIBLE_FILES or (
-                    not is_ignored(abs_path, self.ignore_patterns, self.project_root_abs)
+                if (
+                    basename in ALWAYS_VISIBLE_FILES
+                    or (
+                        not is_ignored(
+                            abs_path, self.ignore_patterns, self.project_root_abs
+                        )
+                        and not is_binary(abs_path)
+                    )
                     and not is_binary(abs_path)
-                ) and not is_binary(abs_path):
+                ):
                     node = FileNode(abs_path, False, root)
             elif os.path.isdir(abs_path):
                 node = FileNode(abs_path, True, root)
@@ -231,7 +243,7 @@ class TreeSelector:
     ) -> List[Tuple[FileNode, int]]:
         """Flatten tree into a list of (node, level) tuples for display."""
         result = []
-        
+
         result.append((node, level))
         if node.is_dir and node.expanded:
             if not node.children:
@@ -276,7 +288,6 @@ class TreeSelector:
         if self.viewport_offset > 0:
             tree.add(Text(f"↑ ({self.viewport_offset} more items)", style="dim italic"))
 
-
         # Build tree structure - only for visible portion
         viewport_end = min(len(flat_tree), self.viewport_offset + available_height)
 
@@ -311,7 +322,7 @@ class TreeSelector:
                     selection = "◐" if is_snippet else "●"
                     if state == FileState.DELTA:
                         style = "green " + style
-                    else: # BASE
+                    else:  # BASE
                         style = "cyan " + style
                 else:
                     selection = "○"
@@ -348,7 +359,7 @@ class TreeSelector:
 
     def _show_help(self) -> Panel:
         """Create help panel"""
-        
+
         action_list = ["r: Reuse", "g: Grep", "p: Patch", "x: Fix"]
         if self.manager.delta_count > 0:
             action_list.append("e: Extend")
@@ -378,7 +389,11 @@ q: Quit and finalize"""
         else:
             current_info = "No selection"
 
-        session_indicator = "[bold green]SESSION ON[/bold green]" if self.session.is_active else "[dim]Session Off[/dim]"
+        session_indicator = (
+            "[bold green]SESSION ON[/bold green]"
+            if self.session.is_active
+            else "[dim]Session Off[/dim]"
+        )
 
         selection_info = f"[dim]Selected:[/dim] {self.manager.delta_count} delta, {self.manager.base_count} base | ~{self.manager.char_count:,} chars (~{estimate_tokens(self.manager.char_count):,} tokens)"
 
@@ -414,7 +429,9 @@ q: Quit and finalize"""
 
             # Check if already selected
             if self.manager.get_state(abs_path) == FileState.UNSELECTED:
-                self.manager.set_state(abs_path, FileState.DELTA, is_snippet=is_snippet, chunks=chunks)
+                self.manager.set_state(
+                    abs_path, FileState.DELTA, is_snippet=is_snippet, chunks=chunks
+                )
                 added_count += 1
                 # Ensure the file is visible in the tree
                 self._ensure_path_visible(abs_path)
@@ -426,7 +443,7 @@ q: Quit and finalize"""
             )
         else:
             self.console.print(
-                f"\n[yellow]All selected files were already in selection[/yellow]"
+                "\n[yellow]All selected files were already in selection[/yellow]"
             )
 
     def _handle_apply_patches(self):
@@ -458,7 +475,7 @@ q: Quit and finalize"""
             patches = parse_llm_output(content, self.console)
             if patches:
                 modified_files = apply_patches(patches)
-                
+
                 # Promote patched files to Delta and everything else to Base
                 self.manager.promote_all_to_base()
                 for path in modified_files:
@@ -478,7 +495,9 @@ q: Quit and finalize"""
             found_paths = find_paths_in_text(content, all_paths)
 
             if found_paths:
-                self.console.print(f"\n[bold cyan]🔍 Found {len(found_paths)} project paths in text.[/bold cyan]")
+                self.console.print(
+                    f"\n[bold cyan]🔍 Found {len(found_paths)} project paths in text.[/bold cyan]"
+                )
                 for p in sorted(found_paths)[:10]:
                     self.console.print(f"  • {p}")
                 if len(found_paths) > 10:
@@ -486,23 +505,27 @@ q: Quit and finalize"""
 
                 choice = click.prompt(
                     "\n[A]ppend to current selection, [R]eplace selection, or [C]ancel?",
-                    type=click.Choice(['a', 'r', 'c'], case_sensitive=False),
-                    default='a'
+                    type=click.Choice(["a", "r", "c"], case_sensitive=False),
+                    default="a",
                 )
 
-                if choice == 'c':
+                if choice == "c":
                     return
-                if choice == 'r':
+                if choice == "r":
                     self.manager.clear_all()
 
                 for path in found_paths:
                     abs_p = os.path.abspath(path)
                     self._ensure_path_visible(abs_p)
                     self.manager.set_state(abs_p, FileState.DELTA)
-                
-                self.console.print(f"\n[green]Successfully added {len(found_paths)} files to Delta focus.[/green]")
+
+                self.console.print(
+                    f"\n[green]Successfully added {len(found_paths)} files to Delta focus.[/green]"
+                )
             else:
-                self.console.print("\n[yellow]No patches or valid project paths detected in pasted content.[/yellow]")
+                self.console.print(
+                    "\n[yellow]No patches or valid project paths detected in pasted content.[/yellow]"
+                )
         except KeyboardInterrupt:
             self.console.print("\n[red]Patch application cancelled.[/red]")
 
@@ -533,53 +556,58 @@ q: Quit and finalize"""
 
         # --- Run the command ---
         self.console.print(f"\n[bold]Running:[/bold] {fix_cmd}\n")
+
+        combined_output = ""
         try:
-            # Use shell=True for complex commands (pipes, &&, etc.)
-            # Set cwd to project root for consistent behavior
-            result = subprocess.run(
+            # Stream output in real-time while capturing it
+            process = subprocess.Popen(
                 fix_cmd,
                 shell=True,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 text=True,
                 cwd=self.project_root_abs,
-                timeout=120,
             )
+
+            # Read and display output line by line in real-time
+            if process.stdout:
+                for line in process.stdout:
+                    self.console.print(f"  [dim]{line.rstrip()}[/dim]")
+                    combined_output += line
+
+            # Wait for process to complete
+            return_code = process.wait(timeout=120)
+
         except subprocess.TimeoutExpired:
-            self.console.print("[bold red]Command timed out after 120 seconds.[/bold red]")
+            self.console.print(
+                "[bold red]Command timed out after 120 seconds.[/bold red]"
+            )
+            if process:
+                process.kill()
             return
         except Exception as e:
             self.console.print(f"[bold red]Failed to run command: {e}[/bold red]")
             return
 
-        combined_output = ""
-        if result.stdout:
-            combined_output += result.stdout
-        if result.stderr:
-            combined_output += result.stderr
-
-        if result.returncode == 0:
-            self.console.print("[bold green]✅ Command succeeded! No errors to fix.[/bold green]")
-            if combined_output.strip():
-                # Show truncated output even on success
-                preview_lines = combined_output.strip().splitlines()[:10]
-                self.console.print("[dim]" + "\n".join(preview_lines) + "[/dim]")
+        if return_code == 0:
+            self.console.print(
+                "[bold green]✅ Command succeeded! No errors to fix.[/bold green]"
+            )
             return
 
         # --- Command failed: show output ---
-        self.console.print(f"[bold yellow]⚠ Command exited with code {result.returncode}[/bold yellow]\n")
-        output_lines = combined_output.strip().splitlines()
-        # Show a reasonable preview
-        for line in output_lines[:30]:
-            self.console.print(f"  [dim]{line}[/dim]")
-        if len(output_lines) > 30:
-            self.console.print(f"  [dim]... ({len(output_lines) - 30} more lines)[/dim]")
+        self.console.print(
+            f"\n[bold yellow]⚠ Command exited with code {return_code}[/bold yellow]\n"
+        )
 
         # --- Detect affected files from error output ---
         all_project_files = self._get_all_unignored_files()
         found_paths = find_paths_in_text(combined_output, all_project_files)
 
         if found_paths:
-            self.console.print(f"\n[bold cyan]🔍 Detected {len(found_paths)} affected file(s):[/bold cyan]")
+            self.console.print(
+                f"\n[bold cyan]🔍 Detected {len(found_paths)} affected file(s):[/bold cyan]"
+            )
             for p in sorted(found_paths)[:15]:
                 self.console.print(f"  • {p}")
             if len(found_paths) > 15:
@@ -595,15 +623,19 @@ q: Quit and finalize"""
                     elif self.manager.get_state(abs_p) == FileState.BASE:
                         self.manager.mark_as_delta(abs_p)
         else:
-            self.console.print("\n[yellow]Could not auto-detect affected files from error output.[/yellow]")
+            self.console.print(
+                "\n[yellow]Could not auto-detect affected files from error output.[/yellow]"
+            )
 
         # --- Capture git diff ---
         git_diff = ""
         try:
             diff_result = subprocess.run(
                 ["git", "diff", "HEAD"],
-                capture_output=True, text=True,
-                cwd=self.project_root_abs, timeout=30,
+                capture_output=True,
+                text=True,
+                cwd=self.project_root_abs,
+                timeout=30,
             )
             git_diff = diff_result.stdout.strip()
         except Exception:
@@ -621,19 +653,33 @@ q: Quit and finalize"""
 
         try:
             pyperclip.copy(prompt_text)
-            self.console.print(f"\n[bold green]📋 Fix prompt copied to clipboard![/bold green]")
-            self.console.print(f"[dim]Contains: error output + git diff + {len(affected_file_tuples)} file(s)[/dim]")
+            self.console.print(
+                "\n[bold green]📋 Fix prompt copied to clipboard![/bold green]"
+            )
+            self.console.print(
+                f"[dim]Contains: error output + git diff + {len(affected_file_tuples)} file(s)[/dim]"
+            )
         except pyperclip.PyperclipException:
-            self.console.print("\n[red]Failed to copy to clipboard. Prompt printed above.[/red]")
+            self.console.print(
+                "\n[red]Failed to copy to clipboard. Prompt printed above.[/red]"
+            )
 
     def _get_all_unignored_files(self) -> List[str]:
         """Walks the project to find all non-binary, non-ignored files for path scanning."""
         all_files = []
         for root, dirs, files in os.walk(self.project_root_abs):
-            dirs[:] = [d for d in dirs if not is_ignored(os.path.join(root, d), self.ignore_patterns, self.project_root_abs)]
+            dirs[:] = [
+                d
+                for d in dirs
+                if not is_ignored(
+                    os.path.join(root, d), self.ignore_patterns, self.project_root_abs
+                )
+            ]
             for f in files:
                 full_path = os.path.join(root, f)
-                if not is_ignored(full_path, self.ignore_patterns, self.project_root_abs) and not is_binary(full_path):
+                if not is_ignored(
+                    full_path, self.ignore_patterns, self.project_root_abs
+                ) and not is_binary(full_path):
                     all_files.append(os.path.relpath(full_path, self.project_root_abs))
         return all_files
 
@@ -643,24 +689,28 @@ q: Quit and finalize"""
         copies to clipboard, and promotes Delta -> Base.
         """
         delta_files = self.manager.get_delta_files()
-        
+
         if not delta_files:
             return
 
         # Generate minimal prompt
         prompt_text = generate_extension_prompt(delta_files, {})
-        
+
         try:
             pyperclip.copy(prompt_text)
-            self.console.print(f"\n[green]📋 Extended context ({len(delta_files)} files) copied to clipboard![/green]")
-            
+            self.console.print(
+                f"\n[green]📋 Extended context ({len(delta_files)} files) copied to clipboard![/green]"
+            )
+
             # Transition Delta to Base
             self.manager.promote_delta_to_base()
-            self.console.print("[dim]Selected files moved from Green (Delta) to Cyan (Base).[/dim]")
-            
+            self.console.print(
+                "[dim]Selected files moved from Green (Delta) to Cyan (Base).[/dim]"
+            )
+
         except pyperclip.PyperclipException:
             self.console.print("\n[red]Failed to copy to clipboard.[/red]")
-            
+
         click.pause("Press any key to return...")
 
     def _handle_session_update(self):
@@ -669,7 +719,7 @@ q: Quit and finalize"""
             self.console.print("[yellow]No active session to update.[/yellow]")
             click.pause("Press any key to continue...")
             return
-        
+
         # READ CONTENT TO INJECT
         session_content = self.session.content
 
@@ -704,10 +754,10 @@ q: Quit and finalize"""
             self.console.print("[yellow]No active session to finish.[/yellow]")
             click.pause("Press any key to continue...")
             return
-        
+
         # READ CONTENTS TO INJECT
         session_content = self.session.content
-        
+
         context_path = os.path.join(self.project_root_abs, "AI_CONTEXT.md")
         context_content = ""
         if os.path.exists(context_path):
@@ -717,7 +767,7 @@ q: Quit and finalize"""
 
         metadata = self.session.get_metadata()
         start_commit = metadata.get("start_commit") if metadata else "NO_GIT"
-        
+
         prompt_text = (
             "# Task Completion & Harvest\n\n"
             "## Session Data (AI_SESSION.md)\n"
@@ -734,19 +784,30 @@ q: Quit and finalize"""
 
         # Post-patch cleanup: Check if file still exists (user might have deleted it via patch, but unlikely)
         if self.session.is_active:
-            if click.confirm("\n🗑️  Delete `AI_SESSION.md` and finish session?", default=True):
+            if click.confirm(
+                "\n🗑️  Delete `AI_SESSION.md` and finish session?", default=True
+            ):
                 clear_cache()
-                
+
                 should_squash = False
                 if start_commit and start_commit != "NO_GIT":
-                    self.console.print(f"\n[bold]Session started at commit: {start_commit[:7]}[/bold]")
-                    should_squash = click.confirm("Squash session commits (soft reset) to this point?", default=True)
+                    self.console.print(
+                        f"\n[bold]Session started at commit: {start_commit[:7]}[/bold]"
+                    )
+                    should_squash = click.confirm(
+                        "Squash session commits (soft reset) to this point?",
+                        default=True,
+                    )
 
-                if self.session.finish(squash=should_squash, console_printer=self.console.print):
+                if self.session.finish(
+                    squash=should_squash, console_printer=self.console.print
+                ):
                     self.console.print("[green]Deleted AI_SESSION.md[/green]")
                     if should_squash:
-                         self.console.print("[green]Commits squashed. Changes are staged.[/green]")
-                         self.console.print("Run `git commit` to finalize the feature.")
+                        self.console.print(
+                            "[green]Commits squashed. Changes are staged.[/green]"
+                        )
+                        self.console.print("Run `git commit` to finalize the feature.")
 
     def _run_gardener_cycle(self, prompt_text: str, title: str):
         """Helper to copy prompt, pause, and run patcher."""
@@ -758,17 +819,21 @@ q: Quit and finalize"""
                 border_style="green",
             )
         )
-        
+
         try:
             pyperclip.copy(prompt_text)
             self.console.print("\n[green]📋 Prompt copied to clipboard![/green]")
         except pyperclip.PyperclipException:
-            self.console.print("\n[yellow]Could not copy to clipboard. Please copy the text above manually.[/yellow]")
+            self.console.print(
+                "\n[yellow]Could not copy to clipboard. Please copy the text above manually.[/yellow]"
+            )
 
         self.console.print("\n1. Paste this into your LLM.")
         self.console.print("2. Copy the LLM's Markdown response (Diffs/Code blocks).")
-        self.console.print("3. Press [bold]Enter[/bold] here to paste and apply patches.")
-        
+        self.console.print(
+            "3. Press [bold]Enter[/bold] here to paste and apply patches."
+        )
+
         click.pause()
         self._handle_apply_patches()
         click.pause("Press any key to return to file selector...")
@@ -780,12 +845,15 @@ q: Quit and finalize"""
             self._toggle_directory(node)
         else:
             abs_path = os.path.abspath(node.path)
-            
+
             # Selection logic hook for large files
-            if self.manager.get_state(abs_path) == FileState.UNSELECTED and not snippet_mode:
+            if (
+                self.manager.get_state(abs_path) == FileState.UNSELECTED
+                and not snippet_mode
+            ):
                 if node.size > 102400 and not self._confirm_large_file(node):
                     snippet_mode = True
-            
+
             self.manager.toggle(abs_path, is_snippet=snippet_mode)
 
     def _toggle_directory(self, node: FileNode):
@@ -910,7 +978,10 @@ q: Quit and finalize"""
         # If confirmed, apply the changes
         for rel_path in files_to_add:
             abs_path = os.path.abspath(rel_path)
-            if os.path.isfile(abs_path) and self.manager.get_state(abs_path) == FileState.UNSELECTED:
+            if (
+                os.path.isfile(abs_path)
+                and self.manager.get_state(abs_path) == FileState.UNSELECTED
+            ):
                 self.manager.set_state(abs_path, FileState.DELTA)
                 self._ensure_path_visible(abs_path)
 
@@ -1002,7 +1073,7 @@ q: Quit and finalize"""
     def _init_key_bindings(self):
         """Initializes the keyboard command dispatch table."""
         self.key_map = {}
-        
+
         # Helper to register multiple keys for one action
         def bind(keys: List[str], action):
             for key in keys:
@@ -1034,10 +1105,10 @@ q: Quit and finalize"""
         bind(["c"], self._action_clear_base)
         bind(["u"], self._handle_session_update)
         bind(["f"], self._handle_task_completion)
-        
+
         # Meta
         bind(["q"], self._action_quit)
-        bind(["\x03"], self._action_interrupt) # Ctrl+C
+        bind(["\x03"], self._action_interrupt)  # Ctrl+C
 
     def _get_current_node(self) -> Optional[FileNode]:
         if self.visible_nodes and 0 <= self.current_index < len(self.visible_nodes):
@@ -1045,7 +1116,7 @@ q: Quit and finalize"""
         return None
 
     # --- Navigation Actions ---
-    
+
     def _nav_up(self):
         self.current_index = max(0, self.current_index - 1)
 
@@ -1060,7 +1131,9 @@ q: Quit and finalize"""
     def _nav_page_down(self):
         _, term_height = shutil.get_terminal_size()
         page_size = max(1, term_height - 15)
-        self.current_index = min(len(self.visible_nodes) - 1, self.current_index + page_size)
+        self.current_index = min(
+            len(self.visible_nodes) - 1, self.current_index + page_size
+        )
 
     def _nav_home(self):
         self.current_index = 0
@@ -1082,8 +1155,7 @@ q: Quit and finalize"""
         elif node.parent:
             # Jump to parent
             parent_idx = next(
-                (i for i, n in enumerate(self.visible_nodes) if n == node.parent),
-                None
+                (i for i, n in enumerate(self.visible_nodes) if n == node.parent), None
             )
             if parent_idx is not None:
                 self.current_index = parent_idx
@@ -1135,10 +1207,14 @@ q: Quit and finalize"""
     def _action_session_start(self):
         # Pre-check for gitignore to be interactive
         from kopipasta.git_utils import check_session_gitignore_status, add_to_gitignore
-        
+
         if not check_session_gitignore_status(self.project_root_abs):
-            self.console.print(f"\n[bold yellow]⚠ {SESSION_FILENAME} is NOT ignored by git.[/bold yellow]")
-            if click.confirm(f"Add {SESSION_FILENAME} to .gitignore now?", default=True):
+            self.console.print(
+                f"\n[bold yellow]⚠ {SESSION_FILENAME} is NOT ignored by git.[/bold yellow]"
+            )
+            if click.confirm(
+                f"Add {SESSION_FILENAME} to .gitignore now?", default=True
+            ):
                 add_to_gitignore(self.project_root_abs, SESSION_FILENAME)
             else:
                 return

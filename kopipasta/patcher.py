@@ -49,6 +49,9 @@ class PatchParser:
         r"^#{1,6}\s+([\w\-\./\\]+\.\w+)\s*$"
     )
 
+    # Deletion Marker
+    DELETION_MARKER = "<<<DELETE>>>"
+
     def __init__(self, content: str, console: Optional[Console] = None):
         self.lines = content.splitlines()
         self.console = console
@@ -231,20 +234,25 @@ class PatchParser:
             return
         content = "\n".join(lines).strip()
         
-        # 1. Check for Unified Diff
+        # 1. Check for Deletion Marker
+        if content == self.DELETION_MARKER:
+            self.patches.append({"file_path": path, "type": "delete", "content": ""})
+            return
+
+        # 2. Check for Unified Diff
         if self.DIFF_HUNK_HEADER_REGEX.search(content):
             hunks = _parse_diff_hunks(content)
             if hunks:
                 self.patches.append({"file_path": path, "type": "diff", "content": hunks})
                 return
 
-        # 2. Check for Search/Replace Block (<<<< ... ==== ... >>>>)
+        # 3. Check for Search/Replace Block (<<<< ... ==== ... >>>>)
         search_replace_hunks = _parse_search_replace_block(lines)
         if search_replace_hunks:
             self.patches.append({"file_path": path, "type": "diff", "content": search_replace_hunks})
             return
 
-        # 3. Default to Full File
+        # 4. Default to Full File
         self.patches.append({"file_path": path, "type": "full", "content": content})
 
     def _log_skip_warning(self, lines: List[str], info_string: str):
@@ -600,6 +608,21 @@ def apply_patches(patches: List[Patch]) -> None:
         patch_content = patch["content"]
 
         try:
+            # --- Deletion Handling ---
+            if patch_type == "delete":
+                if os.path.exists(file_path):
+                    if click.confirm(f"🗑️  Delete {file_path}?", default=False):
+                        try:
+                            os.remove(file_path)
+                            console.print(f"✅ Deleted [red]{file_path}[/red]")
+                        except OSError as e:
+                            console.print(f"❌ [bold red]Failed to delete {file_path}: {e}[/bold red]")
+                    else:
+                        console.print(f"   [dim]Skipped deletion of {file_path}[/dim]")
+                else:
+                    console.print(f"   [yellow]File {file_path} not found, skipping delete.[/yellow]")
+                continue
+
             # If file doesn't exist, it's a simple creation.
             if not os.path.exists(file_path):
                 if patch_type == "diff":

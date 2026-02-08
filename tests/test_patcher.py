@@ -105,6 +105,40 @@ def test_apply_patches_overwrite(
         os.chdir(original_cwd)
 
 
+def test_explicit_deletion(patch_test_dir: Path, capsys, monkeypatch):
+    """
+    Tests handling of the <<<DELETE>>> marker.
+    """
+    import click
+    # Mock confirmation to return True
+    monkeypatch.setattr(click, "confirm", lambda *args, **kwargs: True)
+
+    # Setup file to be deleted
+    file_to_delete = patch_test_dir / "unwanted.py"
+    file_to_delete.write_text("print('delete me')")
+    
+    assert file_to_delete.exists()
+
+    llm_output = """
+```python
+# FILE: unwanted.py
+<<<DELETE>>>
+```
+"""
+    cwd = os.getcwd()
+    os.chdir(patch_test_dir)
+    try:
+        patches = parse_llm_output(llm_output)
+        apply_patches(patches)
+    finally:
+        os.chdir(cwd)
+
+    assert not file_to_delete.exists()
+    
+    captured = capsys.readouterr()
+    assert "Deleted unwanted.py" in captured.out
+
+
 # --- Diff-based patching ---
 
 

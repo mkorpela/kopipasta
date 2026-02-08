@@ -81,6 +81,7 @@ Example: `// FILE: src/utils.py` or `# FILE: config.toml`
 **Rule 2: Modification vs. Creation**
 - **To EDIT an existing file**: You MUST use **Unified Diff** format (with `@@ ... @@` headers). Do NOT post snippets without diff headers, or my tool will overwrite the whole file with just the snippet.
 - **To CREATE or OVERWRITE a file**: Provide the **FULL** file content. Do not use lazy comments like `// ... rest of code ...` inside the block.
+- **To DELETE a file**: Output a code block containing exactly `<<<DELETE>>>`.
 
 ### 🚀 Workflow
 1. **Analyze**: Briefly restate the goal. **Assess the Context**: Identify missing files OR irrelevant files that clutter the context. If I provided too much, list exactly which files to keep for the next run. **Ask to confirm.** End with [AWAITING USER RESPONSE].

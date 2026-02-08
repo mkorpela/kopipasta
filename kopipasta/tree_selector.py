@@ -289,9 +289,7 @@ class TreeSelector:
             # Determine style and icon
             is_current = i == self.current_index
             style = "bold cyan" if is_current else ""
-
             label = Text()
-
             if node.is_dir:
                 icon = "📂" if node.expanded else "📁"
                 total_size, selected_size = self._calculate_directory_metrics(node)
@@ -299,11 +297,9 @@ class TreeSelector:
                     size_str = f" ({get_human_readable_size(selected_size)} / {get_human_readable_size(total_size)})"
                 else:
                     size_str = ""  # Don't show size for empty dirs
-
-                # Omit the selection circle for directories
                 label.append(f"{icon} {node.name}{size_str}", style=style)
-
-            else:  # It's a file
+            else:
+                # It's a file
                 icon = "📄"
                 size_str = f" ({get_human_readable_size(node.size)})"
 
@@ -337,14 +333,6 @@ class TreeSelector:
                 else:
                     # Fallback - add to root with indentation indicator
                     indent_text = "  " * level
-                    if not node.is_dir:
-                        # Re-add file selection marker for indented fallback
-                        selection_char = "○"
-                        if node.path in self.selected_files:
-                            selection_char = (
-                                "◐" if self.selected_files[node.path][0] else "●"
-                            )
-                        indent_text += f"{selection_char} "
 
                     # Create a new label with proper indentation for this edge case
                     fallback_label_text = f"{indent_text}{label.plain}"

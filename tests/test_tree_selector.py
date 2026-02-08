@@ -1,6 +1,7 @@
 import os
 import pytest
 from pathlib import Path
+from unittest.mock import MagicMock
 from rich.text import Text
 from kopipasta.file import get_human_readable_size
 from kopipasta.tree_selector import FileNode, TreeSelector
@@ -115,3 +116,31 @@ def test_directory_label_shows_recursive_size_metrics(mock_project: Path):
     utils_label = get_node_label(utils_node)
     assert "2.00 KB / 2.00 KB" in utils_label
     assert not utils_label.startswith("○")
+
+
+def test_build_display_tree_does_not_crash_on_navigation(mock_project: Path):
+    """
+    Regression test for AttributeError: 'TreeSelector' object has no attribute 'selected_files'
+    
+    This bug occurred when navigating down the tree after the refactor to SelectionManager.
+    """
+    selector = TreeSelector(ignore_patterns=[], project_root_abs=str(mock_project))
+    selector.root = selector.build_tree(["."])
+    selector.root.expanded = True
+    
+    # Expand src directory
+    src_node = next(child for child in selector.root.children if child.name == "src")
+    src_node.expanded = True
+    
+    # Select a file to ensure manager has state
+    main_py_abs = os.path.abspath("main.py")
+    selector.manager.set_state(main_py_abs, FileState.DELTA)
+    
+    # This should not crash with AttributeError
+    # The bug was: `if node.path in self.selected_files:` 
+    # but self.selected_files no longer exists after SelectionManager refactor
+    try:
+        tree = selector._build_display_tree()
+        assert tree is not None  # If we get here, the bug is fixed
+    except AttributeError as e:
+        pytest.fail(f"_build_display_tree() raised AttributeError: {e}")

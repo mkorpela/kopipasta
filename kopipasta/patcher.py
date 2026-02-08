@@ -49,8 +49,9 @@ class PatchParser:
         r"^#{1,6}\s+([\w\-\./\\]+\.\w+)\s*$"
     )
 
-    # Deletion Marker
+    # Special Markers
     DELETION_MARKER = "<<<DELETE>>>"
+    RESET_MARKER = "<<<RESET>>>"
 
     def __init__(self, content: str, console: Optional[Console] = None):
         self.lines = content.splitlines()
@@ -63,6 +64,15 @@ class PatchParser:
     def parse(self) -> List[Patch]:
         while self.current_line_idx < len(self.lines):
             line = self.lines[self.current_line_idx]
+            
+            # Check for RESET (outside of code blocks)
+            if line.strip() == self.RESET_MARKER:
+                self.patches = []
+                self.blocks_found = 0
+                self.last_block_end_idx = self.current_line_idx
+                self.current_line_idx += 1
+                continue
+
             fence_match = re.match(r"^(\s*)([`~]{3,})(.*)$", line)
 
             if fence_match:

@@ -41,8 +41,7 @@ DEFAULT_TEMPLATE = """{% if user_profile -%}
 ## File Contents
 
 {% for file in files -%}
-### {{ file.path }}{{ file.description }}
-
+# FILE: {{ file.path }}{{ file.description }}
 ```{{ file.language }}
 {{ file.content }}
 ```

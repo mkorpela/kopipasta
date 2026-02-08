@@ -17,15 +17,6 @@ This document tracks planned features and architectural improvements for `kopipa
   ```
 - **Benefit**: Turns a multi-minute regeneration cycle into a 5-second hotkey press.
 
-### 3. Intelligent Selection Import (The "Director" Pattern)
-**Problem:** After the LLM analyzes a broad context and requests specific files for the deep-dive, the user must manually find and select them in the tree. This is slow and error-prone.
-**Solution:**
-- **Action:** New hotkey (e.g., `i` for Import) in Tree View.
-- **Input:** User pastes the raw LLM response (text).
-- **Logic:** `kopipasta` regex-scans the text for strings matching valid paths in the project tree.
-- **Result:** Automatically toggles selection for those files.
-- **Benefit:** Allows the LLM to "drive" the context window for the next turn.
-
 ### 4. Fix Hotkey — Pre-commit / Lint Integration (`x`)
 **Problem:** After applying patches, the user tries to commit. Pre-commit hooks (ruff, prettier, mypy, etc.) fail. The user must manually copy error output, switch back to the LLM, paste it, get fixes, then apply patches again. This loop happens on almost every commit.
 **Solution:**

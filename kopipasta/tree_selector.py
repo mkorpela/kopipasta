@@ -24,8 +24,10 @@ from kopipasta.analysis import (
     grep_files_in_directory,
     select_from_grep_results,
 )
+from kopipasta.selection import SelectionManager, FileState
 from kopipasta.session import Session, SESSION_FILENAME
-
+from kopipasta.patcher import find_paths_in_text
+from kopipasta.prompt import generate_extension_prompt
 
 ALWAYS_VISIBLE_FILES = {"AI_SESSION.md", "AI_CONTEXT.md"}
 
@@ -71,14 +73,12 @@ class TreeSelector:
         self.console = Console()
         self.ignore_patterns = ignore_patterns
         self.project_root_abs = project_root_abs
-        self.selected_files: Dict[
-            str, Tuple[bool, Optional[List[str]]]
-        ] = {}  # path -> (is_snippet, chunks)
+        self.manager = SelectionManager()
+        
         self.current_index = 0
         self.nodes: List[FileNode] = []
         self.visible_nodes: List[FileNode] = []
         self.session = Session(project_root_abs)
-        self.char_count = 0
         self.quit_selection = False
         self.viewport_offset = 0  # First visible item index
         self._metrics_cache: Dict[str, Tuple[int, int]] = {}
@@ -111,8 +111,9 @@ class TreeSelector:
                 selected_size += child_selected
             else:  # It's a file
                 total_size += child.size
-                if child.path in self.selected_files:
-                    is_snippet, _ = self.selected_files[child.path]
+                state = self.manager.get_state(child.path)
+                if state != FileState.UNSELECTED:
+                    is_snippet = self.manager.is_snippet(child.path)
                     if is_snippet:
                         selected_size += len(get_file_snippet(child.path))
                     else:
@@ -305,10 +306,14 @@ class TreeSelector:
 
                 # File selection indicator
                 abs_path = os.path.abspath(node.path)
-                if abs_path in self.selected_files:
-                    is_snippet, _ = self.selected_files[abs_path]
+                state = self.manager.get_state(abs_path)
+                if state != FileState.UNSELECTED:
+                    is_snippet = self.manager.is_snippet(abs_path)
                     selection = "◐" if is_snippet else "●"
-                    style = "green " + style
+                    if state == FileState.DELTA:
+                        style = "green " + style
+                    else: # BASE
+                        style = "cyan " + style
                 else:
                     selection = "○"
 
@@ -353,7 +358,12 @@ class TreeSelector:
     def _show_help(self) -> Panel:
         """Create help panel"""
         
-        actions = "r: Reuse   g: Grep   p: Patch   d: Deps"
+        action_list = ["r: Reuse", "g: Grep", "p: Patch"]
+        if self.manager.delta_count > 0:
+            action_list.append("e: Extend")
+        action_list.append("d: Deps")
+
+        actions = "   ".join(action_list)
         if self.session.is_active:
             actions += "   u: Update Session   f: Finish Task"
         else:
@@ -370,14 +380,6 @@ q: Quit and finalize"""
 
     def _get_status_bar(self) -> str:
         """Create status bar with selection info"""
-        # Count selections
-        full_count = sum(
-            1 for _, (is_snippet, _) in self.selected_files.items() if not is_snippet
-        )
-        snippet_count = sum(
-            1 for _, (is_snippet, _) in self.selected_files.items() if is_snippet
-        )
-
         # Current item info
         if self.visible_nodes and 0 <= self.current_index < len(self.visible_nodes):
             current = self.visible_nodes[self.current_index]
@@ -387,7 +389,7 @@ q: Quit and finalize"""
 
         session_indicator = "[bold green]SESSION ON[/bold green]" if self.session.is_active else "[dim]Session Off[/dim]"
 
-        selection_info = f"[dim]Selected:[/dim] {full_count} full, {snippet_count} snippets | ~{self.char_count:,} chars (~{estimate_tokens(self.char_count):,} tokens)"
+        selection_info = f"[dim]Selected:[/dim] {self.manager.delta_count} delta, {self.manager.base_count} base | ~{self.manager.char_count:,} chars (~{estimate_tokens(self.manager.char_count):,} tokens)"
 
         return f"\n{current_info} | {selection_info} | {session_indicator}\n"
 
@@ -409,8 +411,8 @@ q: Quit and finalize"""
             return
 
         # Show results and let user select
-        selected_files, new_char_count = select_from_grep_results(
-            grep_results, self.char_count
+        selected_files, _ = select_from_grep_results(
+            grep_results, self.manager.char_count
         )
 
         # Add selected files
@@ -420,13 +422,11 @@ q: Quit and finalize"""
             abs_path = os.path.abspath(file_path)
 
             # Check if already selected
-            if abs_path not in self.selected_files:
-                self.selected_files[abs_path] = (is_snippet, chunks)
+            if self.manager.get_state(abs_path) == FileState.UNSELECTED:
+                self.manager.set_state(abs_path, FileState.DELTA, is_snippet=is_snippet, chunks=chunks)
                 added_count += 1
                 # Ensure the file is visible in the tree
                 self._ensure_path_visible(abs_path)
-
-        self.char_count = new_char_count
 
         # Show summary of what was added
         if added_count > 0:
@@ -465,18 +465,92 @@ q: Quit and finalize"""
                 return
 
             patches = parse_llm_output(content, self.console)
-            apply_patches(patches)
+            if patches:
+                modified_files = apply_patches(patches)
+                
+                # Promote patched files to Delta and everything else to Base
+                self.manager.promote_all_to_base()
+                for path in modified_files:
+                    self.manager.mark_as_delta(path)
 
-            # --- Auto-Commit Logic ---
-            if self.session.is_active:
-                self.session.auto_commit()
+                # --- Auto-Commit Logic ---
+                if self.session.is_active:
+                    self.session.auto_commit()
 
-            self.console.print(
-                "\n[bold]Review the changes above with `git diff` before committing.[/bold]"
-            )
+                self.console.print(
+                    "\n[bold]Review the changes above with `git diff` before committing.[/bold]"
+                )
+                return
 
+            # --- No patches found: Fallback to Path Scanning (Intelligent Import) ---
+            all_paths = self._get_all_unignored_files()
+            found_paths = find_paths_in_text(content, all_paths)
+
+            if found_paths:
+                self.console.print(f"\n[bold cyan]🔍 Found {len(found_paths)} project paths in text.[/bold cyan]")
+                for p in sorted(found_paths)[:10]:
+                    self.console.print(f"  • {p}")
+                if len(found_paths) > 10:
+                    self.console.print(f"  ... and {len(found_paths)-10} more.")
+
+                choice = click.prompt(
+                    "\n[A]ppend to current selection, [R]eplace selection, or [C]ancel?",
+                    type=click.Choice(['a', 'r', 'c'], case_sensitive=False),
+                    default='a'
+                )
+
+                if choice == 'c':
+                    return
+                if choice == 'r':
+                    self.manager.clear_all()
+
+                for path in found_paths:
+                    abs_p = os.path.abspath(path)
+                    self._ensure_path_visible(abs_p)
+                    self.manager.set_state(abs_p, FileState.DELTA)
+                
+                self.console.print(f"\n[green]Successfully added {len(found_paths)} files to Delta focus.[/green]")
+            else:
+                self.console.print("\n[yellow]No patches or valid project paths detected in pasted content.[/yellow]")
         except KeyboardInterrupt:
             self.console.print("\n[red]Patch application cancelled.[/red]")
+
+    def _get_all_unignored_files(self) -> List[str]:
+        """Walks the project to find all non-binary, non-ignored files for path scanning."""
+        all_files = []
+        for root, dirs, files in os.walk(self.project_root_abs):
+            dirs[:] = [d for d in dirs if not is_ignored(os.path.join(root, d), self.ignore_patterns, self.project_root_abs)]
+            for f in files:
+                full_path = os.path.join(root, f)
+                if not is_ignored(full_path, self.ignore_patterns, self.project_root_abs) and not is_binary(full_path):
+                    all_files.append(os.path.relpath(full_path, self.project_root_abs))
+        return all_files
+
+    def _action_extend(self):
+        """
+        Handles the 'e' key: Generates a minimal prompt with only Delta files,
+        copies to clipboard, and promotes Delta -> Base.
+        """
+        delta_files = self.manager.get_delta_files()
+        
+        if not delta_files:
+            return
+
+        # Generate minimal prompt
+        prompt_text = generate_extension_prompt(delta_files, {})
+        
+        try:
+            pyperclip.copy(prompt_text)
+            self.console.print(f"\n[green]📋 Extended context ({len(delta_files)} files) copied to clipboard![/green]")
+            
+            # Transition Delta to Base
+            self.manager.promote_delta_to_base()
+            self.console.print("[dim]Selected files moved from Green (Delta) to Cyan (Base).[/dim]")
+            
+        except pyperclip.PyperclipException:
+            self.console.print("\n[red]Failed to copy to clipboard.[/red]")
+            
+        click.pause("Press any key to return...")
 
     def _handle_session_update(self):
         """Handles 'u' key: Updates AI_SESSION.md (Handover/Checkpoint)."""
@@ -595,26 +669,13 @@ q: Quit and finalize"""
             self._toggle_directory(node)
         else:
             abs_path = os.path.abspath(node.path)
-            # For files, toggle individual selection
-            if abs_path in self.selected_files:
-                # Unselect
-                is_snippet, _ = self.selected_files[abs_path]
-                del self.selected_files[abs_path]
-                self.char_count -= (
-                    len(get_file_snippet(node.path)) if is_snippet else node.size
-                )
-            else:
-                # Select
-                if snippet_mode or (
-                    node.size > 102400 and not self._confirm_large_file(node)
-                ):
-                    # Use snippet
-                    self.selected_files[abs_path] = (True, None)
-                    self.char_count += len(get_file_snippet(node.path))
-                else:
-                    # Use full file
-                    self.selected_files[abs_path] = (False, None)
-                    self.char_count += node.size
+            
+            # Selection logic hook for large files
+            if self.manager.get_state(abs_path) == FileState.UNSELECTED and not snippet_mode:
+                if node.size > 102400 and not self._confirm_large_file(node):
+                    snippet_mode = True
+            
+            self.manager.toggle(abs_path, is_snippet=snippet_mode)
 
     def _toggle_directory(self, node: FileNode):
         """Toggle all files in a directory, now fully recursive."""
@@ -642,27 +703,18 @@ q: Quit and finalize"""
 
         # Check if any are unselected
         any_unselected = any(
-            os.path.abspath(f.path) not in self.selected_files for f in all_files
+            self.manager.get_state(f.path) == FileState.UNSELECTED for f in all_files
         )
 
         if any_unselected:
             # Select all unselected files
             for file_node in all_files:
-                abs_path = os.path.abspath(file_node.path)
-                if abs_path not in self.selected_files:
-                    self.selected_files[abs_path] = (False, None)
-                    self.char_count += file_node.size
+                if self.manager.get_state(file_node.path) == FileState.UNSELECTED:
+                    self.manager.set_state(file_node.path, FileState.DELTA)
         else:
             # Unselect all files
             for file_node in all_files:
-                abs_path = os.path.abspath(file_node.path)
-                if abs_path in self.selected_files:
-                    is_snippet, _ = self.selected_files[abs_path]
-                    del self.selected_files[abs_path]
-                    if is_snippet:
-                        self.char_count -= len(get_file_snippet(file_node.path))
-                    else:
-                        self.char_count -= file_node.size
+                self.manager.set_state(file_node.path, FileState.UNSELECTED)
 
     def _propose_and_apply_last_selection(self):
         """Loads paths from cache, shows a confirmation dialog, and applies the selection if confirmed."""
@@ -690,7 +742,8 @@ q: Quit and finalize"""
                 files_not_found.append(rel_path)
                 continue
 
-            if abs_path in self.selected_files:
+            state = self.manager.get_state(abs_path)
+            if state != FileState.UNSELECTED:
                 files_already_selected.append(rel_path)
             else:
                 files_to_add.append(rel_path)
@@ -746,10 +799,8 @@ q: Quit and finalize"""
         # If confirmed, apply the changes
         for rel_path in files_to_add:
             abs_path = os.path.abspath(rel_path)
-            if os.path.isfile(abs_path) and abs_path not in self.selected_files:
-                file_size = os.path.getsize(abs_path)
-                self.selected_files[abs_path] = (False, None)
-                self.char_count += file_size
+            if os.path.isfile(abs_path) and self.manager.get_state(abs_path) == FileState.UNSELECTED:
+                self.manager.set_state(abs_path, FileState.DELTA)
                 self._ensure_path_visible(abs_path)
 
     def _ensure_path_visible(self, file_path: str):
@@ -812,21 +863,12 @@ q: Quit and finalize"""
         self.console.print(f"\nAnalyzing dependencies for {node.relative_path}...")
 
         # Create a temporary files list for the dependency analyzer
-        files_list = [
-            (path, is_snippet, chunks, get_language_for_file(path))
-            for path, (is_snippet, chunks) in self.selected_files.items()
-        ]
+        files_list = self.manager.get_selected_files()
 
         # Use imported function from ops
-        new_deps, deps_char_count = propose_and_add_dependencies(
-            node.path, self.project_root_abs, files_list, self.char_count
+        new_deps, _ = propose_and_add_dependencies(
+            node.path, self.project_root_abs, files_list, self.manager.char_count
         )
-
-        # Add new dependencies to our selection
-        for dep_path, is_snippet, chunks, _ in new_deps:
-            self.selected_files[dep_path] = (is_snippet, chunks)
-
-        self.char_count += deps_char_count
 
     def _preselect_files(self, files_to_preselect: List[str]):
         """Pre-selects a list of files passed from the command line."""
@@ -836,17 +878,13 @@ q: Quit and finalize"""
         added_count = 0
         for file_path in files_to_preselect:
             abs_path = os.path.abspath(file_path)
-            if abs_path in self.selected_files:
+            if self.manager.get_state(abs_path) != FileState.UNSELECTED:
                 continue
 
             # This check is simpler than a full tree walk and sufficient here
             if os.path.isfile(abs_path) and not is_binary(abs_path):
-                file_size = os.path.getsize(abs_path)
-                self.selected_files[abs_path] = (
-                    False,
-                    None,
-                )  # (is_snippet=False, chunks=None)
-                self.char_count += file_size
+                # Files coming from CLI/Cache are 'BASE' (already known to LLM/User)
+                self.manager.set_state(abs_path, FileState.BASE)
                 added_count += 1
                 self._ensure_path_visible(abs_path)
 
@@ -878,8 +916,10 @@ q: Quit and finalize"""
         bind(["r"], self._propose_and_apply_last_selection)
         bind(["g"], self._action_grep)
         bind(["p"], self._action_patch)
+        bind(["e"], self._action_extend)
         bind(["d"], self._action_deps)
         bind(["n"], self._action_session_start)
+        bind(["c"], self._action_clear_base)
         bind(["u"], self._handle_session_update)
         bind(["f"], self._handle_task_completion)
         
@@ -973,6 +1013,9 @@ q: Quit and finalize"""
             self._show_dependencies(node)
             click.pause("Press any key to continue...")
 
+    def _action_clear_base(self):
+        self.manager.clear_base()
+
     def _action_session_start(self):
         # Pre-check for gitignore to be interactive
         from kopipasta.git_utils import check_session_gitignore_status, add_to_gitignore
@@ -990,6 +1033,9 @@ q: Quit and finalize"""
         click.pause("Press any key to continue...")
 
     def _action_quit(self):
+        # Before quitting, promote all Delta to Base
+        # to mark them as "processed" for the clipboard output turn.
+        self.manager.promote_all_to_base()
         self.quit_selection = True
 
     def _action_interrupt(self):
@@ -1034,12 +1080,5 @@ q: Quit and finalize"""
         self.console.clear()
 
         # Convert selections to FileTuple format
-        files_to_include = []
-        for abs_path, (is_snippet, chunks) in self.selected_files.items():
-            # Convert back to relative path for the output
-            rel_path = os.path.relpath(abs_path)
-            files_to_include.append(
-                (rel_path, is_snippet, chunks, get_language_for_file(abs_path))
-            )
-
-        return files_to_include, self.char_count
+        files_to_include = self.manager.get_selected_files()
+        return files_to_include, self.manager.char_count

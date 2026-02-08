@@ -11,11 +11,26 @@ This project strictly adheres to the **"Quad-Memory" Architecture** to manage co
 
 ## 2. Technical Contracts
 
+### Technical Contracts
+
+### Context State Model
+Selection is managed via a three-state engine to distinguish between background context and active focus:
+*   **Unselected**: File is not included in the prompt.
+*   **Base (Cyan)**: "Synced" context. Files the LLM has already seen in previous turns.
+*   **Delta (Green)**: "Active Focus." Newly selected files, modified files (after a patch), or files identified via Intelligent Import.
+*   **Transitions**:
+    - `Space` cycle: `Unselected` -> `Delta` -> `Unselected`. If `Base`, toggles to `Delta`.
+    - **Promotion**: Files transition `Delta` -> `Base` during "Extend Context" (`e`), "Patch" (`p`), or "Quit" (`q`) to mark them as synced for the next turn.
+
+### Intelligent Import (Universal Intake)
+The `p` (Process) command acts as a universal intake for LLM output:
+*   **Fallback**: If no code blocks (patches) are detected, the tool must regex-scan the text for valid project paths.
+*   **Normalization**: All path matching must be cross-platform. Normalize both the source text and local project paths to forward slashes (`/`) during scanning to ensure compatibility between LLM output and local OS (Windows/POSIX) path separators.
+*   **Visibility**: When a path is imported, the UI must ensure the path is visible in the tree (auto-expand parents).
+
 ### Session Metadata
 *   `AI_SESSION.md` **must** store session metadata in a hidden HTML comment on the first line:
     `<!-- KOPIPASTA_METADATA {"start_commit": "hash", "timestamp": "iso8601"} -->`
-*   This metadata is used for squashing commits upon task completion.
-
 ### Git Operations
 *   **Session Exclusion**: `AI_SESSION.md` is strictly ephemeral. Git operations (add/commit) must ensure it is never committed.
 *   **Pathspec Safety**: When programmatic git commands exclude files (e.g., `git add . :!AI_SESSION.md`), code must first verify the file is NOT already ignored by `.gitignore`. Git throws errors if you try to exclude a path that is already ignored.
@@ -26,10 +41,6 @@ This project strictly adheres to the **"Quad-Memory" Architecture** to manage co
     1.  The target file is non-trivial (> 200 chars) and the new content shrinks it by > 50%.
     2.  The content contains diff markers (e.g., `@@ ... @@`), indicating a parsing failure of a diff block.
 
-    1.  The target file is non-trivial (> 200 chars) and the new content shrinks it by > 50%.
-    2.  The content contains diff markers (e.g., `@@ ... @@`), indicating a parsing failure of a diff block.
-### Patcher: Header Resolution
-*   **Block Boundary Safety**: `_find_header_context` lookback must NEVER cross into a previous code block's content. The parser tracks `last_block_end_idx` to enforce this boundary.
 *   **Header Precedence**: Explicit `# FILE:` headers (inside block content) override non-explicit markdown headers (`### path/file.ext`) found via lookback. The parser distinguishes these via a `(path, is_explicit)` tuple from `_find_header_context`.
 *   **Empty Patch Prevention**: When a markdown header provides `initial_path` but an explicit `# FILE:` inside the block overrides it, the parser must NOT finalize an empty patch for the markdown header's path. Instead, it skips finalization when `initial_is_explicit=False` and `current_lines` is empty.
 *   **Lookback Blank Line Handling**: The blank-line skip in `_find_header_context` must `continue` after decrementing `k`, or it double-decrements and skips the actual header line.

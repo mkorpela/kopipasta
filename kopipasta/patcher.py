@@ -292,6 +292,29 @@ def parse_llm_output(content: str, console: Console = None) -> List[Patch]:
     return parser.parse()
 
 
+def find_paths_in_text(text: str, valid_paths: List[str]) -> List[str]:
+    """
+    Scans text for occurrences of valid project paths.
+    Returns a list of matching relative paths.
+    """
+    found = []
+    # Normalize input text slashes for cross-platform matching
+    normalized_text = text.replace('\\', '/')
+
+    # Sort by length descending to prevent sub-path shadowing
+    sorted_paths = sorted(valid_paths, key=len, reverse=True)
+    
+    for path in sorted_paths:
+        # Normalize the project path to forward slashes for the search
+        search_path = path.replace('\\', '/')
+        
+        # Match path surrounded by quotes, whitespace, or delimiters
+        pattern = re.compile(rf'(?:^|[\s"\'`\(\)\[\]])({re.escape(search_path)})(?:$|[\s"\'`\(\)\[\]])')
+        if pattern.search(normalized_text):
+            found.append(path)
+    return found
+
+
 def _parse_diff_hunks(diff_content: str) -> List[Hunk]:
     """Parses the content of a diff block into a list of Hunks."""
     hunks: List[Hunk] = []
@@ -599,17 +622,19 @@ def _apply_diff_patch(
     return True
 
 
-def apply_patches(patches: List[Patch]) -> None:
+def apply_patches(patches: List[Patch]) -> List[str]:
     """
     Applies a list of patches to the filesystem.
     Dispatches between full-file replacement and diff-based patching.
+    Returns a list of file paths that were successfully modified.
     """
     console = Console()
+    modified_files = []
     if not patches:
         console.print(
             "[yellow]No valid file patches found in the pasted content.[/yellow]"
         )
-        return
+        return []
 
     console.print(f"\n[bold]Applying {len(patches)} patch(es)...[/bold]")
     for patch in patches:
@@ -624,6 +649,7 @@ def apply_patches(patches: List[Patch]) -> None:
                     if click.confirm(f"🗑️  Delete {file_path}?", default=False):
                         try:
                             os.remove(file_path)
+                            modified_files.append(file_path)
                             console.print(f"✅ Deleted [red]{file_path}[/red]")
                         except OSError as e:
                             console.print(f"❌ [bold red]Failed to delete {file_path}: {e}[/bold red]")
@@ -648,6 +674,7 @@ def apply_patches(patches: List[Patch]) -> None:
                     os.makedirs(parent_dir, exist_ok=True)
                 with open(file_path, "w", encoding="utf-8") as f:
                     f.write(full_content)
+                modified_files.append(file_path)
                 console.print(f"✅ Created [green]{file_path}[/green]")
                 continue
 
@@ -656,7 +683,8 @@ def apply_patches(patches: List[Patch]) -> None:
                 original_content = f.read()
 
             if patch_type == "diff":
-                _apply_diff_patch(file_path, original_content, patch_content, console)
+                if _apply_diff_patch(file_path, original_content, patch_content, console):
+                    modified_files.append(file_path)
 
             else:  # 'full'
                 # For non-diff blocks, we treat them as full file overwrites.
@@ -690,7 +718,10 @@ def apply_patches(patches: List[Patch]) -> None:
                 with open(file_path, "w", encoding="utf-8") as f:
                     f.write(final_content)
 
+                modified_files.append(file_path)
                 console.print(f"✅ Overwrote [green]{file_path}[/green] (Full Content)")
 
         except Exception as e:
             console.print(f"❌ [bold red]Error processing {file_path}: {e}[/bold red]")
+
+    return modified_files

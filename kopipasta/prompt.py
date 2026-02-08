@@ -91,6 +91,15 @@ If you realize you made a mistake earlier in your response, output `<<<RESET>>>`
 3. **Verify**: Suggest a command to test the changes.
 """
 
+EXTENSION_TEMPLATE = """Here are the additional files you requested:
+
+{% for file in files -%}
+# FILE: {{ file.path }}{{ file.description }}
+```{{ file.language }}
+{{ file.content }}
+```
+{% endfor -%}"""
+
 
 def _get_config_dir() -> Path:
     """Returns the configuration directory, creating it if necessary."""
@@ -442,6 +451,43 @@ def generate_prompt_template(
         rendered = rendered.replace(unique_render_marker, "", 1)
 
     return rendered, cursor_position
+
+
+def generate_extension_prompt(
+    files_to_include: List[FileTuple], 
+    env_vars: Dict[str, str]
+) -> str:
+    """
+    Generates a minimal prompt containing only file content blocks.
+    Used for the 'Extend Context' follow-up flow.
+    """
+    env_decisions = {}
+    processed_files = []
+    
+    for file, use_snippet, chunks, content_type in files_to_include:
+        relative_path = os.path.relpath(file)
+        language = content_type if content_type else get_language_for_file(file)
+        description = ""
+        
+        if chunks is not None:
+            description = " (selected patches)"
+            content = "\n".join(chunks)
+        elif use_snippet:
+            description = " (snippet)"
+            content = get_file_snippet(file)
+        else:
+            raw_content = read_file_contents(file)
+            content = handle_env_variables(raw_content, env_vars, env_decisions)
+
+        processed_files.append({
+            "path": relative_path,
+            "description": description,
+            "language": language,
+            "content": content
+        })
+
+    template = Template(EXTENSION_TEMPLATE, keep_trailing_newline=True)
+    return template.render(files=processed_files)
 
 
 def get_task_from_user_interactive(console: Console, default_text: str = "") -> str:

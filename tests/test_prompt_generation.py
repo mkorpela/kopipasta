@@ -105,3 +105,26 @@ def test_generate_prompt_template_regression(
     
     assert before_cursor.endswith("## Task Instructions\n\n")
     assert after_cursor.startswith("\n\n## Instructions for Achieving the Task")
+
+def test_generate_extension_prompt(tmp_path):
+    import os
+    from kopipasta.prompt import generate_extension_prompt
+    
+    f1 = tmp_path / "new_logic.py"
+    f1.write_text("def added(): pass")
+    
+    # FileTuple: (path, is_snippet, chunks, content_type)
+    files = [(str(f1), False, None, "python")]
+    
+    # Change CWD to tmp_path so relpath returns expected short name
+    old_cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        prompt = generate_extension_prompt(files, {})
+    finally:
+        os.chdir(old_cwd)
+    
+    assert "Here are the additional files you requested:" in prompt
+    assert "# FILE: new_logic.py" in prompt
+    assert "def added(): pass" in prompt
+    assert "```python" in prompt

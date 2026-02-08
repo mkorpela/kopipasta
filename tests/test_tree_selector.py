@@ -4,7 +4,7 @@ from pathlib import Path
 from rich.text import Text
 from kopipasta.file import get_human_readable_size
 from kopipasta.tree_selector import FileNode, TreeSelector
-
+from kopipasta.selection import FileState
 
 @pytest.fixture
 def mock_project(tmp_path: Path) -> Path:
@@ -46,17 +46,18 @@ def test_preselects_files_from_command_line(mock_project: Path):
     selector._preselect_files(files_to_preselect)
 
     # Assertions
-    assert len(selector.selected_files) == 2
-    assert main_py_abs in selector.selected_files
-    assert component_js_abs in selector.selected_files
+    selected = selector.manager.get_selected_files()
+    assert len(selected) == 2
+    assert selector.manager.get_state(main_py_abs) == FileState.BASE
+    assert selector.manager.get_state(component_js_abs) == FileState.BASE
 
-    assert not selector.selected_files[main_py_abs][0]
-    assert not selector.selected_files[component_js_abs][0]
+    assert not selector.manager.is_snippet(main_py_abs)
+    assert not selector.manager.is_snippet(component_js_abs)
 
     expected_char_count = os.path.getsize(main_py_abs) + os.path.getsize(
         component_js_abs
     )
-    assert selector.char_count == expected_char_count
+    assert selector.manager.char_count == expected_char_count
 
 
 def test_directory_label_shows_recursive_size_metrics(mock_project: Path):
@@ -76,10 +77,8 @@ def test_directory_label_shows_recursive_size_metrics(mock_project: Path):
     # Pre-select 'main.py' (at root) and 'helpers.py' (nested in src/utils)
     main_py_abs = os.path.abspath("main.py")
     helpers_py_abs = os.path.abspath("src/utils/helpers.py")
-    selector.selected_files = {
-        main_py_abs: (False, None),
-        helpers_py_abs: (False, None),
-    }
+    selector.manager.set_state(main_py_abs, FileState.DELTA)
+    selector.manager.set_state(helpers_py_abs, FileState.DELTA)
 
     # Generate the visible nodes and their labels for testing
     flat_tree = selector._flatten_tree(selector.root)

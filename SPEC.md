@@ -1,6 +1,6 @@
 # Specification: Kopipasta Smart Context (v0.6.0)
 
-**Status:** In Progress
+**Status:** Integrated
 **Core Philosophy:**
 
 1. **State-Awareness:** Distinguish between **Base** (Background/Synced) and **Delta** (Focus/Unsynced) context.
@@ -37,18 +37,12 @@
 
 1. **Reset Scan:** `<<<RESET>>>` logic is active.
 2. **Patch Scan:** Patch application and `<<<DELETE>>>` logic are active.
-
-**Next Logic (Path Scanning):**
 3. **Path Scan:** If *no* patches are found, regex-scan for file paths in the pasted text.
-* **If Paths Found:**
-* **Prompt:** `Found X paths. [A]ppend to current or [R]eplace selection?`
-* **Action (Append):** Add files to **Delta**.
-* **Action (Replace):** Clear *all* selection, then add files to **Delta**.
-* **Action (Replace):** Clear *all* selection, then add files to **Delta**.
-
-
-
-
+    - **If Paths Found:**
+        - **Prompt:** `Found X paths. [A]ppend to current or [R]eplace selection?`
+        - **Action (Append):** Add files to **Delta**.
+        - **Action (Replace):** Clear *all* selection, then add files to **Delta**.
+        - **Promotion:** Imported files transition to **Delta** (Green).
 
 ### Feature 2: Extend Context (`e`)
 

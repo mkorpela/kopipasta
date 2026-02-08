@@ -3,9 +3,12 @@
 [![Version](https://img.shields.io/pypi/v/kopipasta.svg)](https://pypi.python.org/pypi/kopipasta)
 [![Downloads](http://pepy.tech/badge/kopipasta)](http://pepy.tech/project/kopipasta)
 
-**kopipasta bridges the gap between your local file system and LLM context windows.**
+`cat project | LLM | patch` and repeat.
 
-A CLI tool for taking **full, transparent control** of your prompt. No black boxes.
+> "Finally, a tool that realizes my clipboard is the most important part of my AI workflow."
+> — **Nobody**
+
+`kopipasta` is a CLI tool for taking **full, transparent control** of your prompt context. No black boxes, no hidden RAG, no "magic" that breaks your build.
 
 ```text
 ➜  ~ kopipasta
@@ -14,9 +17,10 @@ A CLI tool for taking **full, transparent control** of your prompt. No black box
   |-- 📂 src/
   |   |-- ● 📄 main.py (4.2 KB)
   |   |-- ○ 📄 utils.py (1.5 KB)
-  |-- ○ 📄 README.md (2.1 KB)
+  |-- ● 📄 AI_SESSION.md (0.8 KB)
 
-  Current: src/main.py | Selected: 1 full | ~4,200 chars
+  [j/k]: Nav  [Space]: Toggle  [p]: Patch  [e]: Extend  [q]: Copy & Quit
+  Context: 2 files | ~5,000 chars | ~1,400 tokens
 ```
 
 ## You Control the Context

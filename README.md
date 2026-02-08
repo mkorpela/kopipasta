@@ -25,18 +25,14 @@
 
 ## You Control the Context
 
-Many AI coding assistants automatically find what *they think* is relevant context. This is a black box. When the LLM gives a bad answer, you can't debug it because you don't know what context it was actually given.
-
-**`kopipasta` is the opposite.** I built it on the principle of **explicit context control**. You are in the driver's seat. You decide *exactly* what files, functions, and snippets go into the prompt.
-
-It's a "smart copy" command for your project, not a magic wand.
+I built **`kopipasta`** on the principle of **explicit context control**. You are in the driver's seat. You decide *exactly* what files, functions, and snippets go into the prompt.
 
 ## How It Works
 
 The workflow is a fast, iterative cycle:
 
 1.  **Context:** Run `kopipasta` to select files and define your task.
-2.  **Generate:** Paste the prompt into your LLM (ChatGPT, Claude, etc.).
+2.  **Generate:** Paste the prompt into your LLM (ChatGPT, Claude, Gemini etc.).
 3.  **Patch:** Press `p` in `kopipasta` and paste the LLM's response to apply changes or import new files.
 4.  **Iterate:** Review with `git diff`, then repeat for the next step.
 

@@ -176,7 +176,9 @@ def read_fix_command(project_root: str) -> str:
             # (git bash / sh). Check the shebang or just invoke via sh.
             git_sh = shutil.which("sh") or shutil.which("bash")
             if git_sh:
-                return f"{git_sh} {hook_path}"
+                # Normalize path to forward slashes for Git Bash compatibility
+                normalized_hook = hook_path.replace('\\', '/')
+                return f'"{git_sh}" "{normalized_hook}"'
         else:
             # POSIX: just needs to be executable
             if os.access(hook_path, os.X_OK):

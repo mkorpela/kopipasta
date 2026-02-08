@@ -120,10 +120,29 @@ class TestReadFixCommand:
         assert read_fix_command(str(tmp_path)) == "cargo clippy"
 
 
+        assert read_fix_command(str(tmp_path)) == "cargo clippy"
+    @pytest.mark.skipif(platform.system() != "Windows", reason="Windows-only path normalization test")
+    def test_windows_hook_path_normalization(self, tmp_path):
+        """
+        Tier 2 (Windows): Verifies that backslashes in hook paths are normalized
+        to forward slashes to prevent bash escape sequence issues.
+        """
+        hooks_dir = tmp_path / ".git" / "hooks"
+        hooks_dir.mkdir(parents=True)
+        hook = hooks_dir / "pre-commit"
+        hook.write_text("#!/bin/sh\necho 'hook'\n")
+
+        with patch("shutil.which", return_value="C:\\Program Files\\Git\\bin\\sh.exe"):
+            result = read_fix_command(str(tmp_path))
+            
+            # Path should be normalized to forward slashes
+            assert "/" in result
+            assert "\\" not in result or result.count("\\") == result.count(":\\")  # Only drive letter backslash allowed
+            assert '"C:\\Program Files\\Git\\bin\\sh.exe"' in result or '"C:/Program Files/Git/bin/sh.exe"' in result
+
 # ============================================================
 # 2. generate_fix_prompt — Prompt Assembly
 # ============================================================
-
 
 class TestGenerateFixPrompt:
     """Tests the fix prompt template rendering."""

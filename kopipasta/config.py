@@ -171,18 +171,9 @@ def read_fix_command(project_root: str) -> str:
     # 2. Check for git pre-commit hook
     hook_path = os.path.join(project_root, ".git", "hooks", "pre-commit")
     if os.path.exists(hook_path):
-        if platform.system() == "Windows":
-            # On Windows, hooks need to be invoked through the shell
-            # (git bash / sh). Check the shebang or just invoke via sh.
-            git_sh = shutil.which("sh") or shutil.which("bash")
-            if git_sh:
-                # Normalize path to forward slashes for Git Bash compatibility
-                normalized_hook = hook_path.replace('\\', '/')
-                return f'"{git_sh}" "{normalized_hook}"'
-        else:
-            # POSIX: just needs to be executable
-            if os.access(hook_path, os.X_OK):
-                return hook_path
+        # Use git's built-in hook runner (Git 2.36+)
+        # This works cross-platform and respects hook configuration
+        return "git hook run pre-commit"
 
     # 3. Universal fallback
     return "git diff --check HEAD"

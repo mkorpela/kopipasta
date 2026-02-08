@@ -59,39 +59,36 @@ class TestReadFixCommand:
 
     @pytest.mark.skipif(platform.system() == "Windows", reason="POSIX executable check")
     def test_falls_back_to_pre_commit_hook_posix(self, tmp_path):
-        """Tier 2 (POSIX): Detects executable .git/hooks/pre-commit."""
+        """Tier 2 (POSIX): Detects .git/hooks/pre-commit and uses git hook run."""
         hooks_dir = tmp_path / ".git" / "hooks"
         hooks_dir.mkdir(parents=True)
         hook = hooks_dir / "pre-commit"
         hook.write_text("#!/bin/sh\necho 'hook'\n")
-        hook.chmod(hook.stat().st_mode | stat.S_IEXEC)
 
         result = read_fix_command(str(tmp_path))
-        assert result == str(hook)
+        assert result == "git hook run pre-commit"
 
     @pytest.mark.skipif(platform.system() == "Windows", reason="POSIX executable check")
     def test_skips_non_executable_hook_posix(self, tmp_path):
-        """Tier 2 (POSIX): Non-executable hook is skipped, falls to tier 3."""
+        """Tier 2 (All platforms): Hook existence check (git handles executability)."""
         hooks_dir = tmp_path / ".git" / "hooks"
         hooks_dir.mkdir(parents=True)
         hook = hooks_dir / "pre-commit"
         hook.write_text("#!/bin/sh\necho 'hook'\n")
-        # Explicitly remove execute bit
-        hook.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
-        assert read_fix_command(str(tmp_path)) == "git diff --check HEAD"
+        # Git will handle whether the hook is executable or not
+        assert read_fix_command(str(tmp_path)) == "git hook run pre-commit"
 
     @pytest.mark.skipif(platform.system() != "Windows", reason="Windows-only hook test")
     def test_falls_back_to_pre_commit_hook_windows(self, tmp_path):
-        """Tier 2 (Windows): Invokes hook through sh/bash if available."""
+        """Tier 2 (Windows): Uses git hook run like other platforms."""
         hooks_dir = tmp_path / ".git" / "hooks"
         hooks_dir.mkdir(parents=True)
         hook = hooks_dir / "pre-commit"
         hook.write_text("#!/bin/sh\necho 'hook'\n")
 
-        with patch("shutil.which", return_value="/usr/bin/sh"):
-            result = read_fix_command(str(tmp_path))
-            assert result == f"/usr/bin/sh {hook}"
+        result = read_fix_command(str(tmp_path))
+        assert result == "git hook run pre-commit"
 
     def test_falls_back_to_git_diff_check(self, tmp_path):
         """Tier 3: No AI_CONTEXT.md, no hook → universal fallback."""
@@ -119,26 +116,6 @@ class TestReadFixCommand:
 
         assert read_fix_command(str(tmp_path)) == "cargo clippy"
 
-
-        assert read_fix_command(str(tmp_path)) == "cargo clippy"
-    @pytest.mark.skipif(platform.system() != "Windows", reason="Windows-only path normalization test")
-    def test_windows_hook_path_normalization(self, tmp_path):
-        """
-        Tier 2 (Windows): Verifies that backslashes in hook paths are normalized
-        to forward slashes to prevent bash escape sequence issues.
-        """
-        hooks_dir = tmp_path / ".git" / "hooks"
-        hooks_dir.mkdir(parents=True)
-        hook = hooks_dir / "pre-commit"
-        hook.write_text("#!/bin/sh\necho 'hook'\n")
-
-        with patch("shutil.which", return_value="C:\\Program Files\\Git\\bin\\sh.exe"):
-            result = read_fix_command(str(tmp_path))
-            
-            # Path should be normalized to forward slashes
-            assert "/" in result
-            assert "\\" not in result or result.count("\\") == result.count(":\\")  # Only drive letter backslash allowed
-            assert '"C:\\Program Files\\Git\\bin\\sh.exe"' in result or '"C:/Program Files/Git/bin/sh.exe"' in result
 
 # ============================================================
 # 2. generate_fix_prompt — Prompt Assembly

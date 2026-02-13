@@ -59,8 +59,6 @@ def test_repro_duplicate_context_ambiguity(repro_dir, capsys):
     expected_block_1 = "// Generic Start\n  </TableBody>\n</Table>"
     assert expected_block_1 in result
 
-    # Block 2 should have the insert
-    expected_block_2 = "// Generic Middle\n  </TableBody>\n  <NewElement />\n</Table>"
     # We strip whitespace for the assertion just to be safe about indentation matching
     assert "<NewElement />" in result
 

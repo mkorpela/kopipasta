@@ -286,9 +286,8 @@ class PatchParser:
         if not self.console:
             return
 
-        preview = "\n".join(lines[:2]).strip()
         hint = ""
-        if "FILE:" in info_string or any("FILE:" in l for l in lines[:2]):
+        if "FILE:" in info_string or any("FILE:" in line for line in lines[:2]):
             hint = " (Check comment syntax?)"
         elif "filename" in info_string.lower():
             hint = " (Use 'FILE:' instead of 'filename')"

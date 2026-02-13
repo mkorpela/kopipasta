@@ -97,10 +97,6 @@ def test_directory_label_shows_recursive_size_metrics(mock_project: Path):
             return label.plain
         return ""  # We only care about directory labels for this test
 
-    # Find the nodes we want to test
-    root_node_proxy = visible_nodes[
-        0
-    ]  # This will be 'src' since we built tree from '.'
     utils_node = next(n for n in visible_nodes if n.name == "utils")
 
     # Test the 'src' directory label

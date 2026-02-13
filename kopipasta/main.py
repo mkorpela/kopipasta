@@ -40,6 +40,7 @@ from kopipasta.cache import (
     load_task_from_cache,
     save_task_to_cache,
 )
+from kopipasta.logger import configure_logging, get_logger
 
 
 def get_colored_code(file_path, code):
@@ -77,6 +78,9 @@ def fetch_web_content(
 
 class KopipastaApp:
     def __init__(self):
+        # Initialize logging as early as possible
+        configure_logging()
+        self.logger = get_logger()
         self.console = Console()
         self.args = None
 
@@ -99,25 +103,34 @@ class KopipastaApp:
         self.session_path = os.path.join(self.project_root_abs, "AI_SESSION.md")
         self.is_ongoing_session = False
 
+        self.logger.info("app_started", cwd=self.project_root_abs)
+
     def run(self):
         """Main lifecycle of the application."""
-        self._configure_platform()
-        self._parse_args()
+        try:
+            self._configure_platform()
+            self._parse_args()
 
-        if self._handle_utility_commands():
-            return
+            if self._handle_utility_commands():
+                return
 
-        self._load_configuration()
-        self._load_session_state()
-        self._process_inputs()
+            self._load_configuration()
+            self._load_session_state()
+            self._process_inputs()
 
-        self._run_interactive_selection()
+            self._run_interactive_selection()
 
-        if not self.files_to_include and not self.web_contents:
-            print("No files or web content were selected. Exiting.")
-            return
+            if not self.files_to_include and not self.web_contents:
+                print("No files or web content were selected. Exiting.")
+                self.logger.info("app_exit_no_selection")
+                return
 
-        self._finalize_and_output()
+            self._finalize_and_output()
+        except Exception as e:
+            self.logger.exception("app_crash", error=str(e))
+            raise
+        finally:
+            self.logger.info("app_exit")
 
     def _configure_platform(self):
         """Platform-specific setup."""
@@ -322,6 +335,8 @@ class KopipastaApp:
 
         # Output
         self._print_and_copy(final_prompt)
+
+        self.logger.info("prompt_generated", char_count=len(final_prompt))
 
     def _deduplicate_memory_files(self):
         """

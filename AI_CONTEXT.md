@@ -65,6 +65,12 @@ The `p` (Process) command acts as a universal intake for LLM output:
 *   **Typing**: Strict type hints (`mypy` compliant) are mandatory for all function signatures.
 *   **Dependencies**: Managed via `uv` (`pyproject.toml`).
 
+### Observability & Telemetry
+*   **Structured Logging**: All significant user actions and system events must be logged using `structlog` to a local JSONL file.
+*   **Storage Location**: Logs are stored in the XDG State Home (e.g., `~/.local/state/kopipasta/events.jsonl`).
+*   **Patch Forensics**: To enable deterministic debugging of patch failures, the patcher must log the **full original content** of the target file (if it exists) and the **raw patch content** before attempting application.
+*   **Privacy**: Logs are strictly local. No data is exfiltrated.
+
 ## 3. Anti-Patterns (Do Not Do)
 *   Do not hardcode directory trees in documentation; `kopipasta` generates them dynamically in the prompt.
 *   Do not duplicate prompt instructions (e.g., "How to patch") in this file; they belong in `prompt_template.j2`.

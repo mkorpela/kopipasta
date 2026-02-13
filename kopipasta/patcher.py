@@ -5,6 +5,7 @@ from difflib import SequenceMatcher
 
 import click
 from rich.console import Console
+from structlog.stdlib import BoundLogger
 
 
 # --- Data Structures for Parsed Patches ---
@@ -658,7 +659,9 @@ def _apply_diff_patch(
     return True
 
 
-def apply_patches(patches: List[Patch]) -> List[str]:
+def apply_patches(
+    patches: List[Patch], logger: Optional[BoundLogger] = None
+) -> List[str]:
     """
     Applies a list of patches to the filesystem.
     Dispatches between full-file replacement and diff-based patching.
@@ -678,6 +681,26 @@ def apply_patches(patches: List[Patch]) -> List[str]:
         patch_type = patch["type"]
         patch_content = patch["content"]
 
+        # --- Logging Original State (Forensics) ---
+        original_content_log: Optional[str] = None
+        if os.path.exists(file_path):
+            try:
+                with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                    original_content_log = f.read()
+            except IOError:
+                original_content_log = "<IOError: Could not read original>"
+        else:
+            original_content_log = "<New File>"
+
+        if logger:
+            logger.info(
+                "patch_attempt",
+                file_path=file_path,
+                patch_type=patch_type,
+                original_content=original_content_log,
+                patch_content=patch_content,
+            )
+
         try:
             # --- Deletion Handling ---
             if patch_type == "delete":
@@ -687,16 +710,38 @@ def apply_patches(patches: List[Patch]) -> List[str]:
                             os.remove(file_path)
                             modified_files.append(file_path)
                             console.print(f"✅ Deleted [red]{file_path}[/red]")
+                            if logger:
+                                logger.info(
+                                    "patch_success",
+                                    file_path=file_path,
+                                    action="deleted",
+                                )
                         except OSError as e:
                             console.print(
                                 f"❌ [bold red]Failed to delete {file_path}: {e}[/bold red]"
                             )
+                            if logger:
+                                logger.error(
+                                    "patch_failed", file_path=file_path, error=str(e)
+                                )
                     else:
                         console.print(f"   [dim]Skipped deletion of {file_path}[/dim]")
+                        if logger:
+                            logger.info(
+                                "patch_skipped",
+                                file_path=file_path,
+                                reason="user_cancelled",
+                            )
                 else:
                     console.print(
                         f"   [yellow]File {file_path} not found, skipping delete.[/yellow]"
                     )
+                    if logger:
+                        logger.warning(
+                            "patch_skipped",
+                            file_path=file_path,
+                            reason="file_not_found",
+                        )
                 continue
 
             # If file doesn't exist, it's a simple creation.
@@ -716,6 +761,8 @@ def apply_patches(patches: List[Patch]) -> List[str]:
                     f.write(full_content)
                 modified_files.append(file_path)
                 console.print(f"✅ Created [green]{file_path}[/green]")
+                if logger:
+                    logger.info("patch_success", file_path=file_path, action="created")
                 continue
 
             # File exists, so we apply a patch.
@@ -727,6 +774,17 @@ def apply_patches(patches: List[Patch]) -> List[str]:
                     file_path, original_content, patch_content, console
                 ):
                     modified_files.append(file_path)
+                    if logger:
+                        logger.info(
+                            "patch_success", file_path=file_path, action="diff_applied"
+                        )
+                else:
+                    if logger:
+                        logger.error(
+                            "patch_failed",
+                            file_path=file_path,
+                            error="diff_application_failed",
+                        )
 
             else:  # 'full'
                 # For non-diff blocks, we treat them as full file overwrites.
@@ -771,6 +829,12 @@ def apply_patches(patches: List[Patch]) -> List[str]:
                         default=False,
                     ):
                         console.print(f"   [red]Skipped {file_path}[/red]")
+                        if logger:
+                            logger.info(
+                                "patch_skipped",
+                                file_path=file_path,
+                                reason="safety_check_declined",
+                            )
                         continue
 
                 with open(file_path, "w", encoding="utf-8") as f:
@@ -778,8 +842,14 @@ def apply_patches(patches: List[Patch]) -> List[str]:
 
                 modified_files.append(file_path)
                 console.print(f"✅ Overwrote [green]{file_path}[/green] (Full Content)")
+                if logger:
+                    logger.info(
+                        "patch_success", file_path=file_path, action="overwritten"
+                    )
 
         except Exception as e:
             console.print(f"❌ [bold red]Error processing {file_path}: {e}[/bold red]")
+            if logger:
+                logger.error("patch_failed", file_path=file_path, error=str(e))
 
     return modified_files

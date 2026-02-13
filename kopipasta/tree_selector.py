@@ -36,6 +36,7 @@ from kopipasta.session import Session, SESSION_FILENAME
 from kopipasta.patcher import find_paths_in_text
 from kopipasta.config import read_fix_command
 from kopipasta.prompt import generate_extension_prompt
+from kopipasta.logger import get_logger
 
 ALWAYS_VISIBLE_FILES = {"AI_SESSION.md", "AI_CONTEXT.md"}
 
@@ -83,6 +84,7 @@ class TreeSelector:
         self.ignore_patterns = ignore_patterns
         self.project_root_abs = project_root_abs
         self.manager = SelectionManager()
+        self.logger = get_logger()
 
         self.current_index = 0
         self.nodes: List[FileNode] = []
@@ -409,6 +411,7 @@ q: Quit and finalize"""
         if not pattern:
             return
 
+        self.logger.info("action_grep", pattern=pattern, directory=node.relative_path)
         self.console.print(f"Searching for '{pattern}' in {node.relative_path}...")
 
         grep_results = grep_files_in_directory(pattern, node.path, self.ignore_patterns)
@@ -448,6 +451,7 @@ q: Quit and finalize"""
 
     def _handle_apply_patches(self):
         """Handles the 'p' keypress to apply patches from pasted text."""
+        self.logger.info("action_p_start", mode="universal_intake")
         self.console.clear()
         self.console.print(
             Panel(
@@ -470,11 +474,13 @@ q: Quit and finalize"""
             content = sanitize_string(content)
             if not content.strip():
                 self.console.print("\n[yellow]No content pasted. Aborting.[/yellow]")
+                self.logger.info("action_p_abort", reason="empty_input")
                 return
 
             patches = parse_llm_output(content, self.console)
             if patches:
-                modified_files = apply_patches(patches)
+                self.logger.info("action_p_patches_found", count=len(patches))
+                modified_files = apply_patches(patches, logger=self.logger)
 
                 # Promote patched files to Delta and everything else to Base
                 self.manager.promote_all_to_base()
@@ -491,6 +497,7 @@ q: Quit and finalize"""
                 return
 
             # --- No patches found: Fallback to Path Scanning (Intelligent Import) ---
+            self.logger.info("action_p_scan_paths")
             all_paths = self._get_all_unignored_files()
             found_paths = find_paths_in_text(content, all_paths)
 
@@ -510,9 +517,17 @@ q: Quit and finalize"""
                 )
 
                 if choice == "c":
+                    self.logger.info("action_p_abort", reason="user_cancelled_import")
                     return
                 if choice == "r":
                     self.manager.clear_all()
+                    self.logger.info(
+                        "action_p_import", mode="replace", count=len(found_paths)
+                    )
+                else:
+                    self.logger.info(
+                        "action_p_import", mode="append", count=len(found_paths)
+                    )
 
                 for path in found_paths:
                     abs_p = os.path.abspath(path)
@@ -526,14 +541,17 @@ q: Quit and finalize"""
                 self.console.print(
                     "\n[yellow]No patches or valid project paths detected in pasted content.[/yellow]"
                 )
+                self.logger.info("action_p_no_match")
         except KeyboardInterrupt:
             self.console.print("\n[red]Patch application cancelled.[/red]")
+            self.logger.info("action_p_interrupt")
 
     def _handle_fix(self):
         """
         Handles the 'x' keypress: Run a fix command, capture errors,
         detect affected files, generate a diagnostic prompt, and copy to clipboard.
         """
+        self.logger.info("action_x_start")
         fix_cmd = read_fix_command(self.project_root_abs)
 
         self.console.clear()
@@ -556,10 +574,12 @@ q: Quit and finalize"""
             click.pause()
         except KeyboardInterrupt:
             self.console.print("\n[red]Fix cancelled.[/red]")
+            self.logger.info("action_x_abort")
             return
 
         # --- Run the command ---
         self.console.print(f"\n[bold]Running:[/bold] {fix_cmd}\n")
+        self.logger.info("command_exec_start", command=fix_cmd)
 
         # --- Session-aware git state management ---
         if session_active:
@@ -594,6 +614,7 @@ q: Quit and finalize"""
                         current_head = None  # Skip restore
 
         combined_output = ""
+        return_code = -1
         try:
             try:
                 # Stream output in real-time while capturing it
@@ -614,6 +635,9 @@ q: Quit and finalize"""
 
                 # Wait for process to complete
                 return_code = process.wait(timeout=120)
+                self.logger.info(
+                    "command_exec_finish", command=fix_cmd, return_code=return_code
+                )
             finally:
                 # --- Always restore git state ---
                 if session_active and current_head:
@@ -633,11 +657,13 @@ q: Quit and finalize"""
             self.console.print(
                 "[bold red]Command timed out after 120 seconds.[/bold red]"
             )
+            self.logger.error("command_exec_timeout", command=fix_cmd)
             if process:
                 process.kill()
             return
         except Exception as e:
             self.console.print(f"[bold red]Failed to run command: {e}[/bold red]")
+            self.logger.error("command_exec_fail", command=fix_cmd, error=str(e))
             return
 
         if return_code == 0:
@@ -667,6 +693,8 @@ q: Quit and finalize"""
             if len(found_paths) > 15:
                 self.console.print(f"  ... and {len(found_paths) - 15} more.")
 
+            self.logger.info("action_x_files_detected", count=len(found_paths))
+
             # Add to Delta
             for path in found_paths:
                 abs_p = os.path.abspath(os.path.join(self.project_root_abs, path))
@@ -680,6 +708,7 @@ q: Quit and finalize"""
             self.console.print(
                 "\n[yellow]Could not auto-detect affected files from error output.[/yellow]"
             )
+            self.logger.info("action_x_no_files_detected")
 
         # --- Capture git diff ---
         git_diff = ""
@@ -720,6 +749,7 @@ q: Quit and finalize"""
             self.console.print(
                 f"[dim]Contains: error output + git diff + {len(affected_file_tuples)} file(s)[/dim]"
             )
+            self.logger.info("action_x_complete", prompt_len=len(prompt_text))
         except pyperclip.PyperclipException:
             self.console.print(
                 "\n[red]Failed to copy to clipboard. Prompt printed above.[/red]"
@@ -749,9 +779,11 @@ q: Quit and finalize"""
         Handles the 'e' key: Generates a minimal prompt with only Delta files,
         copies to clipboard, and promotes Delta -> Base.
         """
+        self.logger.info("action_e_start")
         delta_files = self.manager.get_delta_files()
 
         if not delta_files:
+            self.logger.info("action_e_abort", reason="no_delta_files")
             return
 
         # Generate minimal prompt
@@ -768,6 +800,7 @@ q: Quit and finalize"""
             self.console.print(
                 "[dim]Selected files moved from Green (Delta) to Cyan (Base).[/dim]"
             )
+            self.logger.info("action_e_complete", count=len(delta_files))
 
         except pyperclip.PyperclipException:
             self.console.print("\n[red]Failed to copy to clipboard.[/red]")
@@ -776,6 +809,7 @@ q: Quit and finalize"""
 
     def _handle_session_update(self):
         """Handles 'u' key: Updates AI_SESSION.md (Handover/Checkpoint)."""
+        self.logger.info("action_u_start")
         if not self.session.is_active:
             self.console.print("[yellow]No active session to update.[/yellow]")
             click.pause("Press any key to continue...")
@@ -811,6 +845,7 @@ q: Quit and finalize"""
 
     def _handle_task_completion(self):
         """Handles 'f' key: Merges session to context and clears session (Harvest)."""
+        self.logger.info("action_f_start")
         if not self.session.is_active:
             self.console.print("[yellow]No active session to finish.[/yellow]")
             click.pause("Press any key to continue...")
@@ -864,6 +899,7 @@ q: Quit and finalize"""
                     squash=should_squash, console_printer=self.console.print
                 ):
                     self.console.print("[green]Deleted AI_SESSION.md[/green]")
+                    self.logger.info("session_finished", squashed=should_squash)
                     if should_squash:
                         self.console.print(
                             "[green]Commits squashed. Changes are staged.[/green]"
@@ -958,6 +994,7 @@ q: Quit and finalize"""
 
     def _propose_and_apply_last_selection(self):
         """Loads paths from cache, shows a confirmation dialog, and applies the selection if confirmed."""
+        self.logger.info("action_r_start")
         cached_paths = load_selection_from_cache()
 
         if not cached_paths:
@@ -1045,6 +1082,7 @@ q: Quit and finalize"""
             ):
                 self.manager.set_state(abs_path, FileState.DELTA)
                 self._ensure_path_visible(abs_path)
+        self.logger.info("action_r_applied", count=len(files_to_add))
 
     def _ensure_path_visible(self, file_path: str):
         """Ensure a file path is visible in the tree by expanding parent directories"""
@@ -1112,6 +1150,10 @@ q: Quit and finalize"""
         new_deps, _ = propose_and_add_dependencies(
             node.path, self.project_root_abs, files_list, self.manager.char_count
         )
+        if new_deps:
+            self.logger.info(
+                "action_d_added", count=len(new_deps), parent_file=node.relative_path
+            )
 
     def _preselect_files(self, files_to_preselect: List[str]):
         """Pre-selects a list of files passed from the command line."""
@@ -1264,8 +1306,10 @@ q: Quit and finalize"""
 
     def _action_clear_base(self):
         self.manager.clear_base()
+        self.logger.info("action_c_cleared")
 
     def _action_session_start(self):
+        self.logger.info("action_n_start")
         # Pre-check for gitignore to be interactive
         from kopipasta.git_utils import check_session_gitignore_status, add_to_gitignore
 
@@ -1283,15 +1327,18 @@ q: Quit and finalize"""
         if self.session.start(console_printer=self.console.print):
             if self.session.is_active:
                 self._ensure_path_visible(self.session.path)
+                self.logger.info("session_started")
         click.pause("Press any key to continue...")
 
     def _action_quit(self):
+        self.logger.info("action_q_start")
         # Before quitting, promote all Delta to Base
         # to mark them as "processed" for the clipboard output turn.
         self.manager.promote_all_to_base()
         self.quit_selection = True
 
     def _action_interrupt(self):
+        self.logger.info("action_interrupt_signal")
         raise KeyboardInterrupt()
 
     def run(
@@ -1327,6 +1374,7 @@ q: Quit and finalize"""
 
             except Exception as e:
                 self.console.print(f"[red]Error: {e}[/red]")
+                self.logger.error("tree_loop_error", error=str(e))
                 click.pause("Press any key to continue...")
 
         # Clear screen one more time

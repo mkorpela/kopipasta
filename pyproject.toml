@@ -27,10 +27,12 @@ dependencies = [
     "prompt-toolkit==3.0.52",
     "Jinja2>=3.1.6",
     "structlog>=25.5.0",
+    "mcp>=1.2.0",
 ]
 
 [project.scripts]
 kopipasta = "kopipasta.main:main"
+kopipasta-mcp = "kopipasta.mcp_server:main"
 
 [project.urls]
 Homepage = "https://github.com/mkorpela/kopipasta"

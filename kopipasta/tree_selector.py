@@ -1,6 +1,7 @@
 import os
 import subprocess
 import shutil
+import json
 from typing import Dict, List, Optional, Tuple
 from prompt_toolkit import prompt as prompt_toolkit_prompt
 from prompt_toolkit.styles import Style
@@ -21,7 +22,9 @@ from kopipasta.file import (
 )
 from kopipasta.prompt import get_file_snippet
 from kopipasta.prompt import generate_fix_prompt
+from kopipasta.prompt import generate_extension_prompt
 from kopipasta.cache import load_selection_from_cache, clear_cache, save_task_to_cache
+from kopipasta.cache import load_task_from_cache
 from kopipasta.ops import (
     sanitize_string,
     estimate_tokens,
@@ -35,10 +38,11 @@ from kopipasta.selection import SelectionManager, FileState
 from kopipasta.session import Session, SESSION_FILENAME
 from kopipasta.patcher import find_paths_in_text
 from kopipasta.config import read_fix_command
-from kopipasta.prompt import generate_extension_prompt
+from kopipasta.git_utils import add_to_gitignore, check_session_gitignore_status
 from kopipasta.logger import get_logger
 
 ALWAYS_VISIBLE_FILES = {"AI_SESSION.md", "AI_CONTEXT.md"}
+RALPH_CONFIG_FILENAME = ".ralph.json"
 
 
 class FileNode:
@@ -371,7 +375,7 @@ class TreeSelector:
         if self.session.is_active:
             actions += "   u: Update Session   f: Finish Task"
         else:
-            actions += "   n: Start Session   r: Ralph (Soon)"
+            actions += "   n: Start Session   r: Ralph (MCP)"
 
         help_text = f"""[bold]Navigation:[/bold]  ↑/k: Up  ↓/j: Down  →/l/Enter: Expand  ←/h: Collapse
 [bold]Selection:[/bold]  Space: Toggle selection  a: Add all in dir     s: Snippet mode
@@ -1154,10 +1158,96 @@ q: Quit and finalize"""
             self.logger.info(
                 "action_d_added", count=len(new_deps), parent_file=node.relative_path
             )
+        click.pause("Press any key to continue...")
+
+    def _action_ralph(self):
+        """Configures the MCP environment for the 'Ralph Loop'."""
+        self.logger.info("action_ralph_start")
+        
+        # 1. Gather Context
+        delta_files = [
+            os.path.relpath(f[0], self.project_root_abs) 
+            for f in self.manager.get_delta_files()
+        ]
+        base_files = [
+            os.path.relpath(f[0], self.project_root_abs) 
+            for f in self.manager.get_base_files()
+        ]
+        
+        total_files = len(delta_files) + len(base_files)
+        if total_files == 0:
+            self.console.print("[yellow]No files selected. Select context first.[/yellow]")
+            click.pause("Press any key to continue...")
+            return
+
+        # 2. Safety Check for .gitignore
+        if not check_session_gitignore_status(self.project_root_abs):
+             if click.confirm(f"Add {RALPH_CONFIG_FILENAME} to .gitignore?", default=True):
+                 add_to_gitignore(self.project_root_abs, RALPH_CONFIG_FILENAME)
+
+        self.console.clear()
+        self.console.print(
+            Panel(
+                f"[bold cyan]🤖 Ralph Setup (MCP)[/bold cyan]\n\n"
+                f"   [green]Editable Files (Delta):[/green] {len(delta_files)}\n"
+                f"   [cyan]Read-Only Files (Base):[/cyan] {len(base_files)}\n\n"
+                "   The external agent will only be allowed to modify Green files.\n"
+                "   It can read both Green and Cyan files.\n",
+                title="Ralph Loop",
+                border_style="cyan",
+            )
+        )
+
+        # 3. Get Verification Command
+        default_cmd = read_fix_command(self.project_root_abs) or "pytest"
+        verification_cmd = click.prompt("Verification Command (e.g. pytest)", default=default_cmd)
+
+        # 4. Get Task Description
+        task = load_task_from_cache() or "Solve the current issue."
+        
+        # 5. Write Config
+        config = {
+            "project_root": self.project_root_abs,
+            "verification_command": verification_cmd,
+            "task_description": task,
+            "editable_files": delta_files,
+            "readable_files": base_files
+        }
+        
+        config_path = os.path.join(self.project_root_abs, RALPH_CONFIG_FILENAME)
+        try:
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2)
+            self.console.print(f"\n[green]✅ Configuration saved to {RALPH_CONFIG_FILENAME}[/green]")
+        except IOError as e:
+            self.console.print(f"\n[red]Failed to save config: {e}[/red]")
+            click.pause()
+            return
+
+        # 6. Show Instructions
+        claude_config = {
+            "mcpServers": {
+                "kopipasta-ralph": {
+                    "command": "uv",
+                    "args": ["run", "kopipasta-mcp"]
+                }
+            }
+        }
+        
+        config_json_str = json.dumps(claude_config, indent=2)
+        try:
+            pyperclip.copy(config_json_str)
+            copied_msg = " (Copied to clipboard!)"
+        except Exception:
+            copied_msg = ""
+
+        self.console.print("\n[bold]Add this to your Claude Desktop config:[/bold]")
+        self.console.print(Panel(config_json_str, title=f"claude_desktop_config.json{copied_msg}"))
+        
+        click.pause("Press any key to return to file selector...")
 
     def _preselect_files(self, files_to_preselect: List[str]):
         """Pre-selects a list of files passed from the command line."""
-        if not files_to_preselect:
             return
 
         added_count = 0
@@ -1198,7 +1288,7 @@ q: Quit and finalize"""
         bind(["a"], self._action_add_all)
 
         # Actions
-        # bind(["r"], ...) # Reserved for future Ralph
+        bind(["r"], self._action_ralph)
         bind(["g"], self._action_grep)
         bind(["p"], self._action_patch)
         bind(["e"], self._action_extend)
@@ -1344,8 +1434,6 @@ q: Quit and finalize"""
     def _action_session_start(self):
         self.logger.info("action_n_start")
         # Pre-check for gitignore to be interactive
-        from kopipasta.git_utils import check_session_gitignore_status, add_to_gitignore
-
         if not check_session_gitignore_status(self.project_root_abs):
             self.console.print(
                 f"\n[bold yellow]⚠ {SESSION_FILENAME} is NOT ignored by git.[/bold yellow]"

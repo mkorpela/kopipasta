@@ -21,7 +21,7 @@ from kopipasta.file import (
 )
 from kopipasta.prompt import get_file_snippet
 from kopipasta.prompt import generate_fix_prompt
-from kopipasta.cache import load_selection_from_cache, clear_cache
+from kopipasta.cache import load_selection_from_cache, clear_cache, save_task_to_cache
 from kopipasta.ops import (
     sanitize_string,
     estimate_tokens,
@@ -362,7 +362,7 @@ class TreeSelector:
     def _show_help(self) -> Panel:
         """Create help panel"""
 
-        action_list = ["r: Reuse", "g: Grep", "p: Patch", "x: Fix"]
+        action_list = ["c: Clear", "g: Grep", "p: Patch", "x: Fix"]
         if self.manager.delta_count > 0:
             action_list.append("e: Extend")
         action_list.append("d: Deps")
@@ -371,7 +371,7 @@ class TreeSelector:
         if self.session.is_active:
             actions += "   u: Update Session   f: Finish Task"
         else:
-            actions += "   n: Start Session"
+            actions += "   n: Start Session   r: Ralph (Soon)"
 
         help_text = f"""[bold]Navigation:[/bold]  ↑/k: Up  ↓/j: Down  →/l/Enter: Expand  ←/h: Collapse
 [bold]Selection:[/bold]  Space: Toggle selection  a: Add all in dir     s: Snippet mode
@@ -1198,14 +1198,14 @@ q: Quit and finalize"""
         bind(["a"], self._action_add_all)
 
         # Actions
-        bind(["r"], self._propose_and_apply_last_selection)
+        # bind(["r"], ...) # Reserved for future Ralph
         bind(["g"], self._action_grep)
         bind(["p"], self._action_patch)
         bind(["e"], self._action_extend)
         bind(["d"], self._action_deps)
         bind(["x"], self._action_fix)
         bind(["n"], self._action_session_start)
-        bind(["c"], self._action_clear_base)
+        bind(["c"], self._action_clear_menu)
         bind(["u"], self._handle_session_update)
         bind(["f"], self._handle_task_completion)
 
@@ -1304,9 +1304,42 @@ q: Quit and finalize"""
             self._show_dependencies(node)
             click.pause("Press any key to continue...")
 
-    def _action_clear_base(self):
-        self.manager.clear_base()
-        self.logger.info("action_c_cleared")
+    def _action_clear_menu(self):
+        """Opens the Clear/Reset submenu."""
+        self.console.print()
+        self.console.print(
+            Panel(
+                "[bold cyan]Clear / Reset[/bold cyan]\n\n"
+                "  [bold]s[/bold]: Clear [bold]S[/bold]election (Files)\n"
+                "  [bold]t[/bold]: Clear [bold]T[/bold]ask (Description)\n"
+                "  [bold]a[/bold]: Clear [bold]A[/bold]ll (Files + Task)\n"
+                "  [bold]c[/bold]: [bold]C[/bold]ancel\n",
+                title="Clear Context",
+                border_style="cyan",
+            )
+        )
+
+        ch = click.getchar().lower()
+
+        if ch == 's':
+            self.manager.clear_all()
+            self.console.print("[yellow]File selection cleared.[/yellow]")
+            self.logger.info("action_c_menu", sub_action="clear_selection")
+        elif ch == 't':
+            save_task_to_cache("")
+            self.console.print("[yellow]Task description cleared.[/yellow]")
+            self.logger.info("action_c_menu", sub_action="clear_task")
+        elif ch == 'a':
+            self.manager.clear_all()
+            save_task_to_cache("")
+            self.console.print("[yellow]All context cleared (Files + Task).[/yellow]")
+            self.logger.info("action_c_menu", sub_action="clear_all")
+        else:
+            self.console.print("[dim]Cancelled.[/dim]")
+            return
+
+        # Pause to show feedback
+        click.pause(info="Press any key to continue...")
 
     def _action_session_start(self):
         self.logger.info("action_n_start")

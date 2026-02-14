@@ -201,15 +201,15 @@ class KopipastaApp:
 
     def _load_session_state(self):
         """Loads previous session selection if active."""
-        if self.is_ongoing_session:
-            # 1. Load previous file selection
-            cached_paths = load_selection_from_cache()
-            for p in cached_paths:
-                abs_p = os.path.abspath(p)
-                if os.path.exists(abs_p):
-                    self.files_to_preselect.append(abs_p)
+        # 1. Always load previous file selection (Default: Reuse)
+        cached_paths = load_selection_from_cache()
+        for p in cached_paths:
+            abs_p = os.path.abspath(p)
+            if os.path.exists(abs_p):
+                self.files_to_preselect.append(abs_p)
 
-            # 2. Force Context and Session files into selection if they exist
+        # 2. Force Context and Session files into selection if session is active
+        if self.is_ongoing_session:
             self.files_to_preselect.append(self.session_path)
             context_path = os.path.join(self.project_root_abs, "AI_CONTEXT.md")
             if os.path.exists(context_path):
@@ -352,7 +352,7 @@ class KopipastaApp:
 
     def _get_task_description(self) -> str:
         cached_task = None
-        if self.is_ongoing_session and not self.args.task:
+        if not self.args.task:
             cached_task = load_task_from_cache()
 
         if self.args.task:

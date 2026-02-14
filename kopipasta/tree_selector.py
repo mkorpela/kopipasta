@@ -1321,15 +1321,15 @@ q: Quit and finalize"""
 
         ch = click.getchar().lower()
 
-        if ch == 's':
+        if ch == "s":
             self.manager.clear_all()
             self.console.print("[yellow]File selection cleared.[/yellow]")
             self.logger.info("action_c_menu", sub_action="clear_selection")
-        elif ch == 't':
+        elif ch == "t":
             save_task_to_cache("")
             self.console.print("[yellow]Task description cleared.[/yellow]")
             self.logger.info("action_c_menu", sub_action="clear_task")
-        elif ch == 'a':
+        elif ch == "a":
             self.manager.clear_all()
             save_task_to_cache("")
             self.console.print("[yellow]All context cleared (Files + Task).[/yellow]")

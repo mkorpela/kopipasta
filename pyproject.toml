@@ -27,7 +27,7 @@ dependencies = [
     "prompt-toolkit==3.0.52",
     "Jinja2>=3.1.6",
     "structlog>=25.5.0",
-    "mcp>=1.2.0",
+    "mcp>=1.26.0",
 ]
 
 [project.scripts]

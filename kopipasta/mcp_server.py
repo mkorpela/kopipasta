@@ -2,7 +2,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import Dict, Any
 
 from mcp.server.fastmcp import FastMCP
 from kopipasta.patcher import parse_llm_output, apply_patches
@@ -44,22 +44,22 @@ def read_context() -> str:
             output.append(f"# Task\n{task}\n")
 
         output.append("# Context Files\n")
-        
+
         # Merge lists and deduplicate
         all_files = sorted(list(set(readable_files + editable_files)))
 
         for rel_path in all_files:
             file_path = project_root / rel_path
-            
+
             # Metadata
             perms = []
             if rel_path in editable_files:
                 perms.append("EDITABLE")
             else:
                 perms.append("READ-ONLY")
-            
+
             output.append(f"## File: {rel_path} ({', '.join(perms)})")
-            
+
             try:
                 if file_path.exists():
                     content = file_path.read_text(encoding="utf-8", errors="replace")
@@ -80,10 +80,10 @@ def read_context() -> str:
 def apply_patch(patch_content: str) -> str:
     """
     Applies a patch to the project.
-    
+
     Args:
-        patch_content: The markdown content containing code blocks. 
-                       Use Unified Diff format (@@ ... @@) for edits 
+        patch_content: The markdown content containing code blocks.
+                       Use Unified Diff format (@@ ... @@) for edits
                        and Full File content for new files.
                        Always include '# FILE: path/to/file' headers.
     """
@@ -95,7 +95,7 @@ def apply_patch(patch_content: str) -> str:
         # Change CWD to project root for patcher compatibility
         original_cwd = os.getcwd()
         os.chdir(project_root)
-        
+
         try:
             # Parse patches
             patches = parse_llm_output(patch_content)
@@ -110,19 +110,21 @@ def apply_patch(patch_content: str) -> str:
                     try:
                         rel_path = p_path.relative_to(project_root).as_posix()
                     except ValueError:
-                        return f"Error: Path {patch['file_path']} is outside project root."
+                        return (
+                            f"Error: Path {patch['file_path']} is outside project root."
+                        )
                 else:
                     rel_path = p_path.as_posix()
 
                 # Safety check: Is this file allowed to be edited?
                 if rel_path not in editable_files:
-                     return f"Permission Denied: {rel_path} is Read-Only or not in the active context."
+                    return f"Permission Denied: {rel_path} is Read-Only or not in the active context."
 
             # Apply
             modified = apply_patches(patches)
-            
+
             return f"Successfully applied patches to: {', '.join(modified)}"
-            
+
         finally:
             os.chdir(original_cwd)
 
@@ -145,11 +147,7 @@ def run_verification() -> str:
             return "No verification command defined in Ralph configuration."
 
         result = subprocess.run(
-            command,
-            cwd=project_root,
-            shell=True,
-            capture_output=True,
-            text=True
+            command, cwd=project_root, shell=True, capture_output=True, text=True
         )
 
         output = [
@@ -158,7 +156,7 @@ def run_verification() -> str:
             "--- STDOUT ---",
             result.stdout,
             "--- STDERR ---",
-            result.stderr
+            result.stderr,
         ]
         return "\n".join(output)
 
@@ -168,6 +166,7 @@ def run_verification() -> str:
 
 def main():
     mcp.run()
+
 
 if __name__ == "__main__":
     main()

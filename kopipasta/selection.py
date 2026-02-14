@@ -80,6 +80,14 @@ class SelectionManager:
             if s[0] == FileState.DELTA
         ]
 
+    def get_base_files(self) -> List[Tuple[str, bool, Optional[List[str]], str]]:
+        """Returns only files in BASE state."""
+        return [
+            (p, s[1], s[2], get_language_for_file(p))
+            for p, s in self._files.items()
+            if s[0] == FileState.BASE
+        ]
+
     def mark_as_delta(self, path: str):
         """Promotes a file to DELTA state (e.g. after a patch)."""
         _, is_snippet, chunks = self._files.get(

@@ -375,7 +375,8 @@ class TreeSelector:
         if self.session.is_active:
             actions += "   u: Update Session   f: Finish Task"
         else:
-            actions += "   n: Start Session   r: Ralph (MCP)"
+            actions += "   n: Start Session"
+        actions += "   r: Ralph (MCP)"
 
         help_text = f"""[bold]Navigation:[/bold]  ↑/k: Up  ↓/j: Down  →/l/Enter: Expand  ←/h: Collapse
 [bold]Selection:[/bold]  Space: Toggle selection  a: Add all in dir     s: Snippet mode
@@ -1163,27 +1164,31 @@ q: Quit and finalize"""
     def _action_ralph(self):
         """Configures the MCP environment for the 'Ralph Loop'."""
         self.logger.info("action_ralph_start")
-        
+
         # 1. Gather Context
         delta_files = [
-            os.path.relpath(f[0], self.project_root_abs) 
+            os.path.relpath(f[0], self.project_root_abs)
             for f in self.manager.get_delta_files()
         ]
         base_files = [
-            os.path.relpath(f[0], self.project_root_abs) 
+            os.path.relpath(f[0], self.project_root_abs)
             for f in self.manager.get_base_files()
         ]
-        
+
         total_files = len(delta_files) + len(base_files)
         if total_files == 0:
-            self.console.print("[yellow]No files selected. Select context first.[/yellow]")
+            self.console.print(
+                "[yellow]No files selected. Select context first.[/yellow]"
+            )
             click.pause("Press any key to continue...")
             return
 
         # 2. Safety Check for .gitignore
         if not check_session_gitignore_status(self.project_root_abs):
-             if click.confirm(f"Add {RALPH_CONFIG_FILENAME} to .gitignore?", default=True):
-                 add_to_gitignore(self.project_root_abs, RALPH_CONFIG_FILENAME)
+            if click.confirm(
+                f"Add {RALPH_CONFIG_FILENAME} to .gitignore?", default=True
+            ):
+                add_to_gitignore(self.project_root_abs, RALPH_CONFIG_FILENAME)
 
         self.console.clear()
         self.console.print(
@@ -1200,25 +1205,29 @@ q: Quit and finalize"""
 
         # 3. Get Verification Command
         default_cmd = read_fix_command(self.project_root_abs) or "pytest"
-        verification_cmd = click.prompt("Verification Command (e.g. pytest)", default=default_cmd)
+        verification_cmd = click.prompt(
+            "Verification Command (e.g. pytest)", default=default_cmd
+        )
 
         # 4. Get Task Description
         task = load_task_from_cache() or "Solve the current issue."
-        
+
         # 5. Write Config
         config = {
             "project_root": self.project_root_abs,
             "verification_command": verification_cmd,
             "task_description": task,
             "editable_files": delta_files,
-            "readable_files": base_files
+            "readable_files": base_files,
         }
-        
+
         config_path = os.path.join(self.project_root_abs, RALPH_CONFIG_FILENAME)
         try:
             with open(config_path, "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=2)
-            self.console.print(f"\n[green]✅ Configuration saved to {RALPH_CONFIG_FILENAME}[/green]")
+            self.console.print(
+                f"\n[green]✅ Configuration saved to {RALPH_CONFIG_FILENAME}[/green]"
+            )
         except IOError as e:
             self.console.print(f"\n[red]Failed to save config: {e}[/red]")
             click.pause()
@@ -1227,13 +1236,10 @@ q: Quit and finalize"""
         # 6. Show Instructions
         claude_config = {
             "mcpServers": {
-                "kopipasta-ralph": {
-                    "command": "uv",
-                    "args": ["run", "kopipasta-mcp"]
-                }
+                "kopipasta-ralph": {"command": "uv", "args": ["run", "kopipasta-mcp"]}
             }
         }
-        
+
         config_json_str = json.dumps(claude_config, indent=2)
         try:
             pyperclip.copy(config_json_str)
@@ -1242,14 +1248,14 @@ q: Quit and finalize"""
             copied_msg = ""
 
         self.console.print("\n[bold]Add this to your Claude Desktop config:[/bold]")
-        self.console.print(Panel(config_json_str, title=f"claude_desktop_config.json{copied_msg}"))
-        
+        self.console.print(
+            Panel(config_json_str, title=f"claude_desktop_config.json{copied_msg}")
+        )
+
         click.pause("Press any key to return to file selector...")
 
     def _preselect_files(self, files_to_preselect: List[str]):
         """Pre-selects a list of files passed from the command line."""
-            return
-
         added_count = 0
         for file_path in files_to_preselect:
             abs_path = os.path.abspath(file_path)

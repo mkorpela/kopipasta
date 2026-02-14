@@ -2,7 +2,7 @@ import os
 import subprocess
 import shutil
 import json
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from prompt_toolkit import prompt as prompt_toolkit_prompt
 from prompt_toolkit.styles import Style
 from rich.console import Console
@@ -1212,8 +1212,20 @@ q: Quit and finalize"""
             )
         )
 
-        # 3. Get Verification Command
+        # 3. Get Verification Command (Prioritize last used from config)
         default_cmd = read_fix_command(self.project_root_abs) or "pytest"
+
+        # Check existing config for previous command
+        config_path = os.path.join(self.project_root_abs, RALPH_CONFIG_FILENAME)
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    existing_config = json.load(f)
+                    if existing_config.get("verification_command"):
+                        default_cmd = existing_config["verification_command"]
+            except Exception:
+                pass
+
         verification_cmd = click.prompt(
             "Verification Command (e.g. pytest)", default=default_cmd
         )
@@ -1230,7 +1242,6 @@ q: Quit and finalize"""
             "readable_files": base_files,
         }
 
-        config_path = os.path.join(self.project_root_abs, RALPH_CONFIG_FILENAME)
         try:
             with open(config_path, "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=2)
@@ -1272,7 +1283,7 @@ q: Quit and finalize"""
 
     def _init_key_bindings(self):
         """Initializes the keyboard command dispatch table."""
-        self.key_map = {}
+        self.key_map: dict[str, Any] = {}
 
         # Helper to register multiple keys for one action
         def bind(keys: List[str], action):

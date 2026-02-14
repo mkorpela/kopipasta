@@ -92,11 +92,12 @@ def configure_claude_desktop(
         console.print(f"[dim]♻ Updating existing {server_name} config...[/dim]")
 
     # 4. Inject server entry
-    if local:
-        python_exe = sys.executable
-        console.print(
-            f"[dim]🔧 Local dev mode: {python_exe} -m kopipasta.mcp_server[/dim]"
-        )
+    # Capture current PATH to ensure tools like 'uv', 'npm', 'cargo' are found
+    # Claude Desktop often runs with a stripped environment.
+    current_path = os.environ.get("PATH", "")
+    # Escape single quotes for shell safety
+    safe_path = current_path.replace("'", "'\\''")
+
     if local:
         python_exe = sys.executable
         console.print(
@@ -106,7 +107,7 @@ def configure_claude_desktop(
             "command": "/bin/sh",
             "args": [
                 "-c",
-                f"KOPIPASTA_PROJECT_ROOT='{project_root}' exec '{python_exe}' -m kopipasta.mcp_server",
+                f"KOPIPASTA_PROJECT_ROOT='{project_root}' PATH='{safe_path}' exec '{python_exe}' -m kopipasta.mcp_server",
             ],
         }
     else:
@@ -114,7 +115,7 @@ def configure_claude_desktop(
             "command": "/bin/sh",
             "args": [
                 "-c",
-                f"KOPIPASTA_PROJECT_ROOT='{project_root}' exec uvx --from kopipasta kopipasta-mcp",
+                f"KOPIPASTA_PROJECT_ROOT='{project_root}' PATH='{safe_path}' exec uvx --from kopipasta kopipasta-mcp",
             ],
         }
 

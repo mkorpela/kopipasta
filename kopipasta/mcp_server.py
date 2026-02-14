@@ -15,14 +15,39 @@ RALPH_CONFIG_FILENAME = ".ralph.json"
 
 def _load_config() -> Dict[str, Any]:
     """Loads the Ralph configuration from the current working directory."""
-    config_path = Path.cwd() / RALPH_CONFIG_FILENAME
+    # Try multiple strategies to find the project root:
+    # 1. Command-line argument (most reliable)
+    # 2. Environment variable
+    # 3. Current working directory (fallback)
+    env_root = _get_project_root_override()
+    if env_root:
+        config_path = Path(env_root) / RALPH_CONFIG_FILENAME
+    else:
+        config_path = Path.cwd() / RALPH_CONFIG_FILENAME
+
     if not config_path.exists():
         raise FileNotFoundError(
             f"Configuration file {RALPH_CONFIG_FILENAME} not found. "
-            "Please run 'r' in kopipasta to generate it."
+            f"Please run 'r' in kopipasta to generate it. "
+            f"(searched: {config_path})"
         )
     with open(config_path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def _get_project_root_override() -> str | None:
+    """Resolves the project root from CLI args or environment."""
+    import sys
+
+    # Check for --project-root argument
+    args = sys.argv[1:]
+    for i, arg in enumerate(args):
+        if arg == "--project-root" and i + 1 < len(args):
+            return args[i + 1]
+        if arg.startswith("--project-root="):
+            return arg.split("=", 1)[1]
+    # Fallback to environment variable
+    return os.environ.get("KOPIPASTA_PROJECT_ROOT")
 
 
 @mcp.tool()
@@ -147,7 +172,12 @@ def run_verification() -> str:
             return "No verification command defined in Ralph configuration."
 
         result = subprocess.run(
-            command, cwd=project_root, shell=True, capture_output=True, text=True
+            command,
+            cwd=project_root,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=300,
         )
 
         output = [
@@ -160,6 +190,12 @@ def run_verification() -> str:
         ]
         return "\n".join(output)
 
+    except subprocess.TimeoutExpired:
+        return (
+            f"$ {command}\n"
+            "Error: Command timed out after 300 seconds.\n"
+            "Consider breaking the verification into smaller steps."
+        )
     except Exception as e:
         return f"Error running verification: {str(e)}"
 

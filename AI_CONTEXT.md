@@ -34,6 +34,19 @@ The fix workflow runs a command, captures errors, detects affected files, and ge
 *   **Configuration Pattern**: The `<!-- KOPIPASTA_FIX_CMD: ... -->` HTML comment is machine-parseable, invisible in rendered markdown, and consistent with the `KOPIPASTA_METADATA` pattern used in `AI_SESSION.md`.
 *   **No auto-commit**: Unlike the `p` handler, `x` does not auto-commit. The user reviews and commits manually after applying the LLM's fix.
 
+### Ralph Loop (`r` hotkey) — MCP Agent Integration
+The Ralph Loop enables an external AI agent (e.g. Claude Desktop) to iteratively patch and test code via MCP until a verification command passes.
+*   **Decoupled Architecture**: The `kopipasta` TUI and the MCP Server (`kopipasta/mcp_server.py`) run as separate processes. They communicate implicitly via the filesystem (`.ralph.json`, project files).
+*   **Context Isolation**: MCP exposes two file sets from the selection state:
+    - **Editable** (Delta/Green files): Agent can read and patch these.
+    - **Read-Only** (Base/Cyan files): Agent can read but not modify. Prevents the agent from cheating (e.g. modifying tests).
+*   **MCP Tools**: `read_context` (returns all files + task), `apply_patch` (with permission enforcement), `run_verification` (executes the pass/fail command).
+*   **Configuration File**: `.ralph.json` is written to the project root. Must be git-ignored. Contains `project_root`, `verification_command`, `task_description`, `editable_files`, `readable_files`.
+*   **Auto-Configure Claude Desktop**: `_action_ralph` calls `configure_claude_desktop()` (`kopipasta/claude.py`) to inject the MCP server entry into `claude_desktop_config.json`. Backs up existing config before modifying.
+*   **Claude Desktop `cwd`/`env` Limitation**: Claude Desktop ignores `cwd` and `env` fields in `claude_desktop_config.json`. The workaround is to use `/bin/sh -c "KOPIPASTA_PROJECT_ROOT='...' exec python -m kopipasta.mcp_server"` so the env var is baked into the shell command string. The MCP server resolves config via `_get_project_root_override()` which checks CLI args, then `KOPIPASTA_PROJECT_ROOT` env var, then `Path.cwd()` as fallback.
+*   **Config Overwrite**: `configure_claude_desktop()` always overwrites an existing `kopipasta-ralph` entry (no short-circuit on match) to ensure the command/args stay current.
+*   **No auto-commit**: Like `x`, the Ralph workflow does not auto-commit. The agent's changes are reviewed by the user.
+
 ### Intelligent Import (Universal Intake)
 The `p` (Process) command acts as a universal intake for LLM output:
 *   **Fallback**: If no code blocks (patches) are detected, the tool must regex-scan the text for valid project paths.

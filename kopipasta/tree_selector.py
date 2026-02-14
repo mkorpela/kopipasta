@@ -25,6 +25,7 @@ from kopipasta.prompt import generate_fix_prompt
 from kopipasta.prompt import generate_extension_prompt
 from kopipasta.cache import load_selection_from_cache, clear_cache, save_task_to_cache
 from kopipasta.cache import load_task_from_cache
+from kopipasta.claude import configure_claude_desktop
 from kopipasta.ops import (
     sanitize_string,
     estimate_tokens,
@@ -1184,7 +1185,15 @@ q: Quit and finalize"""
             return
 
         # 2. Safety Check for .gitignore
-        if not check_session_gitignore_status(self.project_root_abs):
+        gitignore_path = os.path.join(self.project_root_abs, ".gitignore")
+        ralph_ignored = False
+        if os.path.exists(gitignore_path):
+            try:
+                with open(gitignore_path, "r", encoding="utf-8") as f:
+                    ralph_ignored = RALPH_CONFIG_FILENAME in f.read().splitlines()
+            except IOError:
+                pass
+        if not ralph_ignored:
             if click.confirm(
                 f"Add {RALPH_CONFIG_FILENAME} to .gitignore?", default=True
             ):
@@ -1233,23 +1242,15 @@ q: Quit and finalize"""
             click.pause()
             return
 
-        # 6. Show Instructions
-        claude_config = {
-            "mcpServers": {
-                "kopipasta-ralph": {"command": "uv", "args": ["run", "kopipasta-mcp"]}
-            }
-        }
-
-        config_json_str = json.dumps(claude_config, indent=2)
-        try:
-            pyperclip.copy(config_json_str)
-            copied_msg = " (Copied to clipboard!)"
-        except Exception:
-            copied_msg = ""
-
-        self.console.print("\n[bold]Add this to your Claude Desktop config:[/bold]")
-        self.console.print(
-            Panel(config_json_str, title=f"claude_desktop_config.json{copied_msg}")
+        # 6. Auto-configure Claude Desktop
+        use_local = click.confirm(
+            "Use local dev mode? (Yes = current Python, No = uvx production)",
+            default=True,
+        )
+        configure_claude_desktop(
+            project_root=self.project_root_abs,
+            local=use_local,
+            console=self.console,
         )
 
         click.pause("Press any key to return to file selector...")

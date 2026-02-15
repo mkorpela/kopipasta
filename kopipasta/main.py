@@ -27,7 +27,7 @@ from kopipasta.config import (
     read_project_context,
     read_session_state,
 )
-from kopipasta.tree_selector import TreeSelector
+from kopipasta.tui import run_tui
 from kopipasta.prompt import (
     generate_prompt_template,
     get_task_from_user_interactive,
@@ -277,22 +277,18 @@ class KopipastaApp:
         if not self.paths_for_tree:
             return
 
-        print("\nStarting interactive file selection...")
-        print(
-            "Use arrow keys to navigate, Space to select, 'q' to finish. See all keys below.\n"
-        )
-
-        tree_selector = TreeSelector(self.ignore_patterns, self.project_root_abs)
+    def _run_interactive_selection(self):
+        """Runs the TreeSelector UI."""
+        if not self.paths_for_tree:
+            return
         try:
-            selected_files, file_char_count = tree_selector.run(
-                self.paths_for_tree, self.files_to_preselect
+            selected_files, file_char_count = run_tui(
+                project_root=self.project_root_abs,
+                ignore_patterns=self.ignore_patterns,
+                files_to_preselect=self.files_to_preselect,
             )
             self.files_to_include.extend(selected_files)
             self.current_char_count += file_char_count
-        except KeyboardInterrupt:
-            print("\nSelection cancelled.")
-            sys.exit(0)
-
     def _finalize_and_output(self):
         """Generates the prompt, handles task input, and copies to clipboard."""
         # Cache the selection

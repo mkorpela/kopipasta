@@ -3,7 +3,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, Generator, List, Optional
 from collections import defaultdict
 
 from mcp.server.fastmcp import FastMCP
@@ -49,7 +49,7 @@ def _load_config() -> Dict[str, Any]:
         return json.load(f)
 
 
-def _get_project_root_override() -> str | None:
+def _get_project_root_override() -> Optional[str]:
     """Resolves the project root from CLI args or environment."""
     # Check for --project-root argument
     args = sys.argv[1:]
@@ -93,20 +93,12 @@ def read_context() -> str:
         config = _load_config()
         project_root = Path(config["project_root"])
         editable_files = config.get("editable_files", [])
-        task = config.get("task_description", "")
 
         output = []
-
-        if task:
-            output.append(f"# Task\n{task}\n")
-
         output.append("# Available Files\n")
-        output.append("Use `list_files` to see all project files.\n")
         output.append("Use `read_files` to retrieve file contents.\n")
 
-        all_files = sorted(list(set(editable_files)))
-
-        for rel_path in all_files:
+        for rel_path in list_files():
             if rel_path in editable_files:
                 output.append(f"- {rel_path} (EDITABLE)")
             else:
@@ -145,16 +137,11 @@ def read_context() -> str:
         return f"Error reading context: {str(e)}"
 
 
-@mcp.tool()
-def list_files() -> str:
-    """
-    Recursively lists all files in the project root, respecting .gitignore.
-    """
+def list_files() -> Generator[str, None, None]:
     try:
         project_root = _get_project_root()
         ignore_patterns = read_gitignore()
 
-        all_files = []
         for root, dirs, files in os.walk(project_root):
             # Filter directories
             dirs[:] = [
@@ -168,12 +155,11 @@ def list_files() -> str:
             for file in files:
                 full_path = os.path.join(root, file)
                 if not is_ignored(full_path, ignore_patterns, str(project_root)):
-                    rel_path = os.path.relpath(full_path, project_root)
-                    all_files.append(rel_path)
+                    yield os.path.relpath(full_path, project_root)
 
-        return "\n".join(sorted(all_files))
-    except Exception as e:
-        return f"Error listing files: {e}"
+        return
+    except Exception:
+        return
 
 
 @mcp.tool()

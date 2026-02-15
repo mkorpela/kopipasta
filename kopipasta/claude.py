@@ -9,7 +9,7 @@ import platform
 import shutil
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from rich.console import Console
 
@@ -37,7 +37,7 @@ def _get_claude_config_path() -> Path:
 def configure_claude_desktop(
     project_root: str,
     local: bool = False,
-    console: Console | None = None,
+    console: Optional[Console] = None,
 ) -> bool:
     """
     Injects the kopipasta-ralph MCP server entry into claude_desktop_config.json.

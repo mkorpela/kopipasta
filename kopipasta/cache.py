@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import List, Tuple, Optional
 
 # Define FileTuple for type hinting
-FileTuple = Tuple[str, bool, List[str] | None, str]
+FileTuple = Tuple[str, bool, Optional[List[str]], str]
 
 
 def get_cache_file_path() -> Path:

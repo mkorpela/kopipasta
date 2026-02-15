@@ -2,11 +2,13 @@
 Textual-based TUI for kopipasta.
 Replaces the manual Rich + click.getchar() render loop in tree_selector.py.
 """
+import json
 import os
 import subprocess
 import tempfile
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
+import pyperclip
 from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
@@ -23,25 +25,40 @@ from textual.widgets import (
 )
 from textual.widgets.tree import TreeNode
 
+from kopipasta.cache import (
+    clear_cache,
+    load_task_from_cache,
+    save_task_to_cache,
+)
+from kopipasta.claude import configure_claude_desktop
+from kopipasta.config import read_fix_command
 from kopipasta.file import (
     FileTuple,
     is_binary,
     is_ignored,
     get_human_readable_size,
+    read_file_contents,
 )
+from kopipasta.git_utils import add_to_gitignore, check_session_gitignore_status
 from kopipasta.ops import estimate_tokens, sanitize_string
 from kopipasta.patcher import apply_patches, parse_llm_output, find_paths_in_text
+from kopipasta.prompt import (
+    generate_extension_prompt,
+    generate_fix_prompt,
+    get_file_snippet,
+)
 from kopipasta.selection import SelectionManager, FileState
 from kopipasta.session import Session, SESSION_FILENAME
-from kopipasta.prompt import get_file_snippet
 from kopipasta.logger import get_logger
 
 ALWAYS_VISIBLE_FILES = {"AI_SESSION.md", "AI_CONTEXT.md"}
+RALPH_CONFIG_FILENAME = ".ralph.json"
 
 
 # ---------------------------------------------------------------------------
 # Data node attached to each tree entry
 # ---------------------------------------------------------------------------
+
 
 class NodeData:
     """Data payload attached to each Textual TreeNode."""
@@ -62,6 +79,7 @@ class NodeData:
 # ---------------------------------------------------------------------------
 # Paste preview modal
 # ---------------------------------------------------------------------------
+
 
 class PasteModal(ModalScreen[str]):
     """
@@ -143,8 +161,69 @@ class PasteModal(ModalScreen[str]):
 
 
 # ---------------------------------------------------------------------------
+# Confirm modal (generic y/n)
+# ---------------------------------------------------------------------------
+
+
+class ConfirmModal(ModalScreen[bool]):
+    """Simple yes/no confirmation dialog."""
+
+    DEFAULT_CSS = """
+    ConfirmModal {
+        align: center middle;
+    }
+    #confirm-dialog {
+        width: 60;
+        height: auto;
+        border: heavy $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    #confirm-buttons {
+        height: 3;
+        align: center middle;
+    }
+    #confirm-buttons Button {
+        margin: 0 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("y", "yes", "Yes", show=True),
+        Binding("n", "no", "No", show=True),
+        Binding("escape", "no", "No", show=False),
+    ]
+
+    def __init__(self, message: str) -> None:
+        super().__init__()
+        self.message = message
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="confirm-dialog"):
+            yield Static(self.message, id="confirm-msg")
+            with Horizontal(id="confirm-buttons"):
+                yield Button("[Y]es", variant="success", id="btn-yes")
+                yield Button("[N]o", variant="error", id="btn-no")
+
+    @on(Button.Pressed, "#btn-yes")
+    def on_yes(self) -> None:
+        self.dismiss(True)
+
+    @on(Button.Pressed, "#btn-no")
+    def on_no(self) -> None:
+        self.dismiss(False)
+
+    def action_yes(self) -> None:
+        self.dismiss(True)
+
+    def action_no(self) -> None:
+        self.dismiss(False)
+
+
+# ---------------------------------------------------------------------------
 # File tree widget
 # ---------------------------------------------------------------------------
+
 
 class FileTreeWidget(TextualTree):
     """Project file tree backed by filesystem scanning."""
@@ -155,12 +234,17 @@ class FileTreeWidget(TextualTree):
     }
     """
 
+    # Prevent the default Tree widget from consuming Space
+    BINDINGS = [
+        Binding("space", "toggle_node", "Toggle", show=False),
+    ]
+
     def __init__(
         self,
         project_root: str,
         ignore_patterns: List[str],
         manager: SelectionManager,
-        **kwargs,
+        **kwargs: Any,
     ) -> None:
         super().__init__("Project Root", **kwargs)
         self.project_root = os.path.abspath(project_root)
@@ -174,6 +258,17 @@ class FileTreeWidget(TextualTree):
         self._populate_directory(self.root)
         self.root.expand()
 
+    def action_toggle_node(self) -> None:
+        """Override default Space behavior to do file selection instead."""
+        node = self.cursor_node
+        if node is not None and node.data is not None:
+            self.toggle_selection(node)
+            self.post_message(self.NodeSelected(node))
+
+    class NodeSelected(TextualTree.NodeSelected):
+        """Posted when selection state changes (for status bar refresh)."""
+        pass
+
     def _populate_directory(self, tree_node: TreeNode) -> None:
         """Scan directory and add children to tree node."""
         data: NodeData = tree_node.data
@@ -186,8 +281,8 @@ class FileTreeWidget(TextualTree):
         except PermissionError:
             return
 
-        dirs = []
-        files = []
+        dirs: List[str] = []
+        files: List[str] = []
 
         for item in items:
             item_path = os.path.join(data.path, item)
@@ -205,7 +300,6 @@ class FileTreeWidget(TextualTree):
             child_path = os.path.join(data.path, d)
             child_data = NodeData(child_path, is_dir=True)
             child_node = tree_node.add(d, data=child_data, allow_expand=True)
-            # Add placeholder so Textual shows expand arrow
             child_node.add_leaf("…", data=None)
 
         for f in sorted(files):
@@ -220,7 +314,6 @@ class FileTreeWidget(TextualTree):
         if data is None or not data.is_dir:
             return
         if not data.scanned:
-            # Remove placeholder
             node.remove_children()
             self._populate_directory(node)
 
@@ -291,7 +384,6 @@ class FileTreeWidget(TextualTree):
             if child.data is None:
                 continue
             if child.data.is_dir:
-                # Ensure scanned
                 if not child.data.scanned:
                     child.remove_children()
                     self._populate_directory(child)
@@ -315,7 +407,8 @@ class FileTreeWidget(TextualTree):
         all_files: List[str] = []
         for root, dirs, files in os.walk(self.project_root):
             dirs[:] = [
-                d for d in dirs
+                d
+                for d in dirs
                 if not is_ignored(
                     os.path.join(root, d), self.ignore_patterns, self.project_root
                 )
@@ -328,10 +421,35 @@ class FileTreeWidget(TextualTree):
                     all_files.append(os.path.relpath(full_path, self.project_root))
         return all_files
 
+    def ensure_path_visible(self, file_path: str) -> None:
+        """Expand parent directories so a file path becomes visible in tree."""
+        abs_target = os.path.abspath(file_path)
+        self._expand_to_path(self.root, abs_target)
+
+    def _expand_to_path(self, node: TreeNode, target_abs: str) -> bool:
+        """Recursively expand tree nodes toward target path. Returns True if found."""
+        if node.data is None:
+            return False
+        if not node.data.is_dir:
+            return node.data.path == target_abs
+        # Check if target is under this directory
+        if not target_abs.startswith(node.data.path):
+            return False
+        # Ensure scanned
+        if not node.data.scanned:
+            node.remove_children()
+            self._populate_directory(node)
+        node.expand()
+        for child in node.children:
+            if child.data is not None and self._expand_to_path(child, target_abs):
+                return True
+        return False
+
 
 # ---------------------------------------------------------------------------
 # Status bar
 # ---------------------------------------------------------------------------
+
 
 class StatusBar(Static):
     """Bottom status bar showing selection counts and session state."""
@@ -372,6 +490,7 @@ class StatusBar(Static):
 # Main TUI application
 # ---------------------------------------------------------------------------
 
+
 class KopipastaTUI(App):
     """Textual app for kopipasta file selection and paste workflow."""
 
@@ -390,6 +509,14 @@ class KopipastaTUI(App):
         Binding("s", "toggle_snippet", "Snippet", show=True),
         Binding("a", "add_all_in_dir", "Add All", show=True),
         Binding("e", "extend_context", "Extend", show=True),
+        Binding("p", "manual_paste", "Patch", show=True),
+        Binding("x", "fix_workflow", "Fix", show=True),
+        Binding("g", "grep_search", "Grep", show=True),
+        Binding("d", "show_deps", "Deps", show=True),
+        Binding("n", "session_start", "New Session", show=True),
+        Binding("u", "session_update", "Update Session", show=True),
+        Binding("f", "session_finish", "Finish Task", show=True),
+        Binding("r", "ralph_setup", "Ralph", show=True),
         Binding("c", "clear_selection", "Clear", show=True),
         Binding("ctrl+c", "force_quit", "Force Quit", show=False),
     ]
@@ -436,6 +563,11 @@ class KopipastaTUI(App):
     def status_bar(self) -> StatusBar:
         return self.query_one(StatusBar)
 
+    def _refresh_ui(self) -> None:
+        """Convenience to refresh tree labels and status bar together."""
+        self.tree_widget.refresh_all_labels()
+        self.status_bar.refresh()
+
     # ------------------------------------------------------------------
     # Pre-selection
     # ------------------------------------------------------------------
@@ -451,7 +583,7 @@ class KopipastaTUI(App):
                 self.manager.set_state(abs_path, FileState.BASE)
 
     # ------------------------------------------------------------------
-    # Paste handling (the core new feature)
+    # Paste handling (direct paste)
     # ------------------------------------------------------------------
 
     def on_paste(self, event: Paste) -> None:
@@ -473,14 +605,13 @@ class KopipastaTUI(App):
 
     def _on_paste_modal_dismissed(self, result: str) -> None:
         if result == "apply":
-            self._apply_paste(self._paste_buffer)
+            self._apply_paste_content(self._paste_buffer)
         elif result == "edit":
             self._edit_and_apply()
-        # "cancel" — do nothing
 
     @work(thread=True)
-    def _apply_paste(self, content: str) -> None:
-        """Apply pasted content as patches or intelligent import."""
+    def _apply_paste_content(self, content: str) -> None:
+        """Apply pasted content as patches or intelligent import. Runs in thread."""
         from rich.console import Console
 
         console = Console()
@@ -489,7 +620,6 @@ class KopipastaTUI(App):
         if patches:
             self.logger.info("paste_patches_found", count=len(patches))
             modified_files = apply_patches(patches, logger=self.logger)
-
             self.app.call_from_thread(self._post_patch, modified_files)
             return
 
@@ -515,9 +645,11 @@ class KopipastaTUI(App):
             self.manager.mark_as_delta(path)
         if self.session.is_active:
             self.session.auto_commit()
-        self.tree_widget.refresh_all_labels()
-        self.status_bar.refresh()
-        self.notify(f"Applied patches to {len(modified_files)} file(s).", severity="information")
+        self._refresh_ui()
+        self.notify(
+            f"Applied patches to {len(modified_files)} file(s).",
+            severity="information",
+        )
 
     def _import_paths(self, found_paths: List[str]) -> None:
         """Called on main thread to add found paths to Delta."""
@@ -528,9 +660,11 @@ class KopipastaTUI(App):
                     self.manager.set_state(abs_p, FileState.DELTA)
                 elif self.manager.get_state(abs_p) == FileState.BASE:
                     self.manager.mark_as_delta(abs_p)
-        self.tree_widget.refresh_all_labels()
-        self.status_bar.refresh()
-        self.notify(f"Imported {len(found_paths)} file(s) to Delta.", severity="information")
+                self.tree_widget.ensure_path_visible(abs_p)
+        self._refresh_ui()
+        self.notify(
+            f"Imported {len(found_paths)} file(s) to Delta.", severity="information"
+        )
 
     def _edit_and_apply(self) -> None:
         """Suspend TUI, open $EDITOR on paste buffer, then apply."""
@@ -542,38 +676,695 @@ class KopipastaTUI(App):
             tf.write(self._paste_buffer)
             temp_path = tf.name
 
-        def _do_edit() -> None:
+        def _run_editor() -> None:
             subprocess.run([editor, temp_path])
             try:
                 with open(temp_path, "r", encoding="utf-8") as f:
-                    edited = f.read()
+                    self._paste_buffer = f.read()
             finally:
-                os.unlink(temp_path)
-            self._paste_buffer = edited
-            self._apply_paste(edited)
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
+            # After editor closes, apply
+            self._apply_paste_content(self._paste_buffer)
 
-        self.suspend()
-        # After suspend returns, the screen is restored.
-        # We need to run the editor synchronously during suspend.
-        # Textual's suspend() is a context manager in newer versions.
-        # For compatibility we use the action pattern:
-        _do_edit()
+        with self.suspend():
+            _run_editor()
 
     # ------------------------------------------------------------------
-    # Key-bound actions
+    # Manual paste (p key) — same as old workflow, suspend + prompt
+    # ------------------------------------------------------------------
+
+    def action_manual_paste(self) -> None:
+        """Manual paste via suspend — for terminals where on_paste doesn't work."""
+        self.logger.info("action_p_start", mode="manual_paste")
+
+        def _do_manual_paste() -> None:
+            from prompt_toolkit import prompt as pt_prompt
+            from prompt_toolkit.styles import Style as PtStyle
+            from rich.console import Console as RichConsole
+
+            console = RichConsole()
+            console.print(
+                "\n[bold cyan]📝 Paste the LLM's markdown response below.[/bold cyan]"
+            )
+            console.print(
+                "   Press [bold]Meta+Enter[/bold] or [bold]Esc[/bold] then [bold]Enter[/bold] to submit."
+            )
+            console.print("   Press [bold]Ctrl-C[/bold] to cancel.\n")
+
+            style = PtStyle.from_dict({"": "#ffffff"})
+            try:
+                content = pt_prompt(
+                    "> ",
+                    multiline=True,
+                    prompt_continuation="  ",
+                    style=style,
+                )
+                content = sanitize_string(content)
+                if content.strip():
+                    self._paste_buffer = content
+            except KeyboardInterrupt:
+                console.print("\n[red]Cancelled.[/red]")
+                return
+
+        with self.suspend():
+            _do_manual_paste()
+
+        if self._paste_buffer.strip():
+            self._apply_paste_content(self._paste_buffer)
+
+    # ------------------------------------------------------------------
+    # Fix workflow (x key)
+    # ------------------------------------------------------------------
+
+    def action_fix_workflow(self) -> None:
+        """Run fix command, detect errors, generate diagnostic prompt."""
+        self.logger.info("action_x_start")
+        fix_cmd = read_fix_command(self.project_root)
+
+        def _run_fix() -> Optional[Tuple[str, int, str]]:
+            """Runs in suspended terminal. Returns (output, return_code, git_diff) or None."""
+            from rich.console import Console as RichConsole
+            from rich.panel import Panel
+
+            console = RichConsole()
+            console.print(
+                Panel(
+                    f"[bold cyan]🔧 Fix Workflow[/bold cyan]\n\n"
+                    f"   Command: [bold]{fix_cmd}[/bold]\n\n"
+                    f"   Press [bold]Enter[/bold] to run, or [bold]Ctrl-C[/bold] to cancel.",
+                    title="Fix",
+                    border_style="yellow",
+                )
+            )
+
+            try:
+                input()  # Wait for Enter
+            except (KeyboardInterrupt, EOFError):
+                console.print("\n[red]Fix cancelled.[/red]")
+                return None
+
+            # Session-aware git state
+            session_active = self.session.is_active
+            start_commit = None
+            current_head = None
+
+            if session_active:
+                metadata = self.session.get_metadata()
+                start_commit = metadata.get("start_commit") if metadata else None
+                if start_commit and start_commit != "NO_GIT":
+                    try:
+                        result = subprocess.run(
+                            ["git", "rev-parse", "HEAD"],
+                            capture_output=True,
+                            text=True,
+                            cwd=self.project_root,
+                            check=True,
+                        )
+                        current_head = result.stdout.strip()
+                    except subprocess.CalledProcessError:
+                        current_head = None
+
+                    if current_head:
+                        try:
+                            subprocess.run(
+                                ["git", "reset", "--soft", start_commit],
+                                cwd=self.project_root,
+                                check=True,
+                                capture_output=True,
+                            )
+                        except subprocess.CalledProcessError:
+                            current_head = None
+
+            console.print(f"\n[bold]Running:[/bold] {fix_cmd}\n")
+            combined_output = ""
+            return_code = -1
+
+            try:
+                try:
+                    process = subprocess.Popen(
+                        fix_cmd,
+                        shell=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        cwd=self.project_root,
+                    )
+                    if process.stdout:
+                        for line in process.stdout:
+                            console.print(f"  [dim]{line.rstrip()}[/dim]")
+                            combined_output += line
+                    return_code = process.wait(timeout=120)
+                finally:
+                    if session_active and current_head:
+                        try:
+                            subprocess.run(
+                                ["git", "reset", "--soft", current_head],
+                                cwd=self.project_root,
+                                check=True,
+                                capture_output=True,
+                            )
+                        except subprocess.CalledProcessError:
+                            console.print(
+                                f"[bold red]CRITICAL: Could not restore git state! "
+                                f"Run: git reset --soft {current_head}[/bold red]"
+                            )
+            except subprocess.TimeoutExpired:
+                console.print("[bold red]Command timed out after 120s.[/bold red]")
+                if process:
+                    process.kill()
+                return None
+            except Exception as e:
+                console.print(f"[bold red]Failed to run command: {e}[/bold red]")
+                return None
+
+            if return_code == 0:
+                console.print(
+                    "[bold green]✅ Command succeeded! No errors to fix.[/bold green]"
+                )
+                if session_active:
+                    self.session.auto_commit("kopipasta: auto-format fixes")
+                input("\nPress Enter to continue...")
+                return None
+
+            console.print(
+                f"\n[bold yellow]⚠ Command exited with code {return_code}[/bold yellow]"
+            )
+
+            # Capture git diff
+            git_diff = ""
+            try:
+                diff_ref = "HEAD"
+                if session_active and start_commit and start_commit != "NO_GIT":
+                    diff_ref = start_commit
+                diff_result = subprocess.run(
+                    ["git", "diff", diff_ref],
+                    capture_output=True,
+                    text=True,
+                    cwd=self.project_root,
+                    timeout=30,
+                )
+                git_diff = diff_result.stdout.strip()
+            except Exception:
+                pass
+
+            if session_active:
+                self.session.auto_commit("kopipasta: auto-format fixes")
+
+            input("\nPress Enter to continue...")
+            return (combined_output, return_code, git_diff)
+
+        fix_result: Optional[Tuple[str, int, str]] = None
+        with self.suspend():
+            fix_result = _run_fix()
+
+        if fix_result is None:
+            return
+
+        combined_output, return_code, git_diff = fix_result
+
+        # Detect affected files
+        all_project_files = self.tree_widget.get_all_unignored_files()
+        found_paths = find_paths_in_text(combined_output, all_project_files)
+
+        if found_paths:
+            for path in found_paths:
+                abs_p = os.path.abspath(os.path.join(self.project_root, path))
+                if os.path.isfile(abs_p):
+                    self.tree_widget.ensure_path_visible(abs_p)
+                    if self.manager.get_state(abs_p) == FileState.UNSELECTED:
+                        self.manager.set_state(abs_p, FileState.DELTA)
+                    elif self.manager.get_state(abs_p) == FileState.BASE:
+                        self.manager.mark_as_delta(abs_p)
+
+        # Generate and copy fix prompt
+        affected_file_tuples = self.manager.get_delta_files()
+        prompt_text = generate_fix_prompt(
+            command=fix_cmd,
+            error_output=combined_output.strip(),
+            git_diff=git_diff,
+            affected_files=affected_file_tuples,
+            env_vars={},
+        )
+
+        try:
+            pyperclip.copy(prompt_text)
+            self.notify(
+                f"Fix prompt copied! ({len(affected_file_tuples)} files)",
+                severity="information",
+            )
+        except Exception:
+            self.notify("Failed to copy fix prompt to clipboard.", severity="error")
+
+        self._refresh_ui()
+        self.logger.info("action_x_complete", prompt_len=len(prompt_text))
+
+    # ------------------------------------------------------------------
+    # Grep (g key) — suspend to interactive terminal
+    # ------------------------------------------------------------------
+
+    def action_grep_search(self) -> None:
+        """Grep search in project — suspends to terminal for ag interaction."""
+        self.logger.info("action_g_start")
+        node = self.tree_widget.cursor_node
+        if node is None or node.data is None:
+            return
+
+        search_dir = (
+            node.data.path if node.data.is_dir else os.path.dirname(node.data.path)
+        )
+
+        found_files: List[str] = []
+
+        def _do_grep() -> None:
+            from kopipasta.analysis import grep_files_in_directory, select_from_grep_results
+            from rich.console import Console as RichConsole
+
+            console = RichConsole()
+            try:
+                pattern = input("Enter search pattern: ")
+            except (KeyboardInterrupt, EOFError):
+                return
+            if not pattern:
+                return
+
+            console.print(f"Searching for '{pattern}'...")
+            grep_results = grep_files_in_directory(
+                pattern, search_dir, self.ignore_patterns
+            )
+            if not grep_results:
+                console.print(f"[yellow]No matches found for '{pattern}'[/yellow]")
+                input("\nPress Enter to continue...")
+                return
+
+            selected, _ = select_from_grep_results(
+                grep_results, self.manager.char_count
+            )
+            for file_tuple in selected:
+                found_files.append(file_tuple[0])
+
+            input("\nPress Enter to continue...")
+
+        with self.suspend():
+            _do_grep()
+
+        # Add found files to Delta
+        for file_path in found_files:
+            abs_path = os.path.abspath(file_path)
+            if self.manager.get_state(abs_path) == FileState.UNSELECTED:
+                self.manager.set_state(abs_path, FileState.DELTA)
+                self.tree_widget.ensure_path_visible(abs_path)
+
+        if found_files:
+            self.notify(
+                f"Added {len(found_files)} files from grep.", severity="information"
+            )
+        self._refresh_ui()
+
+    # ------------------------------------------------------------------
+    # Dependencies (d key) — suspend to terminal
+    # ------------------------------------------------------------------
+
+    def action_show_deps(self) -> None:
+        """Show and optionally add dependencies for current file."""
+        node = self.tree_widget.cursor_node
+        if node is None or node.data is None or node.data.is_dir:
+            self.notify("Select a file to analyze dependencies.", severity="warning")
+            return
+
+        file_path = node.data.path
+        new_deps: List[FileTuple] = []
+
+        def _do_deps() -> None:
+            from kopipasta.analysis import propose_and_add_dependencies
+
+            files_list = self.manager.get_selected_files()
+            deps, _ = propose_and_add_dependencies(
+                file_path, self.project_root, files_list, self.manager.char_count
+            )
+            new_deps.extend(deps)
+            input("\nPress Enter to continue...")
+
+        with self.suspend():
+            _do_deps()
+
+        # Add new deps to selection
+        for dep_tuple in new_deps:
+            abs_path = os.path.abspath(dep_tuple[0])
+            if self.manager.get_state(abs_path) == FileState.UNSELECTED:
+                self.manager.set_state(abs_path, FileState.DELTA)
+                self.tree_widget.ensure_path_visible(abs_path)
+
+        if new_deps:
+            self.notify(
+                f"Added {len(new_deps)} dependencies.", severity="information"
+            )
+        self._refresh_ui()
+
+    # ------------------------------------------------------------------
+    # Session management (n/u/f keys)
+    # ------------------------------------------------------------------
+
+    def action_session_start(self) -> None:
+        """Start a new session (n key)."""
+        self.logger.info("action_n_start")
+
+        if not check_session_gitignore_status(self.project_root):
+
+            def _on_gitignore_confirm(add_it: bool) -> None:
+                if add_it:
+                    add_to_gitignore(self.project_root, SESSION_FILENAME)
+                self._do_session_start()
+
+            self.push_screen(
+                ConfirmModal(
+                    f"[bold yellow]⚠ {SESSION_FILENAME} is NOT in .gitignore.[/bold yellow]\n\n"
+                    f"Add it now?"
+                ),
+                callback=_on_gitignore_confirm,
+            )
+        else:
+            self._do_session_start()
+
+    def _do_session_start(self) -> None:
+        def _start() -> bool:
+            from rich.console import Console as RichConsole
+
+            console = RichConsole()
+            return self.session.start(console_printer=console.print)
+
+        success = False
+        with self.suspend():
+            success = _start()
+
+        if success and self.session.is_active:
+            self.tree_widget.ensure_path_visible(self.session.path)
+            self.notify("Session started.", severity="information")
+            self.logger.info("session_started")
+        self._refresh_ui()
+
+    def action_session_update(self) -> None:
+        """Update session / handover (u key)."""
+        self.logger.info("action_u_start")
+        if not self.session.is_active:
+            self.notify("No active session to update.", severity="warning")
+            return
+
+        session_content = self.session.content
+        prompt_text = (
+            "# Session Handover / Checkpoint\n\n"
+            "We are wrapping up this context window. Update `AI_SESSION.md` to preserve our mental state for the next session.\n\n"
+            "## Current Session State\n"
+            f"```markdown\n{session_content}\n```\n\n"
+            "## Instructions\n"
+            "1. **Consolidate State**: Merge new findings into `AI_SESSION.md`. Keep it concise but lossless.\n"
+            "2. **Track Decisions**: Add a '## Architecture & Decisions' section if new patterns were established.\n"
+            "3. **Update Next Steps**: Check off completed items. Add new ones based on recent discoveries.\n"
+            "4. **Preserve Context**: Do not remove info that is still relevant for the immediate next steps.\n"
+            "5. **Preserve Metadata**: You MUST keep the `<!-- KOPIPASTA_METADATA ... -->` line at the top verbatim.\n\n"
+            "## Required Output Format\n"
+            "Return the **FULL** content of the new `AI_SESSION.md` inside a Markdown code block.\n"
+            "Use this exact format:\n"
+            "````markdown\n"
+            "```markdown\n"
+            "<!-- FILE: AI_SESSION.md -->\n"
+            "<!-- KOPIPASTA_METADATA ... -->\n"
+            "# Current Working Session\n"
+            "...\n"
+            "```\n"
+            "````"
+        )
+        self._run_gardener_cycle(prompt_text, "Update Session / Handover")
+
+    def action_session_finish(self) -> None:
+        """Finish task / harvest (f key)."""
+        self.logger.info("action_f_start")
+        if not self.session.is_active:
+            self.notify("No active session to finish.", severity="warning")
+            return
+
+        session_content = self.session.content
+        context_path = os.path.join(self.project_root, "AI_CONTEXT.md")
+        context_content = ""
+        if os.path.exists(context_path):
+            context_content = read_file_contents(context_path)
+        else:
+            context_content = "(File does not exist yet)"
+
+        metadata = self.session.get_metadata()
+        start_commit = metadata.get("start_commit") if metadata else "NO_GIT"
+
+        prompt_text = (
+            "# Task Completion & Harvest\n\n"
+            "## Session Data (AI_SESSION.md)\n"
+            f"```markdown\n{session_content}\n```\n\n"
+            "## Project Context (AI_CONTEXT.md)\n"
+            f"```markdown\n{context_content}\n```\n\n"
+            "# Instructions\n"
+            "The task is complete. We need to consolidate knowledge.\n"
+            "1. Review the Session Data for architectural decisions, constraints, or new patterns.\n"
+            "2. Generate a Unified Diff patch to update `AI_CONTEXT.md` (or create it if missing) with these learnings.\n"
+            "3. DO NOT patch AI_SESSION.md; it will be deleted locally."
+        )
+        self._run_gardener_cycle(prompt_text, "Finish Task / Harvest")
+
+        # Post-harvest cleanup
+        if self.session.is_active:
+
+            def _on_delete_confirm(do_delete: bool) -> None:
+                if not do_delete:
+                    return
+                clear_cache()
+                should_squash = False
+
+                if start_commit and start_commit != "NO_GIT":
+
+                    def _on_squash_confirm(do_squash: bool) -> None:
+                        from rich.console import Console as RichConsole
+
+                        console = RichConsole()
+                        if self.session.finish(
+                            squash=do_squash, console_printer=console.print
+                        ):
+                            self.notify("Session finished.", severity="information")
+                            self.logger.info("session_finished", squashed=do_squash)
+                        self._refresh_ui()
+
+                    self.push_screen(
+                        ConfirmModal(
+                            f"Session started at commit: {start_commit[:7]}\n\n"
+                            "Squash session commits (soft reset)?"
+                        ),
+                        callback=_on_squash_confirm,
+                    )
+                else:
+                    from rich.console import Console as RichConsole
+
+                    console = RichConsole()
+                    self.session.finish(console_printer=console.print)
+                    self.notify("Session finished.", severity="information")
+                    self._refresh_ui()
+
+            self.push_screen(
+                ConfirmModal(
+                    "🗑️  Delete `AI_SESSION.md` and finish session?"
+                ),
+                callback=_on_delete_confirm,
+            )
+
+    def _run_gardener_cycle(self, prompt_text: str, title: str) -> None:
+        """Copy gardener prompt, suspend for paste, apply patches."""
+        try:
+            pyperclip.copy(prompt_text)
+            self.notify(f"🌱 {title} prompt copied!", severity="information")
+        except Exception:
+            self.notify("Could not copy to clipboard.", severity="error")
+
+        def _do_gardener() -> None:
+            from rich.console import Console as RichConsole
+            from rich.panel import Panel
+
+            console = RichConsole()
+            console.print(
+                Panel(
+                    f"[bold]🌱 Gardener: {title}[/bold]\n\n"
+                    "1. Paste this into your LLM.\n"
+                    "2. Copy the LLM's Markdown response.\n"
+                    "3. Press Enter here to paste and apply patches.",
+                    border_style="green",
+                )
+            )
+
+            try:
+                input()
+            except (KeyboardInterrupt, EOFError):
+                return
+
+            # Now do manual paste
+            from prompt_toolkit import prompt as pt_prompt
+            from prompt_toolkit.styles import Style as PtStyle
+
+            console.print(
+                "[bold cyan]📝 Paste the LLM's response below.[/bold cyan]"
+            )
+            console.print(
+                "   Press Meta+Enter or Esc then Enter to submit.\n"
+            )
+            style = PtStyle.from_dict({"": "#ffffff"})
+            try:
+                content = pt_prompt(
+                    "> ",
+                    multiline=True,
+                    prompt_continuation="  ",
+                    style=style,
+                )
+                content = sanitize_string(content)
+                if content.strip():
+                    patches = parse_llm_output(content, console)
+                    if patches:
+                        modified = apply_patches(patches, logger=self.logger)
+                        self.manager.promote_all_to_base()
+                        for path in modified:
+                            self.manager.mark_as_delta(path)
+                        if self.session.is_active:
+                            self.session.auto_commit()
+                    else:
+                        console.print(
+                            "[yellow]No patches found in response.[/yellow]"
+                        )
+            except KeyboardInterrupt:
+                console.print("\n[red]Cancelled.[/red]")
+
+            input("\nPress Enter to return to file selector...")
+
+        with self.suspend():
+            _do_gardener()
+
+        self._refresh_ui()
+
+    # ------------------------------------------------------------------
+    # Ralph (r key) — MCP agent integration
+    # ------------------------------------------------------------------
+
+    def action_ralph_setup(self) -> None:
+        """Configure MCP environment for Ralph Loop."""
+        self.logger.info("action_ralph_start")
+
+        delta_files = [
+            os.path.relpath(f[0], self.project_root)
+            for f in self.manager.get_delta_files()
+        ]
+        base_files = [
+            os.path.relpath(f[0], self.project_root)
+            for f in self.manager.get_base_files()
+        ]
+
+        total_files = len(delta_files) + len(base_files)
+        if total_files == 0:
+            self.notify("No files selected. Select context first.", severity="warning")
+            return
+
+        def _do_ralph() -> None:
+            from rich.console import Console as RichConsole
+            from rich.panel import Panel
+            import click
+
+            console = RichConsole()
+
+            # .gitignore check
+            gitignore_path = os.path.join(self.project_root, ".gitignore")
+            ralph_ignored = False
+            if os.path.exists(gitignore_path):
+                try:
+                    with open(gitignore_path, "r", encoding="utf-8") as f:
+                        ralph_ignored = RALPH_CONFIG_FILENAME in f.read().splitlines()
+                except IOError:
+                    pass
+            if not ralph_ignored:
+                if click.confirm(
+                    f"Add {RALPH_CONFIG_FILENAME} to .gitignore?", default=True
+                ):
+                    add_to_gitignore(self.project_root, RALPH_CONFIG_FILENAME)
+
+            console.print(
+                Panel(
+                    f"[bold cyan]🤖 Ralph Setup (MCP)[/bold cyan]\n\n"
+                    f"   [green]Editable Files (Delta):[/green] {len(delta_files)}\n"
+                    f"   [cyan]Read-Only Files (Base):[/cyan] {len(base_files)}\n",
+                    title="Ralph Loop",
+                    border_style="cyan",
+                )
+            )
+
+            # Verification command
+            default_cmd = read_fix_command(self.project_root) or "pytest"
+            config_path = os.path.join(self.project_root, RALPH_CONFIG_FILENAME)
+            if os.path.exists(config_path):
+                try:
+                    with open(config_path, "r", encoding="utf-8") as f:
+                        existing = json.load(f)
+                        if existing.get("verification_command"):
+                            default_cmd = existing["verification_command"]
+                except Exception:
+                    pass
+
+            verification_cmd = click.prompt(
+                "Verification Command (e.g. pytest)", default=default_cmd
+            )
+
+            task = load_task_from_cache() or "Solve the current issue."
+
+            config = {
+                "project_root": self.project_root,
+                "verification_command": verification_cmd,
+                "task_description": task,
+                "editable_files": delta_files,
+                "readable_files": base_files,
+            }
+
+            try:
+                with open(config_path, "w", encoding="utf-8") as f:
+                    json.dump(config, f, indent=2)
+                console.print(
+                    f"\n[green]✅ Configuration saved to {RALPH_CONFIG_FILENAME}[/green]"
+                )
+            except IOError as e:
+                console.print(f"\n[red]Failed to save config: {e}[/red]")
+                input("\nPress Enter to continue...")
+                return
+
+            use_local = click.confirm(
+                "Use local dev mode? (Yes = current Python, No = uvx production)",
+                default=True,
+            )
+            configure_claude_desktop(
+                project_root=self.project_root,
+                local=use_local,
+                console=console,
+            )
+
+            input("\nPress Enter to return to file selector...")
+
+        with self.suspend():
+            _do_ralph()
+
+    # ------------------------------------------------------------------
+    # Selection actions
     # ------------------------------------------------------------------
 
     def action_toggle_selection(self) -> None:
         node = self.tree_widget.cursor_node
         if node is not None and node.data is not None:
             self.tree_widget.toggle_selection(node)
-            self.status_bar.refresh()
+            self._refresh_ui()
 
     def action_toggle_snippet(self) -> None:
         node = self.tree_widget.cursor_node
         if node is not None and node.data is not None and not node.data.is_dir:
             self.tree_widget.toggle_selection(node, snippet=True)
-            self.status_bar.refresh()
+            self._refresh_ui()
 
     def action_add_all_in_dir(self) -> None:
         node = self.tree_widget.cursor_node
@@ -582,13 +1373,10 @@ class KopipastaTUI(App):
         target = node if node.data.is_dir else node.parent
         if target is not None and target.data is not None:
             self.tree_widget.toggle_selection(target)
-            self.status_bar.refresh()
+            self._refresh_ui()
 
     def action_extend_context(self) -> None:
         """Generate extension prompt with Delta files and copy to clipboard."""
-        import pyperclip
-        from kopipasta.prompt import generate_extension_prompt
-
         delta_files = self.manager.get_delta_files()
         if not delta_files:
             self.notify("No Delta files to extend.", severity="warning")
@@ -598,17 +1386,22 @@ class KopipastaTUI(App):
         try:
             pyperclip.copy(prompt_text)
             self.manager.promote_delta_to_base()
-            self.tree_widget.refresh_all_labels()
-            self.status_bar.refresh()
-            self.notify(f"Extended context ({len(delta_files)} files) copied!", severity="information")
+            self._refresh_ui()
+            self.notify(
+                f"Extended context ({len(delta_files)} files) copied!",
+                severity="information",
+            )
         except Exception:
             self.notify("Failed to copy to clipboard.", severity="error")
 
     def action_clear_selection(self) -> None:
         self.manager.clear_all()
-        self.tree_widget.refresh_all_labels()
-        self.status_bar.refresh()
+        self._refresh_ui()
         self.notify("Selection cleared.")
+
+    # ------------------------------------------------------------------
+    # Quit
+    # ------------------------------------------------------------------
 
     def action_quit_and_finalize(self) -> None:
         self.manager.promote_all_to_base()
@@ -620,10 +1413,19 @@ class KopipastaTUI(App):
     def action_force_quit(self) -> None:
         self.exit()
 
+    # ------------------------------------------------------------------
+    # Event handlers for status bar refresh
+    # ------------------------------------------------------------------
+
+    def on_tree_node_selected(self, event: TextualTree.NodeSelected) -> None:
+        """Refresh status bar when tree cursor moves."""
+        self.status_bar.refresh()
+
 
 # ---------------------------------------------------------------------------
-# Public entry point (matches old TreeSelector.run interface)
+# Public entry point
 # ---------------------------------------------------------------------------
+
 
 def run_tui(
     project_root: str,

@@ -281,14 +281,15 @@ class KopipastaApp:
         """Runs the TreeSelector UI."""
         if not self.paths_for_tree:
             return
-        try:
-            selected_files, file_char_count = run_tui(
-                project_root=self.project_root_abs,
-                ignore_patterns=self.ignore_patterns,
-                files_to_preselect=self.files_to_preselect,
-            )
-            self.files_to_include.extend(selected_files)
-            self.current_char_count += file_char_count
+    
+        selected_files, file_char_count = run_tui(
+            project_root=self.project_root_abs,
+            ignore_patterns=self.ignore_patterns,
+            files_to_preselect=self.files_to_preselect,
+        )
+        self.files_to_include.extend(selected_files)
+        self.current_char_count += file_char_count
+
     def _finalize_and_output(self):
         """Generates the prompt, handles task input, and copies to clipboard."""
         # Cache the selection

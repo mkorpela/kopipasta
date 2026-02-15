@@ -2,17 +2,28 @@ import json
 import os
 import subprocess
 import sys
-from io import StringIO
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 from mcp.server.fastmcp import FastMCP
-from kopipasta.patcher import parse_llm_output, apply_patches
+from pydantic import BaseModel, Field
+
+from kopipasta.file import is_ignored, is_binary
+from kopipasta.config import read_gitignore
 
 # Initialize FastMCP server
 mcp = FastMCP("kopipasta-ralph")
 
 RALPH_CONFIG_FILENAME = ".ralph.json"
+
+
+class EditBlock(BaseModel):
+    file_path: str = Field(..., description="Relative path to the file to modify.")
+    search: str = Field(
+        ...,
+        description="The exact string to be replaced. Must match exactly one location in the file.",
+    )
+    replace: str = Field(..., description="The new string to insert.")
 
 
 def _load_config() -> Dict[str, Any]:
@@ -50,6 +61,26 @@ def _get_project_root_override() -> str | None:
     return os.environ.get("KOPIPASTA_PROJECT_ROOT")
 
 
+def _get_project_root() -> Path:
+    config = _load_config()
+    return Path(config["project_root"])
+
+
+def _run_cmd(command: str, cwd: Path) -> str:
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        return f"$ {command}\nExit Code: {result.returncode}\n--- STDOUT ---\n{result.stdout}\n--- STDERR ---\n{result.stderr}"
+    except Exception as e:
+        return f"Error running command '{command}': {e}"
+
+
 @mcp.tool()
 def read_context() -> str:
     """
@@ -70,7 +101,8 @@ def read_context() -> str:
             output.append(f"# Task\n{task}\n")
 
         output.append("# Available Files\n")
-        output.append("Use the `read_files` tool to retrieve file contents.\n")
+        output.append("Use `list_files` to see all project files.\n")
+        output.append("Use `read_files` to retrieve file contents.\n")
 
         all_files = sorted(list(set(readable_files + editable_files)))
 
@@ -136,143 +168,159 @@ def read_files(files: list[str]) -> str:
                 output.append("(Permission Denied: not in active context)\n")
                 continue
 
-            file_path = project_root / rel_path
-            perm = "EDITABLE" if rel_path in editable_files else "READ-ONLY"
-            output.append(f"## File: {rel_path} ({perm})")
-            try:
-                if file_path.exists():
-                    content = file_path.read_text(encoding="utf-8", errors="replace")
-                    output.append("```")
-                    output.append(content)
-                    output.append("```\n")
-                else:
-                    output.append("(File does not exist yet)\n")
-            except Exception as e:
-                output.append(f"(Error reading file: {e})\n")
+        # Auto-run verification to give the agent immediate feedback
+        output.append("\n# Verification Result\n")
+        command = config.get("verification_command")
+        if command:
+            output.append(_run_cmd(command, project_root))
+        else:
+            output.append("No verification command configured.")
 
-        return "\n".join(output)
         return "\n".join(output)
     except Exception as e:
         return f"Error reading context: {str(e)}"
 
 
 @mcp.tool()
-def apply_patch(patch_content: str) -> str:
+def list_files() -> str:
     """
-    Applies a patch to the project.
+    Recursively lists all files in the project root, respecting .gitignore.
+    """
+    try:
+        project_root = _get_project_root()
+        ignore_patterns = read_gitignore()
+
+        all_files = []
+        for root, dirs, files in os.walk(project_root):
+            # Filter directories
+            dirs[:] = [
+                d
+                for d in dirs
+                if not is_ignored(os.path.join(root, d), ignore_patterns, str(project_root))
+            ]
+            
+            for file in files:
+                full_path = os.path.join(root, file)
+                if not is_ignored(full_path, ignore_patterns, str(project_root)):
+                    rel_path = os.path.relpath(full_path, project_root)
+                    all_files.append(rel_path)
+        
+        return "\n".join(sorted(all_files))
+    except Exception as e:
+        return f"Error listing files: {e}"
+
+
+@mcp.tool()
+def read_files(paths: List[str]) -> str:
+    """
+    Reads the contents of specific project files.
+    Allowed to read any non-ignored, non-binary file in the project.
 
     Args:
-        patch_content: The markdown content containing code blocks.
-                       Use Unified Diff format (@@ ... @@) for edits
-                       and Full File content for new files.
-                       Always include '# FILE: path/to/file' headers.
+        paths: List of relative file paths to read.
+    """
+    try:
+        config = _load_config()
+        project_root = Path(config["project_root"])
+        ignore_patterns = read_gitignore()
+        readable_files = config.get("readable_files", [])
+        editable_files = config.get("editable_files", [])
+
+        output = []
+        for rel_path in paths:
+            file_path = project_root / rel_path
+            
+            # Safety checks
+            if not file_path.exists():
+                output.append(f"## File: {rel_path}\n(File does not exist)\n")
+                continue
+            
+            if is_ignored(str(file_path), ignore_patterns, str(project_root)):
+                output.append(f"## File: {rel_path}\n(Ignored by .gitignore)\n")
+                continue
+            
+            if is_binary(str(file_path)):
+                output.append(f"## File: {rel_path}\n(Binary file)\n")
+                continue
+
+            perm = "EDITABLE" if rel_path in editable_files else "READ-ONLY"
+            output.append(f"## File: {rel_path} ({perm})")
+            try:
+                content = file_path.read_text(encoding="utf-8", errors="replace")
+                output.append("```")
+                output.append(content)
+                output.append("```\n")
+            except Exception as e:
+                output.append(f"(Error reading file: {e})\n")
+
+        return "\n".join(output)
+    except Exception as e:
+        return f"Error reading context: {str(e)}"
+
+
+@mcp.tool()
+def apply_edits(edits: List[EditBlock]) -> str:
+    """
+    Atomic Search-and-Replace.
+    Applies a list of edits. If ANY edit fails validation (e.g., search block not found
+    uniquely), NO files are changed.
+    If successful, runs the verification command automatically.
+
+    Args:
+        edits: A list of file modifications.
     """
     try:
         config = _load_config()
         editable_files = set(config.get("editable_files", []))
         project_root = Path(config["project_root"])
+        verification_cmd = config.get("verification_command")
 
-        original_cwd = os.getcwd()
-        original_stdout = sys.stdout
-        os.chdir(project_root)
+        # --- Phase 1: Validation & Staging ---
+        staged_changes: Dict[Path, str] = {}
+        
+        # We need to process edits per file to handle sequential changes to the same file
+        from collections import defaultdict
+        edits_by_file = defaultdict(list)
+        for edit in edits:
+            edits_by_file[edit.file_path].append(edit)
+            
+        for rel_path, file_edits in edits_by_file.items():
+            if rel_path not in editable_files:
+                 return f"Permission Denied: '{rel_path}' is not in the editable_files whitelist."
+            
+            file_path = project_root / rel_path
+            if not file_path.exists():
+                return f"Error: File '{rel_path}' does not exist."
+            
+            content = file_path.read_text(encoding="utf-8")
+            
+            # Apply edits sequentially in memory
+            for edit in file_edits:
+                count = content.count(edit.search)
+                if count == 0:
+                    return f"Search block not found in '{rel_path}'.\nBlock:\n{edit.search}"
+                if count > 1:
+                    return f"Ambiguous match: Search block found {count} times in '{rel_path}'. Block must be unique."
+                
+                content = content.replace(edit.search, edit.replace)
+            
+            staged_changes[file_path] = content
 
-        try:
-            # Capture stdout to prevent MCP protocol corruption.
-            # apply_patches() and parse_llm_output() use Console/click which write to stdout.
-            captured = StringIO()
-            sys.stdout = captured
-
-            # Parse patches
-            patches = parse_llm_output(patch_content)
-            if not patches:
-                return "No valid patches found in input."
-
-            # Validate permissions
-            for patch in patches:
-                # patch['file_path'] is likely relative or absolute. Normalize to relative.
-                p_path = Path(patch["file_path"])
-                if p_path.is_absolute():
-                    try:
-                        rel_path = p_path.relative_to(project_root).as_posix()
-                    except ValueError:
-                        return (
-                            f"Error: Path {patch['file_path']} is outside project root."
-                        )
-                else:
-                    rel_path = p_path.as_posix()
-
-                # Safety check: Is this file allowed to be edited?
-                if rel_path not in editable_files:
-                    return f"Permission Denied: {rel_path} is Read-Only or not in the active context."
-
-            modified = apply_patches(patches)
-
-            details = captured.getvalue().strip()
-            result_lines = []
-            if modified:
-                result_lines.append(
-                    f"Successfully applied patches to: {', '.join(modified)}"
-                )
-            else:
-                result_lines.append("No patches were applied.")
-            if details:
-                result_lines.append(f"\nDetails:\n{details}")
-            return "\n".join(result_lines)
-
-        finally:
-            sys.stdout = original_stdout
-            os.chdir(original_cwd)
+        # --- Phase 2: Execution ---
+        for file_path, new_content in staged_changes.items():
+            file_path.write_text(new_content, encoding="utf-8")
+            
+        summary = f"Successfully modified {len(staged_changes)} files: {', '.join([str(p.relative_to(project_root)) for p in staged_changes.keys()])}."
+        
+        # --- Phase 3: Verification ---
+        if verification_cmd:
+            verify_output = _run_cmd(verification_cmd, project_root)
+            return f"{summary}\n\n# Verification Output\n{verify_output}"
+        
+        return summary
 
     except Exception as e:
-        return f"Error applying patch: {str(e)}"
-
-
-@mcp.tool()
-def run_verification() -> str:
-    """
-    Runs the verification command (tests, linter, etc.) defined for this task.
-    Returns the stdout and stderr.
-    """
-    try:
-        config = _load_config()
-        command = config.get("verification_command")
-        project_root = config["project_root"]
-
-        if not command:
-            return "No verification command defined in Ralph configuration."
-
-        result = subprocess.run(
-            command,
-            cwd=project_root,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
-
-        output = [
-            f"$ {command}",
-            f"Exit Code: {result.returncode}",
-            "--- STDOUT ---",
-            result.stdout,
-            "--- STDERR ---",
-            result.stderr,
-        ]
-        return "\n".join(output)
-
-    except subprocess.TimeoutExpired:
-        return (
-            f"$ {command}\n"
-            "Error: Command timed out after 300 seconds.\n"
-            "Consider breaking the verification into smaller steps."
-        )
-    except Exception as e:
-        return f"Error running verification: {str(e)}"
+        return f"Error applying edits: {str(e)}"
 
 
 def main():
-    mcp.run()
-
-
-if __name__ == "__main__":
-    main()

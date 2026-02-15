@@ -6,6 +6,7 @@ Replaces the manual Rich + click.getchar() render loop in tree_selector.py.
 import json
 import os
 import subprocess
+import sys
 import tempfile
 from typing import Any, List, Optional, Tuple
 
@@ -581,6 +582,7 @@ class KopipastaTUI(App):
                 and self.manager.get_state(abs_path) == FileState.UNSELECTED
             ):
                 self.manager.set_state(abs_path, FileState.BASE)
+                self.tree_widget.ensure_path_visible(abs_path)
 
     # ------------------------------------------------------------------
     # Paste handling (direct paste)
@@ -620,6 +622,7 @@ class KopipastaTUI(App):
         def _do_apply() -> None:
             nonlocal modified_files, found_paths, had_patches
             console = Console()
+            console.clear()
 
             patches = parse_llm_output(content, console)
             if patches:
@@ -735,6 +738,7 @@ class KopipastaTUI(App):
             from rich.console import Console as RichConsole
 
             console = RichConsole()
+            console.clear()
             console.print(
                 "\n[bold cyan]📝 Paste the LLM's markdown response below.[/bold cyan]"
             )
@@ -763,7 +767,7 @@ class KopipastaTUI(App):
             _do_manual_paste()
 
         if self._paste_buffer.strip():
-            self._apply_paste_content(self._paste_buffer)
+            self._apply_paste_suspended(self._paste_buffer)
 
     # ------------------------------------------------------------------
     # Fix workflow (x key)
@@ -780,6 +784,7 @@ class KopipastaTUI(App):
             from rich.panel import Panel
 
             console = RichConsole()
+            console.clear()
             console.print(
                 Panel(
                     f"[bold cyan]🔧 Fix Workflow[/bold cyan]\n\n"
@@ -976,6 +981,7 @@ class KopipastaTUI(App):
             from rich.console import Console as RichConsole
 
             console = RichConsole()
+            console.clear()
             try:
                 pattern = input("Enter search pattern: ")
             except (KeyboardInterrupt, EOFError):
@@ -1032,6 +1038,10 @@ class KopipastaTUI(App):
 
         def _do_deps() -> None:
             from kopipasta.analysis import propose_and_add_dependencies
+            from rich.console import Console as RichConsole
+
+            console = RichConsole()
+            console.clear()
 
             files_list = self.manager.get_selected_files()
             deps, _ = propose_and_add_dependencies(
@@ -1172,12 +1182,21 @@ class KopipastaTUI(App):
                 if start_commit and start_commit != "NO_GIT":
 
                     def _on_squash_confirm(do_squash: bool) -> None:
-                        from rich.console import Console as RichConsole
+                        # Suspend for git operations and printing
+                        def _do_finish_suspended() -> bool:
+                            from rich.console import Console as RichConsole
 
-                        console = RichConsole()
-                        if self.session.finish(
-                            squash=do_squash, console_printer=console.print
-                        ):
+                            console = RichConsole()
+                            console.clear()
+                            return self.session.finish(
+                                squash=do_squash, console_printer=console.print
+                            )
+
+                        success = False
+                        with self.suspend():
+                            success = _do_finish_suspended()
+
+                        if success:
                             self.notify("Session finished.", severity="information")
                             self.logger.info("session_finished", squashed=do_squash)
                         self._refresh_ui()
@@ -1190,10 +1209,17 @@ class KopipastaTUI(App):
                         callback=_on_squash_confirm,
                     )
                 else:
-                    from rich.console import Console as RichConsole
+                    # Suspend for finishing
+                    def _do_finish_simple() -> None:
+                        from rich.console import Console as RichConsole
 
-                    console = RichConsole()
-                    self.session.finish(console_printer=console.print)
+                        console = RichConsole()
+                        console.clear()
+                        self.session.finish(console_printer=console.print)
+
+                    with self.suspend():
+                        _do_finish_simple()
+
                     self.notify("Session finished.", severity="information")
                     self._refresh_ui()
 
@@ -1215,6 +1241,7 @@ class KopipastaTUI(App):
             from rich.panel import Panel
 
             console = RichConsole()
+            console.clear()
             console.print(
                 Panel(
                     f"[bold]🌱 Gardener: {title}[/bold]\n\n"
@@ -1230,34 +1257,51 @@ class KopipastaTUI(App):
             except (KeyboardInterrupt, EOFError):
                 return
 
-            # Now do manual paste
-            from prompt_toolkit import prompt as pt_prompt
-            from prompt_toolkit.styles import Style as PtStyle
-
+            # REPLACEMENT: Manual input loop instead of prompt_toolkit
             console.print("[bold cyan]📝 Paste the LLM's response below.[/bold cyan]")
-            console.print("   Press Meta+Enter or Esc then Enter to submit.\n")
-            style = PtStyle.from_dict({"": "#ffffff"})
+            console.print(
+                "   Press [bold]Ctrl-D[/bold] on an empty line to submit."
+            )
+            console.print("   Press [bold]Ctrl-C[/bold] to cancel.\n")
+
+            lines = []
             try:
-                content = pt_prompt(
-                    "> ",
-                    multiline=True,
-                    prompt_continuation="  ",
-                    style=style,
-                )
-                content = sanitize_string(content)
+                while True:
+                    line = input()
+                    lines.append(line)
+            except EOFError:
+                pass
+            except KeyboardInterrupt:
+                console.print("\n[red]Cancelled.[/red]")
+                input("\nPress Enter to return...")
+                return
+
+            if lines:
+                content = sanitize_string("\n".join(lines))
                 if content.strip():
                     patches = parse_llm_output(content, console)
                     if patches:
                         modified = apply_patches(patches, logger=self.logger)
+                        # We must update the manager via callbacks or wait for return
+                        # But since we are in suspend, we can't update Textual UI directly easily.
+                        # We'll rely on post-processing in the outer method or just mutate manager here.
+                        # Manager mutations are thread-safe enough for lists, but UI update must happen later.
+                        # We'll just return the Modified files info? No, let's do it here.
+                        # The manager is shared.
+                        
+                        # Note: We need to access manager on 'self' which is available in closure
                         self.manager.promote_all_to_base()
                         for path in modified:
                             self.manager.mark_as_delta(path)
+                            
                         if self.session.is_active:
                             self.session.auto_commit()
+                            
+                        console.print(f"\n[green]Applied patches to {len(modified)} files.[/green]")
                     else:
                         console.print("[yellow]No patches found in response.[/yellow]")
-            except KeyboardInterrupt:
-                console.print("\n[red]Cancelled.[/red]")
+                else:
+                    console.print("[yellow]Empty input.[/yellow]")
 
             input("\nPress Enter to return to file selector...")
 
@@ -1294,6 +1338,7 @@ class KopipastaTUI(App):
             import click
 
             console = RichConsole()
+            console.clear()
 
             # .gitignore check
             gitignore_path = os.path.join(self.project_root, ".gitignore")

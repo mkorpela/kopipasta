@@ -2,11 +2,12 @@
 Textual-based TUI for kopipasta.
 Replaces the manual Rich + click.getchar() render loop in tree_selector.py.
 """
+
 import json
 import os
 import subprocess
 import tempfile
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import pyperclip
 from rich.text import Text
@@ -28,7 +29,6 @@ from textual.widgets.tree import TreeNode
 from kopipasta.cache import (
     clear_cache,
     load_task_from_cache,
-    save_task_to_cache,
 )
 from kopipasta.claude import configure_claude_desktop
 from kopipasta.config import read_fix_command
@@ -45,7 +45,6 @@ from kopipasta.patcher import apply_patches, parse_llm_output, find_paths_in_tex
 from kopipasta.prompt import (
     generate_extension_prompt,
     generate_fix_prompt,
-    get_file_snippet,
 )
 from kopipasta.selection import SelectionManager, FileState
 from kopipasta.session import Session, SESSION_FILENAME
@@ -267,6 +266,7 @@ class FileTreeWidget(TextualTree):
 
     class NodeSelected(TextualTree.NodeSelected):
         """Posted when selection state changes (for status bar refresh)."""
+
         pass
 
     def _populate_directory(self, tree_node: TreeNode) -> None:
@@ -939,7 +939,10 @@ class KopipastaTUI(App):
         found_files: List[str] = []
 
         def _do_grep() -> None:
-            from kopipasta.analysis import grep_files_in_directory, select_from_grep_results
+            from kopipasta.analysis import (
+                grep_files_in_directory,
+                select_from_grep_results,
+            )
             from rich.console import Console as RichConsole
 
             console = RichConsole()
@@ -1018,9 +1021,7 @@ class KopipastaTUI(App):
                 self.tree_widget.ensure_path_visible(abs_path)
 
         if new_deps:
-            self.notify(
-                f"Added {len(new_deps)} dependencies.", severity="information"
-            )
+            self.notify(f"Added {len(new_deps)} dependencies.", severity="information")
         self._refresh_ui()
 
     # ------------------------------------------------------------------
@@ -1137,7 +1138,6 @@ class KopipastaTUI(App):
                 if not do_delete:
                     return
                 clear_cache()
-                should_squash = False
 
                 if start_commit and start_commit != "NO_GIT":
 
@@ -1168,9 +1168,7 @@ class KopipastaTUI(App):
                     self._refresh_ui()
 
             self.push_screen(
-                ConfirmModal(
-                    "🗑️  Delete `AI_SESSION.md` and finish session?"
-                ),
+                ConfirmModal("🗑️  Delete `AI_SESSION.md` and finish session?"),
                 callback=_on_delete_confirm,
             )
 
@@ -1206,12 +1204,8 @@ class KopipastaTUI(App):
             from prompt_toolkit import prompt as pt_prompt
             from prompt_toolkit.styles import Style as PtStyle
 
-            console.print(
-                "[bold cyan]📝 Paste the LLM's response below.[/bold cyan]"
-            )
-            console.print(
-                "   Press Meta+Enter or Esc then Enter to submit.\n"
-            )
+            console.print("[bold cyan]📝 Paste the LLM's response below.[/bold cyan]")
+            console.print("   Press Meta+Enter or Esc then Enter to submit.\n")
             style = PtStyle.from_dict({"": "#ffffff"})
             try:
                 content = pt_prompt(
@@ -1231,9 +1225,7 @@ class KopipastaTUI(App):
                         if self.session.is_active:
                             self.session.auto_commit()
                     else:
-                        console.print(
-                            "[yellow]No patches found in response.[/yellow]"
-                        )
+                        console.print("[yellow]No patches found in response.[/yellow]")
             except KeyboardInterrupt:
                 console.print("\n[red]Cancelled.[/red]")
 

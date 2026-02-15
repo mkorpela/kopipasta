@@ -281,7 +281,7 @@ class KopipastaApp:
         """Runs the TreeSelector UI."""
         if not self.paths_for_tree:
             return
-    
+
         selected_files, file_char_count = run_tui(
             project_root=self.project_root_abs,
             ignore_patterns=self.ignore_patterns,

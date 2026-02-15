@@ -701,8 +701,6 @@ class KopipastaTUI(App):
         self.logger.info("action_p_start", mode="manual_paste")
 
         def _do_manual_paste() -> None:
-            from prompt_toolkit import prompt as pt_prompt
-            from prompt_toolkit.styles import Style as PtStyle
             from rich.console import Console as RichConsole
 
             console = RichConsole()
@@ -710,24 +708,25 @@ class KopipastaTUI(App):
                 "\n[bold cyan]📝 Paste the LLM's markdown response below.[/bold cyan]"
             )
             console.print(
-                "   Press [bold]Meta+Enter[/bold] or [bold]Esc[/bold] then [bold]Enter[/bold] to submit."
+                "   Press [bold]Ctrl-D[/bold] on an empty line to submit."
             )
             console.print("   Press [bold]Ctrl-C[/bold] to cancel.\n")
 
-            style = PtStyle.from_dict({"": "#ffffff"})
+            lines = []
             try:
-                content = pt_prompt(
-                    "> ",
-                    multiline=True,
-                    prompt_continuation="  ",
-                    style=style,
-                )
-                content = sanitize_string(content)
-                if content.strip():
-                    self._paste_buffer = content
+                while True:
+                    line = input()
+                    lines.append(line)
+            except EOFError:
+                pass
             except KeyboardInterrupt:
                 console.print("\n[red]Cancelled.[/red]")
                 return
+
+            if lines:
+                content = sanitize_string("\n".join(lines))
+                if content.strip():
+                    self._paste_buffer = content
 
         with self.suspend():
             _do_manual_paste()

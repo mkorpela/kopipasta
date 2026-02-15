@@ -324,3 +324,8 @@ def apply_edits(edits: List[EditBlock]) -> str:
 
 
 def main():
+    mcp.run()
+
+
+if __name__ == "__main__":
+    main()

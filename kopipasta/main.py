@@ -82,7 +82,7 @@ class KopipastaApp:
         configure_logging()
         self.logger = get_logger()
         self.console = Console()
-        self.args = None
+        self.args: argparse.Namespace = argparse.Namespace()
 
         # Core State
         self.project_root_abs = os.path.abspath(os.getcwd())
@@ -233,11 +233,10 @@ class KopipastaApp:
             print(f"Warning: {input_path} does not exist. Skipping.")
 
     def _handle_web_input(self, url: str):
-        result = fetch_web_content(url)
-        if not result:
+        file_tuple, full_content, snippet = fetch_web_content(url)
+        if file_tuple is None or full_content is None or snippet is None:
             return
 
-        file_tuple, full_content, snippet = result
         is_large = len(full_content) > 10000
         content = full_content
         is_snippet = False
@@ -261,7 +260,12 @@ class KopipastaApp:
                 print("Using full content.")
 
         # Reconstruct tuple with snippet choice
-        final_tuple = (file_tuple[0], is_snippet, file_tuple[2], file_tuple[3])
+        final_tuple: FileTuple = (
+            file_tuple[0],
+            is_snippet,
+            file_tuple[2],
+            file_tuple[3],
+        )
 
         self.web_contents[url] = (final_tuple, content)
         self.current_char_count += len(content)
@@ -351,15 +355,16 @@ class KopipastaApp:
         ]
 
     def _get_task_description(self) -> str:
-        cached_task = None
-        if not self.args.task:
+        cached_task: Optional[str] = None
+        task_arg: Optional[str] = self.args.task
+        if not task_arg:
             cached_task = load_task_from_cache()
 
-        if self.args.task:
+        if task_arg:
             self.console.print(
                 "\n[bold cyan]Using task description from --task argument.[/bold cyan]"
             )
-            task = self.args.task
+            task: str = task_arg
         else:
             task = get_task_from_user_interactive(
                 self.console, default_text=cached_task or ""

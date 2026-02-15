@@ -92,7 +92,8 @@ def read_global_profile() -> Optional[str]:
     """Reads the global profile content."""
     config_path = get_global_profile_path()
     if config_path.exists():
-        return read_file_contents(str(config_path))
+        result: Optional[str] = read_file_contents(str(config_path))
+        return result
     return None
 
 
@@ -133,7 +134,8 @@ def read_project_context(project_root: str) -> Optional[str]:
     """Reads AI_CONTEXT.md from project root."""
     path = os.path.join(project_root, "AI_CONTEXT.md")
     if os.path.exists(path):
-        return read_file_contents(path)
+        result: Optional[str] = read_file_contents(path)
+        return result
     return None
 
 
@@ -141,7 +143,8 @@ def read_session_state(project_root: str) -> Optional[str]:
     """Reads AI_SESSION.md from project root."""
     path = os.path.join(project_root, "AI_SESSION.md")
     if os.path.exists(path):
-        return read_file_contents(path)
+        result: Optional[str] = read_file_contents(path)
+        return result
     return None
 
 

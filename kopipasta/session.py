@@ -47,7 +47,8 @@ class Session:
                 first_line = f.readline()
                 match = re.search(r"<!-- KOPIPASTA_METADATA (.+) -->", first_line)
                 if match:
-                    return json.loads(match.group(1))
+                    result: SessionMetadata = json.loads(match.group(1))
+                    return result
         except Exception:
             pass
         return None

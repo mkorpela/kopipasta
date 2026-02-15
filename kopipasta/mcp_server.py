@@ -1,5 +1,6 @@
 import json
 import os
+import platform
 import subprocess
 import sys
 from pathlib import Path
@@ -46,7 +47,8 @@ def _load_config() -> Dict[str, Any]:
             f"(searched: {config_path})"
         )
     with open(config_path, "r", encoding="utf-8") as f:
-        return json.load(f)
+        result: Dict[str, Any] = json.load(f)
+        return result
 
 
 def _get_project_root_override() -> Optional[str]:
@@ -60,6 +62,33 @@ def _get_project_root_override() -> Optional[str]:
             return arg.split("=", 1)[1]
     # Fallback to environment variable
     return os.environ.get("KOPIPASTA_PROJECT_ROOT")
+
+
+def _get_shell_env() -> Dict[str, str]:
+    """Build a subprocess environment with the user's full login-shell PATH.
+
+    Claude Desktop on macOS launches MCP servers with a minimal PATH that
+    excludes ~/.cargo/bin, ~/.local/bin, etc.  We resolve the real PATH
+    once via the user's login shell so tools like ``uv`` are discoverable.
+    """
+    env = os.environ.copy()
+    if platform.system() != "Darwin":
+        return env
+
+    shell = os.environ.get("SHELL", "/bin/zsh")
+    try:
+        result = subprocess.run(
+            [shell, "-lc", "echo $PATH"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            env["PATH"] = result.stdout.strip()
+    except Exception:
+        pass  # fall back to existing env
+
+    return env
 
 
 def _get_project_root() -> Path:
@@ -76,6 +105,7 @@ def _run_cmd(command: str, cwd: Path) -> str:
             capture_output=True,
             text=True,
             timeout=300,
+            env=_get_shell_env(),
         )
         return f"$ {command}\nExit Code: {result.returncode}\n--- STDOUT ---\n{result.stdout}\n--- STDERR ---\n{result.stderr}"
     except Exception as e:
@@ -116,6 +146,7 @@ def read_context() -> str:
                     capture_output=True,
                     text=True,
                     timeout=300,
+                    env=_get_shell_env(),
                 )
                 output.append(f"$ {command}")
                 output.append(f"Exit Code: {result.returncode}")

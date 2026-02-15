@@ -194,7 +194,8 @@ def parse_typescript_imports(
         file_path_abs, project_root_abs
     )
 
-    abs_base_url, alias_map = None, {}
+    abs_base_url: Optional[str] = None
+    alias_map: Dict[str, List[str]] = {}
     if relevant_tsconfig_abs_path:
         abs_base_url, alias_map = load_tsconfig_config(relevant_tsconfig_abs_path)
     else:
@@ -293,7 +294,7 @@ def resolve_python_import(
 def parse_python_imports(
     file_content: str, file_path_abs: str, project_root_abs: str
 ) -> Set[str]:
-    resolved_imports = set()
+    resolved_imports: Set[str] = set()
     current_file_dir_abs = os.path.dirname(file_path_abs)
 
     try:

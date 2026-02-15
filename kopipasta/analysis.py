@@ -102,7 +102,7 @@ def propose_and_add_dependencies(
             break
 
         try:
-            selected_indices = set()
+            selected_indices: set[int] = set()
             parts = choice.replace(" ", "").split(",")
             if all(p.strip() for p in parts):
                 for part in parts:
@@ -343,7 +343,7 @@ def select_from_grep_results(
 
         else:
             try:
-                selected_indices = set()
+                selected_indices: set[int] = set()
                 parts = choice.replace(" ", "").split(",")
                 if all(p.strip() for p in parts):
                     for part in parts:

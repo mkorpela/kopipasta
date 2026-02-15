@@ -212,7 +212,7 @@ class PatchParser:
         info_string: str,
     ):
         current_path = initial_path
-        current_lines = []
+        current_lines: List[str] = []
         valid_headers_found = 0
 
         if current_path:
@@ -307,7 +307,7 @@ class PatchParser:
             )
 
 
-def parse_llm_output(content: str, console: Console = None) -> List[Patch]:
+def parse_llm_output(content: str, console: Optional[Console] = None) -> List[Patch]:
     parser = PatchParser(content, console)
     return parser.parse()
 
@@ -341,7 +341,7 @@ def _parse_diff_hunks(diff_content: str) -> List[Hunk]:
     """Parses the content of a diff block into a list of Hunks."""
     hunks: List[Hunk] = []
     lines = diff_content.splitlines()
-    current_hunk: Hunk = None
+    current_hunk: Optional[Hunk] = None
 
     # Regex to parse the hunk header: @@ -12,3 +15,5 @@
     hunk_header_regex = re.compile(r"^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@")
@@ -392,8 +392,8 @@ def _parse_search_replace_block(lines: List[str]) -> List[Hunk]:
     S_NEW = 2
 
     state = S_TEXT
-    current_orig = []
-    current_new = []
+    current_orig: List[str] = []
+    current_new: List[str] = []
 
     # Regex for markers (allow 4 or more chars)
     re_start = re.compile(r"^<{4,}\s*$")
@@ -678,7 +678,7 @@ def apply_patches(
     for patch in patches:
         file_path = patch["file_path"]
         patch_type = patch["type"]
-        patch_content = patch["content"]
+        patch_content: PatchContent = patch["content"]
 
         # --- Logging Original State (Forensics) ---
         original_content_log: Optional[str] = None
@@ -745,13 +745,15 @@ def apply_patches(
 
             # If file doesn't exist, it's a simple creation.
             if not os.path.exists(file_path):
-                if patch_type == "diff":
+                if patch_type == "diff" and isinstance(patch_content, list):
                     # For a new file, a diff is just the content to be added.
                     full_content = "\n".join(
                         line for hunk in patch_content for line in hunk["new_lines"]
                     )
-                else:  # 'full'
+                elif isinstance(patch_content, str):
                     full_content = patch_content
+                else:
+                    continue
 
                 parent_dir = os.path.dirname(file_path)
                 if parent_dir:
@@ -768,7 +770,7 @@ def apply_patches(
             with open(file_path, "r", encoding="utf-8") as f:
                 original_content = f.read()
 
-            if patch_type == "diff":
+            if patch_type == "diff" and isinstance(patch_content, list):
                 if _apply_diff_patch(
                     file_path, original_content, patch_content, console
                 ):
@@ -785,7 +787,7 @@ def apply_patches(
                             error="diff_application_failed",
                         )
 
-            else:  # 'full'
+            elif isinstance(patch_content, str):  # 'full'
                 # For non-diff blocks, we treat them as full file overwrites.
                 final_content = patch_content
                 if original_content.endswith("\n") and not final_content.endswith("\n"):

@@ -44,4 +44,5 @@ def configure_logging():
 
 def get_logger() -> structlog.stdlib.BoundLogger:
     """Returns a structured logger instance."""
-    return structlog.get_logger()
+    logger: structlog.stdlib.BoundLogger = structlog.get_logger()
+    return logger

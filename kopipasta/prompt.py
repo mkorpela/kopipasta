@@ -361,7 +361,11 @@ def get_project_structure(ignore_patterns, search_paths=None):
     return "\n".join(tree)
 
 
-def handle_env_variables(content, env_vars, decisions_cache: Dict[str, str] = None):
+def handle_env_variables(
+    content: str,
+    env_vars: Dict[str, str],
+    decisions_cache: Optional[Dict[str, str]] = None,
+) -> str:
     if decisions_cache is None:
         decisions_cache = {}
 
@@ -406,7 +410,7 @@ def generate_prompt_template(
     ignore_patterns: List[str],
     web_contents: Dict[str, Tuple[FileTuple, str]],
     env_vars: Dict[str, str],
-    search_paths: List[str] = None,
+    search_paths: Optional[List[str]] = None,
     user_profile: Optional[str] = None,
     project_context: Optional[str] = None,
     session_state: Optional[str] = None,
@@ -415,7 +419,7 @@ def generate_prompt_template(
     Generates the prompt using the Jinja2 template.
     Returns (rendered_prompt_string, cursor_position_index).
     """
-    env_decisions = {}
+    env_decisions: Dict[str, str] = {}
 
     # 1. Prepare Project Structure
     structure_tree = get_project_structure(ignore_patterns, search_paths)
@@ -502,7 +506,7 @@ def generate_extension_prompt(
     Generates a minimal prompt containing only file content blocks.
     Used for the 'Extend Context' follow-up flow.
     """
-    env_decisions = {}
+    env_decisions: Dict[str, str] = {}
     processed_files = []
 
     for file, use_snippet, chunks, content_type in files_to_include:

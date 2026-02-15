@@ -605,38 +605,70 @@ class KopipastaTUI(App):
 
     def _on_paste_modal_dismissed(self, result: str) -> None:
         if result == "apply":
-            self._apply_paste_content(self._paste_buffer)
+            self._apply_paste_suspended(self._paste_buffer)
         elif result == "edit":
             self._edit_and_apply()
 
-    @work(thread=True)
-    def _apply_paste_content(self, content: str) -> None:
-        """Apply pasted content as patches or intelligent import. Runs in thread."""
+    def _apply_paste_suspended(self, content: str) -> None:
+        """Apply pasted content with full terminal output via suspend."""
         from rich.console import Console
 
-        console = Console()
+        modified_files: list[str] = []
+        found_paths: list[str] = []
+        had_patches = False
 
-        patches = parse_llm_output(content, console)
-        if patches:
-            self.logger.info("paste_patches_found", count=len(patches))
-            modified_files = apply_patches(patches, logger=self.logger)
-            self.app.call_from_thread(self._post_patch, modified_files)
-            return
+        def _do_apply() -> None:
+            nonlocal modified_files, found_paths, had_patches
+            console = Console()
 
-        # Fallback: Intelligent Import (path scanning)
-        all_paths = self.tree_widget.get_all_unignored_files()
-        found_paths = find_paths_in_text(content, all_paths)
+            patches = parse_llm_output(content, console)
+            if patches:
+                had_patches = True
+                self.logger.info("paste_patches_found", count=len(patches))
+                modified_files.extend(apply_patches(patches, logger=self.logger))
+                if modified_files:
+                    console.print(
+                        f"\n[bold green]✅ Applied patches to {len(modified_files)} file(s).[/bold green]"
+                    )
+                else:
+                    console.print(
+                        "\n[bold yellow]⚠ Patches were found but none could be applied.[/bold yellow]"
+                    )
+                console.print(
+                    "\n[bold]Review the changes with `git diff` before committing.[/bold]"
+                )
+                input("\nPress Enter to return to file selector...")
+                return
 
-        if found_paths:
-            self.logger.info("paste_paths_found", count=len(found_paths))
-            self.app.call_from_thread(self._import_paths, found_paths)
-        else:
-            self.logger.info("paste_no_match")
-            self.app.call_from_thread(
-                self.notify,
-                "No patches or project paths detected in pasted content.",
-                severity="warning",
-            )
+            # Fallback: Intelligent Import (path scanning)
+            all_paths = self.tree_widget.get_all_unignored_files()
+            found_paths.extend(find_paths_in_text(content, all_paths))
+
+            if found_paths:
+                self.logger.info("paste_paths_found", count=len(found_paths))
+                console.print(
+                    f"\n[bold cyan]🔍 Found {len(found_paths)} project paths in text.[/bold cyan]"
+                )
+                for p in sorted(found_paths)[:10]:
+                    console.print(f"  • {p}")
+                if len(found_paths) > 10:
+                    console.print(f"  ... and {len(found_paths) - 10} more.")
+                input("\nPress Enter to add them to Delta...")
+            else:
+                self.logger.info("paste_no_match")
+                console.print(
+                    "\n[yellow]No patches or valid project paths detected in pasted content.[/yellow]"
+                )
+                input("\nPress Enter to return to file selector...")
+
+        with self.suspend():
+            _do_apply()
+
+        # Post-processing on main thread
+        if had_patches and modified_files:
+            self._post_patch(modified_files)
+        elif found_paths:
+            self._import_paths(found_paths)
 
     def _post_patch(self, modified_files: List[str]) -> None:
         """Called on main thread after patches applied."""
@@ -676,21 +708,20 @@ class KopipastaTUI(App):
             tf.write(self._paste_buffer)
             temp_path = tf.name
 
-        def _run_editor() -> None:
-            subprocess.run([editor, temp_path])
-            try:
-                with open(temp_path, "r", encoding="utf-8") as f:
-                    self._paste_buffer = f.read()
-            finally:
-                try:
-                    os.unlink(temp_path)
-                except OSError:
-                    pass
-            # After editor closes, apply
-            self._apply_paste_content(self._paste_buffer)
-
         with self.suspend():
-            _run_editor()
+            subprocess.run([editor, temp_path])
+
+        try:
+            with open(temp_path, "r", encoding="utf-8") as f:
+                self._paste_buffer = f.read()
+        finally:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+
+        if self._paste_buffer.strip():
+            self._apply_paste_suspended(self._paste_buffer)
 
     # ------------------------------------------------------------------
     # Manual paste (p key) — same as old workflow, suspend + prompt

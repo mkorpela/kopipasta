@@ -84,7 +84,7 @@ def test_repro_whitespace_mismatch(repro_dir, capsys):
     """
     file_path = repro_dir / "indent.py"
     file_path.write_text(
-        "def main():\n" "    # deeply indented\n" "    return True\n", encoding="utf-8"
+        "def main():\n    # deeply indented\n    return True\n", encoding="utf-8"
     )
 
     # Patch uses 2 spaces for context, but file has 4

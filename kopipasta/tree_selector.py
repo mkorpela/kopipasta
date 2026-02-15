@@ -514,7 +514,7 @@ q: Quit and finalize"""
                 for p in sorted(found_paths)[:10]:
                     self.console.print(f"  • {p}")
                 if len(found_paths) > 10:
-                    self.console.print(f"  ... and {len(found_paths)-10} more.")
+                    self.console.print(f"  ... and {len(found_paths) - 10} more.")
 
                 choice = click.prompt(
                     "\n[A]ppend to current selection, [R]eplace selection, or [C]ancel?",

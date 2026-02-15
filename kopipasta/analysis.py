@@ -85,7 +85,7 @@ def propose_and_add_dependencies(
         f"\nFound {len(suggested_deps)} new local {'dependency' if len(suggested_deps) == 1 else 'dependencies'}:"
     )
     for i, dep_path in enumerate(suggested_deps):
-        print(f"  ({i+1}) {os.path.relpath(dep_path)}")
+        print(f"  ({i + 1}) {os.path.relpath(dep_path)}")
 
     while True:
         choice = input(
@@ -237,7 +237,7 @@ def select_from_grep_results(
         file_size = os.path.getsize(file_path)
         file_size_readable = get_human_readable_size(file_size)
         print(
-            f"\n{i+1}. {os.path.relpath(file_path)} ({file_size_readable}) - {match_count} {'match' if match_count == 1 else 'matches'}"
+            f"\n{i + 1}. {os.path.relpath(file_path)} ({file_size_readable}) - {match_count} {'match' if match_count == 1 else 'matches'}"
         )
         for preview_line in preview_lines[:3]:
             print(preview_line)

@@ -1,6 +1,7 @@
 """
 Auto-configure Claude Desktop to use the kopipasta MCP server.
 """
+
 import datetime
 import json
 import os

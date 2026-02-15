@@ -62,6 +62,6 @@ def test_is_ignored_with_nested_gitignores(project_root: Path):
     # so we pass an empty list and let the function handle discovery.
     for rel_path, expected in test_cases:
         full_path = project_root / rel_path
-        assert (
-            is_ignored(str(full_path), [], str(project_root)) == expected
-        ), f"Failed on path: {rel_path}"
+        assert is_ignored(str(full_path), [], str(project_root)) == expected, (
+            f"Failed on path: {rel_path}"
+        )

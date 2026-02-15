@@ -4,6 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Dict, Any, List
+from collections import defaultdict
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
@@ -91,7 +92,6 @@ def read_context() -> str:
     try:
         config = _load_config()
         project_root = Path(config["project_root"])
-        readable_files = config.get("readable_files", [])
         editable_files = config.get("editable_files", [])
         task = config.get("task_description", "")
 
@@ -104,7 +104,7 @@ def read_context() -> str:
         output.append("Use `list_files` to see all project files.\n")
         output.append("Use `read_files` to retrieve file contents.\n")
 
-        all_files = sorted(list(set(readable_files + editable_files)))
+        all_files = sorted(list(set(editable_files)))
 
         for rel_path in all_files:
             if rel_path in editable_files:
@@ -146,42 +146,6 @@ def read_context() -> str:
 
 
 @mcp.tool()
-def read_files(files: list[str]) -> str:
-    """
-    Reads the contents of specific project files.
-
-    Args:
-        files: List of relative file paths to read. Only files in the
-               editable or readable set (as shown by read_context) are allowed.
-    """
-    try:
-        config = _load_config()
-        project_root = Path(config["project_root"])
-        readable_files = config.get("readable_files", [])
-        editable_files = config.get("editable_files", [])
-        allowed = set(readable_files + editable_files)
-
-        output = []
-        for rel_path in files:
-            if rel_path not in allowed:
-                output.append(f"## File: {rel_path}")
-                output.append("(Permission Denied: not in active context)\n")
-                continue
-
-        # Auto-run verification to give the agent immediate feedback
-        output.append("\n# Verification Result\n")
-        command = config.get("verification_command")
-        if command:
-            output.append(_run_cmd(command, project_root))
-        else:
-            output.append("No verification command configured.")
-
-        return "\n".join(output)
-    except Exception as e:
-        return f"Error reading context: {str(e)}"
-
-
-@mcp.tool()
 def list_files() -> str:
     """
     Recursively lists all files in the project root, respecting .gitignore.
@@ -196,15 +160,17 @@ def list_files() -> str:
             dirs[:] = [
                 d
                 for d in dirs
-                if not is_ignored(os.path.join(root, d), ignore_patterns, str(project_root))
+                if not is_ignored(
+                    os.path.join(root, d), ignore_patterns, str(project_root)
+                )
             ]
-            
+
             for file in files:
                 full_path = os.path.join(root, file)
                 if not is_ignored(full_path, ignore_patterns, str(project_root)):
                     rel_path = os.path.relpath(full_path, project_root)
                     all_files.append(rel_path)
-        
+
         return "\n".join(sorted(all_files))
     except Exception as e:
         return f"Error listing files: {e}"
@@ -223,22 +189,21 @@ def read_files(paths: List[str]) -> str:
         config = _load_config()
         project_root = Path(config["project_root"])
         ignore_patterns = read_gitignore()
-        readable_files = config.get("readable_files", [])
         editable_files = config.get("editable_files", [])
 
         output = []
         for rel_path in paths:
             file_path = project_root / rel_path
-            
+
             # Safety checks
             if not file_path.exists():
                 output.append(f"## File: {rel_path}\n(File does not exist)\n")
                 continue
-            
+
             if is_ignored(str(file_path), ignore_patterns, str(project_root)):
                 output.append(f"## File: {rel_path}\n(Ignored by .gitignore)\n")
                 continue
-            
+
             if is_binary(str(file_path)):
                 output.append(f"## File: {rel_path}\n(Binary file)\n")
                 continue
@@ -277,23 +242,22 @@ def apply_edits(edits: List[EditBlock]) -> str:
 
         # --- Phase 1: Validation & Staging ---
         staged_changes: Dict[Path, str] = {}
-        
+
         # We need to process edits per file to handle sequential changes to the same file
-        from collections import defaultdict
         edits_by_file = defaultdict(list)
         for edit in edits:
             edits_by_file[edit.file_path].append(edit)
-            
+
         for rel_path, file_edits in edits_by_file.items():
             if rel_path not in editable_files:
-                 return f"Permission Denied: '{rel_path}' is not in the editable_files whitelist."
-            
+                return f"Permission Denied: '{rel_path}' is not in the editable_files whitelist."
+
             file_path = project_root / rel_path
             if not file_path.exists():
                 return f"Error: File '{rel_path}' does not exist."
-            
+
             content = file_path.read_text(encoding="utf-8")
-            
+
             # Apply edits sequentially in memory
             for edit in file_edits:
                 count = content.count(edit.search)
@@ -301,22 +265,22 @@ def apply_edits(edits: List[EditBlock]) -> str:
                     return f"Search block not found in '{rel_path}'.\nBlock:\n{edit.search}"
                 if count > 1:
                     return f"Ambiguous match: Search block found {count} times in '{rel_path}'. Block must be unique."
-                
+
                 content = content.replace(edit.search, edit.replace)
-            
+
             staged_changes[file_path] = content
 
         # --- Phase 2: Execution ---
         for file_path, new_content in staged_changes.items():
             file_path.write_text(new_content, encoding="utf-8")
-            
+
         summary = f"Successfully modified {len(staged_changes)} files: {', '.join([str(p.relative_to(project_root)) for p in staged_changes.keys()])}."
-        
+
         # --- Phase 3: Verification ---
         if verification_cmd:
             verify_output = _run_cmd(verification_cmd, project_root)
             return f"{summary}\n\n# Verification Output\n{verify_output}"
-        
+
         return summary
 
     except Exception as e:

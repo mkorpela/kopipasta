@@ -48,9 +48,7 @@ def test_apply_search_replace_patch(search_replace_dir):
     Tests applying the search/replace patch to a real file.
     """
     file_path = search_replace_dir / "app.py"
-    file_path.write_text(
-        "import os\n\n" "def main():\n" "    print('hello')\n" "    return 0\n"
-    )
+    file_path.write_text("import os\n\ndef main():\n    print('hello')\n    return 0\n")
 
     llm_output = """
 ### app.py

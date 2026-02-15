@@ -587,7 +587,7 @@ def _apply_diff_patch(
                 match_type = f"fuzzy ({match_ratio:.2f})"
             else:
                 console.print(
-                    f"  - [yellow]Skipping hunk #{i+1}:[/yellow] Could not find a match."
+                    f"  - [yellow]Skipping hunk #{i + 1}:[/yellow] Could not find a match."
                 )
                 preview = "\n".join([f"      | {line}" for line in hunk_original[:3]])
                 console.print(f"    [dim]Expected context:\n{preview}[/dim]")
@@ -623,7 +623,7 @@ def _apply_diff_patch(
 
         if is_overlapping:
             console.print(
-                f"  - [yellow]Skipping hunk #{i+1}:[/yellow] Overlaps with a previous hunk."
+                f"  - [yellow]Skipping hunk #{i + 1}:[/yellow] Overlaps with a previous hunk."
             )
             continue
 
@@ -809,7 +809,7 @@ def apply_patches(
                     )
                     if is_shrinkage:
                         console.print(
-                            f"   • File shrinking significantly: {original_len} -> {new_len} chars (-{100 - int(new_len/original_len*100)}%)"
+                            f"   • File shrinking significantly: {original_len} -> {new_len} chars (-{100 - int(new_len / original_len * 100)}%)"
                         )
                     if has_diff_markers:
                         console.print(

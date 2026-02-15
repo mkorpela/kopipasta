@@ -234,9 +234,15 @@ class FileTreeWidget(TextualTree):
     }
     """
 
-    # Prevent the default Tree widget from consuming Space
+    # Bindings:
+    # - Override default Space (expand) to Toggle Selection
+    # - Add Vim-style navigation (j/k/h/l)
     BINDINGS = [
         Binding("space", "toggle_node", "Toggle", show=False),
+        Binding("j", "cursor_down", "Down", show=False),
+        Binding("k", "cursor_up", "Up", show=False),
+        Binding("h", "cursor_left", "Collapse", show=False),
+        Binding("l", "cursor_right", "Expand", show=False),
     ]
 
     def __init__(
@@ -301,6 +307,7 @@ class FileTreeWidget(TextualTree):
             child_path = os.path.join(data.path, d)
             child_data = NodeData(child_path, is_dir=True)
             child_node = tree_node.add(d, data=child_data, allow_expand=True)
+            # Add dummy node for lazy loading
             child_node.add_leaf("…", data=None)
 
         for f in sorted(files):
@@ -361,6 +368,12 @@ class FileTreeWidget(TextualTree):
 
     def _toggle_directory(self, node: TreeNode) -> None:
         """Toggle all files under a directory recursively."""
+        # Ensure the directory is scanned so we have children to toggle
+        data = node.data
+        if data is not None and not data.scanned:
+            node.remove_children()
+            self._populate_directory(node)
+
         file_nodes = self._collect_file_nodes(node)
         any_unselected = any(
             self.manager.get_state(n.data.path) == FileState.UNSELECTED
@@ -385,6 +398,7 @@ class FileTreeWidget(TextualTree):
             if child.data is None:
                 continue
             if child.data.is_dir:
+                # Ensure child dir is scanned before recursing
                 if not child.data.scanned:
                     child.remove_children()
                     self._populate_directory(child)
@@ -1282,14 +1296,7 @@ class KopipastaTUI(App):
                     patches = parse_llm_output(content, console)
                     if patches:
                         modified = apply_patches(patches, logger=self.logger)
-                        # We must update the manager via callbacks or wait for return
-                        # But since we are in suspend, we can't update Textual UI directly easily.
-                        # We'll rely on post-processing in the outer method or just mutate manager here.
-                        # Manager mutations are thread-safe enough for lists, but UI update must happen later.
-                        # We'll just return the Modified files info? No, let's do it here.
-                        # The manager is shared.
                         
-                        # Note: We need to access manager on 'self' which is available in closure
                         self.manager.promote_all_to_base()
                         for path in modified:
                             self.manager.mark_as_delta(path)

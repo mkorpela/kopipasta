@@ -106,36 +106,24 @@ When a commit fails or a linter reports errors, press `x` to auto-diagnose:
 
 **Fallback:** If no command is configured, `kopipasta` checks for `.git/hooks/pre-commit`, then falls back to `git diff --check HEAD`.
 
-### Ralph Loop (`r`) — MCP Agent Integration
+### Ralph Loop (`r`) : MCP Agent Integration
 
-Turn `kopipasta` into a secure backend for AI agents (like Claude Desktop).
+> "If you can define success as making a freaking slow shell script pass, then why not give the task to computer?"
+> — **mkorpela**
+
+Turn `kopipasta` into a secure, verifiable sandbox for AI agents (like Claude Desktop).
 
 1.  **Select Scope:**
-    *   **Green (Delta):** Files the agent is allowed to **EDIT**.
-    *   **Read Access:** The agent can read **all** project files (respecting `.gitignore`), but can only modify the Green ones.
-2.  **Configure:** Press `r`. Define a verification command (e.g., `pytest`, `npm test`, `./check.sh`).
-3.  **Connect:** `kopipasta` generates a `.ralph.json` config and automatically registers a local MCP server in your Claude Desktop configuration.
-4.  **Iterate:** The agent can now read your project, propose edits to the selected files, and run the verification command to self-correct.
+    * **Green (Delta):** The *only* files the agent is allowed to **EDIT**.
+    * **Read Access:** The agent can see your whole project (to understand context).
+2. **Set the Goal:**
+    Press `r`. Enter a verification command (e.g., `pytest`, `npm test`, `./check.sh`). This becomes the agent's definition of "done."
+3. **Auto-Connect:**
+    `kopipasta` generates the configuration and **automatically registers** the local MCP server in Claude Desktop.
+4. **Delegate:**
+    The agent wakes up, reads the context, proposes atomic edits to the Delta, and runs your verification command to self-correct.
 
-**Security:** Edits are strictly sandboxed to the files you explicitly selected (Delta). The agent cannot modify other files.
-
-### Creating a Full Prompt
-
-By default `kopipasta` opens the tree selector on the current directory.
-
-**Selection Basics:**
-*   Every code block applied via a patch **must** start with a file path comment for the tool to locate the target.
-    *   `# FILE: src/main.py`
-*   **To EDIT**: Use **Unified Diff** format (`@@ ... @@`).
-*   **To CREATE/OVERWRITE**: Provide the **FULL** file content.
-
-**CLI Arguments:**
-```bash
-kopipasta [options] [files_or_directories_or_urls...]
-```
-
-*   `[files...]`: Paths or URLs to use as the starting point.
-*   `-t TASK`, `--task TASK`: Provide the task description via CLI, skipping the editor.
+**Security:** Modifications are strictly sandboxed to the files you explicitly selected.
 
 ## Interactive Controls
 

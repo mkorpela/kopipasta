@@ -1204,9 +1204,9 @@ q: Quit and finalize"""
             Panel(
                 f"[bold cyan]🤖 Ralph Setup (MCP)[/bold cyan]\n\n"
                 f"   [green]Editable Files (Delta):[/green] {len(delta_files)}\n"
-                f"   [cyan]Read-Only Files (Base):[/cyan] {len(base_files)}\n\n"
+                f"   [dim]Read Access:[/dim] Entire Project (except .gitignore)\n\n"
                 "   The external agent will only be allowed to modify Green files.\n"
-                "   It can read both Green and Cyan files.\n",
+                "   It can read any file in the project to understand context.\n",
                 title="Ralph Loop",
                 border_style="cyan",
             )

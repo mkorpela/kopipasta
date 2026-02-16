@@ -49,6 +49,8 @@ The workflow is a fast, iterative cycle:
 *   **Extend (`e`)**: Copies only **Delta** files to the clipboard, then promotes them to **Base**.
 *   **Patch (`p`)**: Promotes patched files to **Delta** (marking them as the current focus).
 
+**Note on External Agents:** You can also use the **Ralph Loop (`r`)** to expose this selection state to an MCP-capable agent (like Claude Desktop). The agent gets **Write Access** to **Delta** files and **Read Access** to the **entire project**.
+
 ## Session Management
 
 `kopipasta` uses a **Quad-Memory Architecture** to prevent context drift in long tasks.
@@ -104,6 +106,19 @@ When a commit fails or a linter reports errors, press `x` to auto-diagnose:
 
 **Fallback:** If no command is configured, `kopipasta` checks for `.git/hooks/pre-commit`, then falls back to `git diff --check HEAD`.
 
+### Ralph Loop (`r`) — MCP Agent Integration
+
+Turn `kopipasta` into a secure backend for AI agents (like Claude Desktop).
+
+1.  **Select Scope:**
+    *   **Green (Delta):** Files the agent is allowed to **EDIT**.
+    *   **Read Access:** The agent can read **all** project files (respecting `.gitignore`), but can only modify the Green ones.
+2.  **Configure:** Press `r`. Define a verification command (e.g., `pytest`, `npm test`, `./check.sh`).
+3.  **Connect:** `kopipasta` generates a `.ralph.json` config and automatically registers a local MCP server in your Claude Desktop configuration.
+4.  **Iterate:** The agent can now read your project, propose edits to the selected files, and run the verification command to self-correct.
+
+**Security:** Edits are strictly sandboxed to the files you explicitly selected (Delta). The agent cannot modify other files.
+
 ### Creating a Full Prompt
 
 By default `kopipasta` opens the tree selector on the current directory.
@@ -130,12 +145,12 @@ kopipasta [options] [files_or_directories_or_urls...]
 | `p` | **Process** | Universal Intake. Applies patches OR imports file paths from text. |
 | `e` | **Extend** | Copy only **Delta** (Green) files to clipboard -> Promote to Base. |
 | `x` | **Fix** | Run fix command, detect affected files, copy diagnostic prompt. |
-| `c` | **Clear Base**| Unselect **Base** (Cyan) files. Keep **Delta** (Green). |
+| `c` | **Clear** | Open Clear/Reset menu (Selection, Task, or All). |
 | `s` | **Snippet** | Toggle Snippet Mode (include only first 50 lines). |
 | `d` | **Deps** | Analyze imports and add related local files. |
 | `g` | **Grep** | Search text patterns inside a directory. |
 | `a` | **Add All** | Add all files in the current directory. |
-| `r` | **Reuse** | Reuse file selection from the previous run. |
+| `r` | **Ralph** | Configure MCP Server for Agentic workflows (Claude Desktop). |
 | `n` | **Start** | Initialize `AI_SESSION.md`. |
 | `u` | **Update** | Generate "Handover" prompt to update session state. |
 | `f` | **Finish** | Generate "Harvest" prompt, delete session, and squash. |

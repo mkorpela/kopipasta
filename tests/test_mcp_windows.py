@@ -5,6 +5,7 @@ These tests protect against regressions where:
 - PowerShell (.ps1) scripts hang or silently fail when invoked via cmd.exe
 - subprocess stdin inheritance causes MCP server hangs in headless contexts
 - Command normalization breaks cross-platform execution
+- read_context/apply_edits bypass _run_cmd with inline subprocess calls
 """
 
 import platform
@@ -14,11 +15,23 @@ from pathlib import Path
 
 import pytest
 
-from kopipasta.mcp_server import _prepare_command, _run_cmd
+from kopipasta.mcp_server import _prepare_command, _run_cmd, read_context, apply_edits
 
 
 # ---------------------------------------------------------------------------
-# _prepare_command: PS1 wrapping
+# Helpers
+# ---------------------------------------------------------------------------
+
+MOCK_CONFIG = {
+    "project_root": "C:\\fake\\project",
+    "verification_command": ".\\verify.ps1",
+    "editable_files": ["app.py"],
+    "task_description": "test task",
+}
+
+
+# ---------------------------------------------------------------------------
+ # _prepare_command: PS1 wrapping
 # ---------------------------------------------------------------------------
 
 class TestPrepareCommandWindows:
@@ -198,3 +211,84 @@ class TestRunCmdOutput:
         result = _run_cmd("bad_cmd", Path("/tmp"))
         assert "Error running command" in result
         assert "boom" in result
+
+
+# ---------------------------------------------------------------------------
+# read_context / apply_edits: must delegate to _run_cmd, not inline subprocess
+# ---------------------------------------------------------------------------
+
+class TestNoInlineSubprocess:
+    """Guard against re-introducing inline subprocess.run calls that
+    bypass _prepare_command and stdin=DEVNULL."""
+
+    @patch("kopipasta.mcp_server._load_config", return_value=MOCK_CONFIG)
+    @patch("kopipasta.mcp_server.list_files", return_value=iter(["app.py"]))
+    @patch("kopipasta.mcp_server._run_cmd", return_value="$ verify\nExit Code: 0\n--- STDOUT ---\nok\n--- STDERR ---\n")
+    def test_read_context_delegates_to_run_cmd(
+        self,
+        mock_run_cmd: MagicMock,
+        _mock_files: MagicMock,
+        _mock_config: MagicMock,
+    ) -> None:
+        """read_context must call _run_cmd for verification, not subprocess.run directly."""
+        result = read_context()
+        mock_run_cmd.assert_called_once_with(
+            ".\\verify.ps1", Path("C:\\fake\\project")
+        )
+        assert "Exit Code: 0" in result
+
+    @patch("kopipasta.mcp_server._load_config", return_value=MOCK_CONFIG)
+    @patch("kopipasta.mcp_server.list_files", return_value=iter(["app.py"]))
+    @patch("kopipasta.mcp_server._run_cmd")
+    @patch("kopipasta.mcp_server.subprocess.run")
+    def test_read_context_never_calls_subprocess_directly(
+        self,
+        mock_subprocess: MagicMock,
+        mock_run_cmd: MagicMock,
+        _mock_files: MagicMock,
+        _mock_config: MagicMock,
+    ) -> None:
+        """subprocess.run must not be called directly from read_context."""
+        mock_run_cmd.return_value = "$ cmd\nExit Code: 0\n--- STDOUT ---\n\n--- STDERR ---\n"
+        read_context()
+        mock_subprocess.assert_not_called()
+    @patch("kopipasta.mcp_server._load_config", return_value={
+        **MOCK_CONFIG,
+        "verification_command": None,
+    })
+    @patch("kopipasta.mcp_server.list_files", return_value=iter(["app.py"]))
+    @patch("kopipasta.mcp_server._run_cmd")
+    def test_read_context_no_verification_skips_run(
+        self,
+        mock_run_cmd: MagicMock,
+        _mock_files: MagicMock,
+        _mock_config: MagicMock,
+    ) -> None:
+        """When no verification_command is set, _run_cmd should not be called."""
+        result = read_context()
+        mock_run_cmd.assert_not_called()
+        assert "No verification command configured" in result
+
+    @patch("kopipasta.mcp_server._load_config", return_value=MOCK_CONFIG)
+    @patch("kopipasta.mcp_server._run_cmd", return_value="$ verify\nExit Code: 0\n--- STDOUT ---\nok\n--- STDERR ---\n")
+    @patch("kopipasta.mcp_server.read_gitignore", return_value=[])
+    def test_apply_edits_delegates_verification_to_run_cmd(
+        self,
+        _mock_gitignore: MagicMock,
+        mock_run_cmd: MagicMock,
+        _mock_config: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """apply_edits must use _run_cmd for post-edit verification."""
+        # Create the file that will be edited
+        project = Path(MOCK_CONFIG["project_root"])
+        with patch.object(Path, "exists", return_value=True), \
+             patch.object(Path, "read_text", return_value="old content"), \
+             patch.object(Path, "write_text"):
+            from kopipasta.mcp_server import EditBlock
+            result = apply_edits(edits=[
+                EditBlock(file_path="app.py", search="old content", replace="new content")
+            ])
+        mock_run_cmd.assert_called_once_with(
+            ".\\verify.ps1", Path("C:\\fake\\project")
+        )

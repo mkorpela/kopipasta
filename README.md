@@ -108,7 +108,7 @@ When a commit fails or a linter reports errors, press `x` to auto-diagnose:
 
 ### Ralph Loop (`r`) : MCP Agent Integration
 
-> "If you can define success as making a freaking slow shell script pass, then why not give the task to computer?"
+> "If success is just a passing shell script, why are you doing the work?"
 > — **mkorpela**
 
 Turn `kopipasta` into a secure, verifiable sandbox for AI agents (like Claude Desktop).

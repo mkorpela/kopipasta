@@ -121,9 +121,7 @@ Turn `kopipasta` into a secure, verifiable sandbox for AI agents (like Claude De
 3. **Auto-Connect:**
     `kopipasta` generates the configuration and **automatically registers** the local MCP server in Claude Desktop.
 4. **Delegate:**
-    The agent wakes up, reads the context, proposes atomic edits to the Delta, and runs your verification command to self-correct.
-
-**Security:** Modifications are strictly sandboxed to the files you explicitly selected.
+    The agent wakes up, reads the context, makes edits, and runs your verification command to self-correct.
 
 ## Interactive Controls
 

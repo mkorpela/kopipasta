@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import platform
 import subprocess
 import sys
@@ -101,12 +102,45 @@ def _get_shell_env() -> Dict[str, str]:
     return env
 
 
+def _prepare_command(command: str) -> str:
+    """Prepare a shell command for the current platform.
+
+    On Windows, cmd.exe cannot execute .ps1 files directly — it either
+    silently "opens" them (exit 0, no output) or hangs.  We detect bare
+    .ps1 invocations and wrap them with powershell.exe.
+
+    Commands already prefixed with powershell/pwsh are left untouched.
+    """
+    if platform.system() != "Windows":
+        return command
+
+    stripped = command.strip()
+
+    # Already explicitly using powershell/pwsh — don't double-wrap
+    if re.match(r"(?i)^(?:powershell|pwsh)\b", stripped):
+        return command
+
+    # Split into script path and trailing arguments
+    parts = stripped.split(None, 1)
+    script = parts[0] if parts else ""
+    args_tail = parts[1] if len(parts) > 1 else ""
+
+    if script.lower().endswith(".ps1"):
+        wrapped = f'powershell -NoProfile -ExecutionPolicy Bypass -File "{script}"'
+        if args_tail:
+            wrapped += f" {args_tail}"
+        return wrapped
+
+    return command
+
+
 def _get_project_root() -> Path:
     config = _load_config()
     return Path(config["project_root"])
 
 
 def _run_cmd(command: str, cwd: Path) -> str:
+    command = _prepare_command(command)
     try:
         result = subprocess.run(
             command,
@@ -116,6 +150,7 @@ def _run_cmd(command: str, cwd: Path) -> str:
             text=True,
             timeout=300,
             env=_get_shell_env(),
+            stdin=subprocess.DEVNULL,
         )
         return f"$ {command}\nExit Code: {result.returncode}\n--- STDOUT ---\n{result.stdout}\n--- STDERR ---\n{result.stderr}"
     except Exception as e:

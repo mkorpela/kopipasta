@@ -13,6 +13,8 @@ from typing import Any, Dict, Optional
 
 from rich.console import Console
 
+from kopipasta.config import set_active_project
+
 
 def _get_claude_config_path() -> Path:
     """Determine the location of claude_desktop_config.json based on OS."""
@@ -65,6 +67,9 @@ def configure_claude_desktop(
 
     console.print(f"[dim]📍 Config path: {config_path}[/dim]")
 
+    # 0. Always update the active project pointer (hot-swap)
+    set_active_project(Path(project_root))
+
     # 2. Load or create config
     data: Dict[str, Any] = {"mcpServers": {}}
     if config_path.exists():
@@ -104,8 +109,7 @@ def configure_claude_desktop(
             "args": [
                 "-m",
                 "kopipasta.mcp_server",
-                "--project-root",
-                str(project_root),
+                # No project-root arg; server uses pointer file
             ],
             "cwd": str(project_root),
         }
@@ -118,8 +122,7 @@ def configure_claude_desktop(
                 "--from",
                 "kopipasta",
                 "kopipasta-mcp",
-                "--project-root",
-                str(project_root),
+                # No project-root arg; server uses pointer file
             ],
             "cwd": str(project_root),
         }
@@ -127,8 +130,24 @@ def configure_claude_desktop(
     # 5. Write config
     try:
         config_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Optimization: Don't rewrite if identical (prevents unnecessary file modification time updates)
+        # Note: We reconstruct 'data' above by loading it, but if it existed, we parsed it.
+        # However, to be strictly safe and avoid rewriting identical JSON:
+        current_content = ""
+        if config_path.exists():
+            with open(config_path, "r", encoding="utf-8") as f:
+                current_content = f.read().strip()
+        
+        new_content = json.dumps(data, indent=2)
+        
+        if current_content and json.loads(current_content) == data:
+            console.print(f"[green]✅ {server_name} config is up to date.[/green]")
+            console.print(f"[dim]   Active project set to: {project_root}[/dim]")
+            return True
+            
         with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+            f.write(new_content)
         console.print(f"[green]✅ {server_name} configured in Claude Desktop.[/green]")
         console.print("[dim]   Restart Claude Desktop to load the new toolset.[/dim]")
         return True

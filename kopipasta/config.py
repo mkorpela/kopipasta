@@ -97,6 +97,40 @@ def read_global_profile() -> Optional[str]:
     return None
 
 
+def get_active_project_pointer_path() -> Path:
+    """Returns the path to the active project pointer file."""
+    config_home = os.environ.get("XDG_CONFIG_HOME")
+    if config_home:
+        path = Path(config_home) / "kopipasta"
+    else:
+        path = Path.home() / ".config" / "kopipasta"
+    
+    path.mkdir(parents=True, exist_ok=True)
+    return path / "active_project"
+
+
+def set_active_project(project_path: Path) -> None:
+    """Writes the active project path to the pointer file."""
+    pointer = get_active_project_pointer_path()
+    try:
+        pointer.write_text(str(project_path.resolve()), encoding="utf-8")
+    except Exception as e:
+        print(f"Warning: Could not write active project pointer: {e}")
+
+
+def get_active_project() -> Optional[Path]:
+    """Reads the active project path from the pointer file."""
+    pointer = get_active_project_pointer_path()
+    if pointer.exists():
+        try:
+            content = pointer.read_text(encoding="utf-8").strip()
+            if content:
+                return Path(content)
+        except Exception:
+            pass
+    return None
+
+
 def open_profile_in_editor():
     """Opens the global profile in the default editor, creating it if needed."""
     config_path = get_global_profile_path()

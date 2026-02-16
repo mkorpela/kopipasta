@@ -11,7 +11,7 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
 from kopipasta.file import is_ignored, is_binary
-from kopipasta.config import read_gitignore
+from kopipasta.config import read_gitignore, get_active_project
 
 # Initialize FastMCP server
 mcp = FastMCP("kopipasta-ralph")
@@ -60,8 +60,18 @@ def _get_project_root_override() -> Optional[str]:
             return args[i + 1]
         if arg.startswith("--project-root="):
             return arg.split("=", 1)[1]
-    # Fallback to environment variable
-    return os.environ.get("KOPIPASTA_PROJECT_ROOT")
+            
+    # Check environment variable
+    env_root = os.environ.get("KOPIPASTA_PROJECT_ROOT")
+    if env_root:
+        return env_root
+
+    # Check global active project pointer
+    active = get_active_project()
+    if active:
+        return str(active)
+
+    return None
 
 
 def _get_shell_env() -> Dict[str, str]:

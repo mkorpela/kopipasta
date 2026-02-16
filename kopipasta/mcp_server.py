@@ -60,7 +60,7 @@ def _get_project_root_override() -> Optional[str]:
             return args[i + 1]
         if arg.startswith("--project-root="):
             return arg.split("=", 1)[1]
-            
+
     # Check environment variable
     env_root = os.environ.get("KOPIPASTA_PROJECT_ROOT")
     if env_root:

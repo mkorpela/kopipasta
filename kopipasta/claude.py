@@ -130,7 +130,7 @@ def configure_claude_desktop(
     # 5. Write config
     try:
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         # Optimization: Don't rewrite if identical (prevents unnecessary file modification time updates)
         # Note: We reconstruct 'data' above by loading it, but if it existed, we parsed it.
         # However, to be strictly safe and avoid rewriting identical JSON:
@@ -138,14 +138,14 @@ def configure_claude_desktop(
         if config_path.exists():
             with open(config_path, "r", encoding="utf-8") as f:
                 current_content = f.read().strip()
-        
+
         new_content = json.dumps(data, indent=2)
-        
+
         if current_content and json.loads(current_content) == data:
             console.print(f"[green]✅ {server_name} config is up to date.[/green]")
             console.print(f"[dim]   Active project set to: {project_root}[/dim]")
             return True
-            
+
         with open(config_path, "w", encoding="utf-8") as f:
             f.write(new_content)
         console.print(f"[green]✅ {server_name} configured in Claude Desktop.[/green]")

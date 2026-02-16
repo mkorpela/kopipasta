@@ -104,7 +104,7 @@ def get_active_project_pointer_path() -> Path:
         path = Path(config_home) / "kopipasta"
     else:
         path = Path.home() / ".config" / "kopipasta"
-    
+
     path.mkdir(parents=True, exist_ok=True)
     return path / "active_project"
 

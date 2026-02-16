@@ -183,27 +183,7 @@ def read_context() -> str:
         output.append("\n# Verification Result\n")
         command = config.get("verification_command")
         if command:
-            try:
-                result = subprocess.run(
-                    command,
-                    cwd=str(project_root),
-                    shell=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=300,
-                    env=_get_shell_env(),
-                )
-                output.append(f"$ {command}")
-                output.append(f"Exit Code: {result.returncode}")
-                output.append("--- STDOUT ---")
-                output.append(result.stdout)
-                output.append("--- STDERR ---")
-                output.append(result.stderr)
-            except subprocess.TimeoutExpired:
-                output.append(f"$ {command}")
-                output.append("Error: Command timed out after 300 seconds.")
-            except Exception as e:
-                output.append(f"Error running verification: {e}")
+            output.append(_run_cmd(command, project_root))
         else:
             output.append("No verification command configured.")
 

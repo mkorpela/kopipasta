@@ -150,33 +150,33 @@ def _get_project_root() -> Path:
 def _run_cmd(command: str, cwd: Path) -> str:
     """
     Runs a command with 'Smart Long-Polling'.
-    If command takes > 50s, it backgrounds the process and returns a prompt 
+    If command takes > 50s, it backgrounds the process and returns a prompt
     for the agent to wait on it.
     """
     command = _prepare_command(command)
-    
+
     # Generate unique output file names
     run_id = uuid.uuid4().hex[:8]
     out_path = cwd / f".ralph_exec_{run_id}.out"
     err_path = cwd / f".ralph_exec_{run_id}.err"
-    
+
     try:
-        # We use files for stdout/stderr to prevent buffer deadlocks and allow 
+        # We use files for stdout/stderr to prevent buffer deadlocks and allow
         # persistent capture if we detach.
         out_file = open(out_path, "w", encoding="utf-8")
         err_file = open(err_path, "w", encoding="utf-8")
-        
+
         proc = subprocess.Popen(
-            command, 
-            cwd=cwd, 
-            shell=True, 
+            command,
+            cwd=cwd,
+            shell=True,
             stdout=out_file,
             stderr=err_file,
             env=_get_shell_env(),
             stdin=subprocess.DEVNULL,
-            text=True
+            text=True,
         )
-        
+
         # Wait for the safe duration
         try:
             proc.wait(timeout=SAFE_CLIENT_TIMEOUT)
@@ -192,14 +192,14 @@ def _run_cmd(command: str, cwd: Path) -> str:
         # Finished within time
         out_file.close()
         err_file.close()
-        
+
         stdout = out_path.read_text(encoding="utf-8", errors="replace")
         stderr = err_path.read_text(encoding="utf-8", errors="replace")
-        
+
         # Cleanup temp files
         out_path.unlink(missing_ok=True)
         err_path.unlink(missing_ok=True)
-        
+
         return f"$ {command}\nExit Code: {proc.returncode}\n--- STDOUT ---\n{stdout}\n--- STDERR ---\n{stderr}"
 
     except Exception as e:
@@ -386,26 +386,26 @@ def wait_for_verification(pid: int) -> str:
     """
     if pid not in _BACKGROUND_JOBS:
         return f"Error: PID {pid} is not a known background job. It may have completed or been lost."
-    
+
     proc, out_path, err_path, out_file, err_file = _BACKGROUND_JOBS[pid]
-    
+
     try:
         # Wait another cycle
         proc.wait(timeout=SAFE_CLIENT_TIMEOUT)
-        
+
         # If we get here, it finished!
         del _BACKGROUND_JOBS[pid]
         out_file.close()
         err_file.close()
-        
+
         stdout = out_path.read_text(encoding="utf-8", errors="replace")
         stderr = err_path.read_text(encoding="utf-8", errors="replace")
-        
+
         out_path.unlink(missing_ok=True)
         err_path.unlink(missing_ok=True)
-        
+
         return f"[OK] Process {pid} Finished.\nExit Code: {proc.returncode}\n--- STDOUT ---\n{stdout}\n--- STDERR ---\n{stderr}"
-        
+
     except subprocess.TimeoutExpired:
         return f"[PENDING] Process {pid} is still running... Please call `wait_for_verification({pid})` again."
 

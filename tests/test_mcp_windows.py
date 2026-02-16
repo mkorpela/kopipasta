@@ -8,12 +8,10 @@ These tests protect against regressions where:
 - read_context/apply_edits bypass _run_cmd with inline subprocess calls
 """
 
-import platform
 import subprocess
 from unittest.mock import patch, MagicMock
 from pathlib import Path
 
-import pytest
 
 from kopipasta.mcp_server import _prepare_command, _run_cmd, read_context, apply_edits
 
@@ -31,8 +29,9 @@ MOCK_CONFIG = {
 
 
 # ---------------------------------------------------------------------------
- # _prepare_command: PS1 wrapping
+# _prepare_command: PS1 wrapping
 # ---------------------------------------------------------------------------
+
 
 class TestPrepareCommandWindows:
     """Tests that run regardless of host OS by mocking platform.system()."""
@@ -40,22 +39,34 @@ class TestPrepareCommandWindows:
     @patch("kopipasta.mcp_server.platform.system", return_value="Windows")
     def test_ps1_bare_dotslash(self, _mock: MagicMock) -> None:
         result = _prepare_command(".\\apply_ai_changes.ps1")
-        assert result == 'powershell -NoProfile -ExecutionPolicy Bypass -File ".\\apply_ai_changes.ps1"'
+        assert (
+            result
+            == 'powershell -NoProfile -ExecutionPolicy Bypass -File ".\\apply_ai_changes.ps1"'
+        )
 
     @patch("kopipasta.mcp_server.platform.system", return_value="Windows")
     def test_ps1_forward_slash(self, _mock: MagicMock) -> None:
         result = _prepare_command("./apply_ai_changes.ps1")
-        assert result == 'powershell -NoProfile -ExecutionPolicy Bypass -File "./apply_ai_changes.ps1"'
+        assert (
+            result
+            == 'powershell -NoProfile -ExecutionPolicy Bypass -File "./apply_ai_changes.ps1"'
+        )
 
     @patch("kopipasta.mcp_server.platform.system", return_value="Windows")
     def test_ps1_absolute_path(self, _mock: MagicMock) -> None:
         result = _prepare_command("C:\\scripts\\verify.ps1")
-        assert result == 'powershell -NoProfile -ExecutionPolicy Bypass -File "C:\\scripts\\verify.ps1"'
+        assert (
+            result
+            == 'powershell -NoProfile -ExecutionPolicy Bypass -File "C:\\scripts\\verify.ps1"'
+        )
 
     @patch("kopipasta.mcp_server.platform.system", return_value="Windows")
     def test_ps1_with_arguments(self, _mock: MagicMock) -> None:
         result = _prepare_command(".\\verify.ps1 -Verbose -Strict")
-        assert result == 'powershell -NoProfile -ExecutionPolicy Bypass -File ".\\verify.ps1" -Verbose -Strict'
+        assert (
+            result
+            == 'powershell -NoProfile -ExecutionPolicy Bypass -File ".\\verify.ps1" -Verbose -Strict'
+        )
 
     @patch("kopipasta.mcp_server.platform.system", return_value="Windows")
     def test_ps1_already_prefixed_powershell(self, _mock: MagicMock) -> None:
@@ -100,6 +111,7 @@ class TestPrepareCommandWindows:
 # _run_cmd: stdin=DEVNULL (prevents MCP hangs)
 # ---------------------------------------------------------------------------
 
+
 class TestRunCmdSubprocessArgs:
     """Verify that _run_cmd passes the right kwargs to subprocess.run."""
 
@@ -113,9 +125,7 @@ class TestRunCmdSubprocessArgs:
         _mock_env: MagicMock,
     ) -> None:
         """stdin must be DEVNULL to prevent hangs in headless MCP context."""
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="ok", stderr=""
-        )
+        mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
         _run_cmd("echo hello", Path("/tmp"))
         mock_run.assert_called_once()
         call_kwargs = mock_run.call_args
@@ -130,9 +140,7 @@ class TestRunCmdSubprocessArgs:
         _mock_prepare: MagicMock,
         _mock_env: MagicMock,
     ) -> None:
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="ok", stderr=""
-        )
+        mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
         _run_cmd("echo hello", Path("/tmp"))
         call_kwargs = mock_run.call_args
         assert call_kwargs.kwargs.get("capture_output") is True
@@ -146,9 +154,7 @@ class TestRunCmdSubprocessArgs:
         _mock_prepare: MagicMock,
         _mock_env: MagicMock,
     ) -> None:
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="", stderr=""
-        )
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         _run_cmd("echo hello", Path("/tmp"))
         call_kwargs = mock_run.call_args
         assert call_kwargs.kwargs.get("timeout") == 300
@@ -161,12 +167,8 @@ class TestRunCmdSubprocessArgs:
         _mock_env: MagicMock,
     ) -> None:
         """End-to-end: a .ps1 command on Windows should arrive wrapped."""
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="passed", stderr=""
-        )
-        with patch(
-            "kopipasta.mcp_server.platform.system", return_value="Windows"
-        ):
+        mock_run.return_value = MagicMock(returncode=0, stdout="passed", stderr="")
+        with patch("kopipasta.mcp_server.platform.system", return_value="Windows"):
             result = _run_cmd(".\\verify.ps1", Path("C:\\project"))
 
         actual_cmd = mock_run.call_args.args[0]
@@ -179,8 +181,8 @@ class TestRunCmdSubprocessArgs:
 # _run_cmd: output formatting
 # ---------------------------------------------------------------------------
 
-class TestRunCmdOutput:
 
+class TestRunCmdOutput:
     @patch("kopipasta.mcp_server._get_shell_env", return_value={})
     @patch("kopipasta.mcp_server._prepare_command", side_effect=lambda c: c)
     @patch("kopipasta.mcp_server.subprocess.run")
@@ -217,13 +219,17 @@ class TestRunCmdOutput:
 # read_context / apply_edits: must delegate to _run_cmd, not inline subprocess
 # ---------------------------------------------------------------------------
 
+
 class TestNoInlineSubprocess:
     """Guard against re-introducing inline subprocess.run calls that
     bypass _prepare_command and stdin=DEVNULL."""
 
     @patch("kopipasta.mcp_server._load_config", return_value=MOCK_CONFIG)
     @patch("kopipasta.mcp_server.list_files", return_value=iter(["app.py"]))
-    @patch("kopipasta.mcp_server._run_cmd", return_value="$ verify\nExit Code: 0\n--- STDOUT ---\nok\n--- STDERR ---\n")
+    @patch(
+        "kopipasta.mcp_server._run_cmd",
+        return_value="$ verify\nExit Code: 0\n--- STDOUT ---\nok\n--- STDERR ---\n",
+    )
     def test_read_context_delegates_to_run_cmd(
         self,
         mock_run_cmd: MagicMock,
@@ -232,9 +238,7 @@ class TestNoInlineSubprocess:
     ) -> None:
         """read_context must call _run_cmd for verification, not subprocess.run directly."""
         result = read_context()
-        mock_run_cmd.assert_called_once_with(
-            ".\\verify.ps1", Path("C:\\fake\\project")
-        )
+        mock_run_cmd.assert_called_once_with(".\\verify.ps1", Path("C:\\fake\\project"))
         assert "Exit Code: 0" in result
 
     @patch("kopipasta.mcp_server._load_config", return_value=MOCK_CONFIG)
@@ -249,13 +253,19 @@ class TestNoInlineSubprocess:
         _mock_config: MagicMock,
     ) -> None:
         """subprocess.run must not be called directly from read_context."""
-        mock_run_cmd.return_value = "$ cmd\nExit Code: 0\n--- STDOUT ---\n\n--- STDERR ---\n"
+        mock_run_cmd.return_value = (
+            "$ cmd\nExit Code: 0\n--- STDOUT ---\n\n--- STDERR ---\n"
+        )
         read_context()
         mock_subprocess.assert_not_called()
-    @patch("kopipasta.mcp_server._load_config", return_value={
-        **MOCK_CONFIG,
-        "verification_command": None,
-    })
+
+    @patch(
+        "kopipasta.mcp_server._load_config",
+        return_value={
+            **MOCK_CONFIG,
+            "verification_command": None,
+        },
+    )
     @patch("kopipasta.mcp_server.list_files", return_value=iter(["app.py"]))
     @patch("kopipasta.mcp_server._run_cmd")
     def test_read_context_no_verification_skips_run(
@@ -270,7 +280,10 @@ class TestNoInlineSubprocess:
         assert "No verification command configured" in result
 
     @patch("kopipasta.mcp_server._load_config", return_value=MOCK_CONFIG)
-    @patch("kopipasta.mcp_server._run_cmd", return_value="$ verify\nExit Code: 0\n--- STDOUT ---\nok\n--- STDERR ---\n")
+    @patch(
+        "kopipasta.mcp_server._run_cmd",
+        return_value="$ verify\nExit Code: 0\n--- STDOUT ---\nok\n--- STDERR ---\n",
+    )
     @patch("kopipasta.mcp_server.read_gitignore", return_value=[])
     def test_apply_edits_delegates_verification_to_run_cmd(
         self,
@@ -280,15 +293,18 @@ class TestNoInlineSubprocess:
         tmp_path: Path,
     ) -> None:
         """apply_edits must use _run_cmd for post-edit verification."""
-        # Create the file that will be edited
-        project = Path(MOCK_CONFIG["project_root"])
-        with patch.object(Path, "exists", return_value=True), \
-             patch.object(Path, "read_text", return_value="old content"), \
-             patch.object(Path, "write_text"):
+        with (
+            patch.object(Path, "exists", return_value=True),
+            patch.object(Path, "read_text", return_value="old content"),
+            patch.object(Path, "write_text"),
+        ):
             from kopipasta.mcp_server import EditBlock
-            result = apply_edits(edits=[
-                EditBlock(file_path="app.py", search="old content", replace="new content")
-            ])
-        mock_run_cmd.assert_called_once_with(
-            ".\\verify.ps1", Path("C:\\fake\\project")
-        )
+
+            apply_edits(
+                edits=[
+                    EditBlock(
+                        file_path="app.py", search="old content", replace="new content"
+                    )
+                ]
+            )
+        mock_run_cmd.assert_called_once_with(".\\verify.ps1", Path("C:\\fake\\project"))

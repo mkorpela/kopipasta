@@ -18,6 +18,11 @@ from kopipasta.config import read_gitignore, get_active_project
 mcp = FastMCP("kopipasta-ralph")
 
 RALPH_CONFIG_FILENAME = ".ralph.json"
+# Global state for background processes
+# Maps PID -> (process_handle, stdout_file_path, stderr_file_path)
+_BACKGROUND_JOBS: Dict[int, Any] = {}
+# Safe timeout margin for Claude Desktop (60s limit -> 50s safe)
+SAFE_CLIENT_TIMEOUT = 50
 
 
 class EditBlock(BaseModel):

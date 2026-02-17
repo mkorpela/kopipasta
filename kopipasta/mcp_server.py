@@ -37,6 +37,11 @@ class EditBlock(BaseModel):
     replace: str = Field(..., description="The new string to insert.")
 
 
+def _normalize_path(p: str) -> str:
+    """Normalize path to posix style (forward slashes) for consistent comparison."""
+    return Path(p).as_posix()
+
+
 def _load_config() -> Dict[str, Any]:
     """Loads the Ralph configuration from the current working directory."""
     # Try multiple strategies to find the project root:
@@ -280,7 +285,9 @@ def read_files(paths: List[str]) -> str:
         config = _load_config()
         project_root = Path(config["project_root"])
         ignore_patterns = read_gitignore()
-        editable_files = config.get("editable_files", [])
+        
+        # Normalize whitelist for consistent comparison
+        editable_files_norm = {_normalize_path(p) for p in config.get("editable_files", [])}
 
         output = []
         for rel_path in paths:
@@ -298,8 +305,15 @@ def read_files(paths: List[str]) -> str:
             if is_binary(str(file_path)):
                 output.append(f"## File: {rel_path}\n(Binary file)\n")
                 continue
+            
+            # Check permission using normalized paths
+            try:
+                rel_path_actual = file_path.relative_to(project_root)
+                rel_path_norm = _normalize_path(str(rel_path_actual))
+                perm = "EDITABLE" if rel_path_norm in editable_files_norm else "READ-ONLY"
+            except ValueError:
+                perm = "READ-ONLY (Outside Root)"
 
-            perm = "EDITABLE" if rel_path in editable_files else "READ-ONLY"
             output.append(f"## File: {rel_path} ({perm})")
             try:
                 content = file_path.read_text(encoding="utf-8", errors="replace")
@@ -327,8 +341,11 @@ def apply_edits(edits: List[EditBlock]) -> str:
     """
     try:
         config = _load_config()
-        editable_files = set(config.get("editable_files", []))
-        project_root = Path(config["project_root"])
+        project_root = Path(config["project_root"]).resolve()
+        
+        # Normalize whitelist for consistent comparison
+        editable_files_norm = {_normalize_path(p) for p in config.get("editable_files", [])}
+        
         verification_cmd = config.get("verification_command")
 
         # --- Phase 1: Validation & Staging ---
@@ -339,23 +356,42 @@ def apply_edits(edits: List[EditBlock]) -> str:
         for edit in edits:
             edits_by_file[edit.file_path].append(edit)
 
-        for rel_path, file_edits in edits_by_file.items():
-            if rel_path not in editable_files:
-                return f"Permission Denied: '{rel_path}' is not in the editable_files whitelist."
+        for rel_path_raw, file_edits in edits_by_file.items():
+            # Resolve to absolute path securely
+            try:
+                file_path = (project_root / rel_path_raw).resolve()
+                # Prevent path traversal
+                if not str(file_path).startswith(str(project_root)):
+                     return f"Permission Denied: '{rel_path_raw}' resolves outside the project root."
+            except Exception:
+                 return f"Error: Invalid path '{rel_path_raw}'"
 
-            file_path = project_root / rel_path
+            # Check existence FIRST
             if not file_path.exists():
-                return f"Error: File '{rel_path}' does not exist."
+                return f"Error: File '{rel_path_raw}' does not exist."
 
+            # Check permissions
+            # We must normalize the path relative to project root to check against the whitelist
+            try:
+                rel_path_resolved = file_path.relative_to(project_root)
+                rel_path_norm = _normalize_path(str(rel_path_resolved))
+            except ValueError:
+                # Should be caught by the startswith check above, but safe fallback
+                return f"Permission Denied: '{rel_path_raw}' is outside project root."
+
+            if rel_path_norm not in editable_files_norm:
+                return f"Permission Denied: '{rel_path_raw}' (normalized: {rel_path_norm}) is not in the editable_files whitelist."
+
+            # File exists and is allowed. Read content.
             content = file_path.read_text(encoding="utf-8")
 
             # Apply edits sequentially in memory
             for edit in file_edits:
                 count = content.count(edit.search)
                 if count == 0:
-                    return f"Search block not found in '{rel_path}'.\nBlock:\n{edit.search}"
+                    return f"Search block not found in '{rel_path_raw}'.\nBlock:\n{edit.search}"
                 if count > 1:
-                    return f"Ambiguous match: Search block found {count} times in '{rel_path}'. Block must be unique."
+                    return f"Ambiguous match: Search block found {count} times in '{rel_path_raw}'. Block must be unique."
 
                 content = content.replace(edit.search, edit.replace)
 

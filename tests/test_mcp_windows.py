@@ -319,25 +319,28 @@ class TestNoInlineSubprocess:
         mock_run_cmd.assert_not_called()
         assert "No verification command configured" in result
 
-    @patch("kopipasta.mcp_server._load_config", return_value=MOCK_CONFIG)
     @patch(
         "kopipasta.mcp_server._run_cmd",
         return_value="$ verify\nExit Code: 0\n--- STDOUT ---\nok\n--- STDERR ---\n",
     )
-    @patch("kopipasta.mcp_server.read_gitignore", return_value=[])
     def test_apply_edits_delegates_verification_to_run_cmd(
         self,
-        _mock_gitignore: MagicMock,
         mock_run_cmd: MagicMock,
-        _mock_config: MagicMock,
         tmp_path: Path,
     ) -> None:
         """apply_edits must use _run_cmd for post-edit verification."""
-        with (
-            patch.object(Path, "exists", return_value=True),
-            patch.object(Path, "read_text", return_value="old content"),
-            patch.object(Path, "write_text"),
-        ):
+        # Use a real temp directory to avoid Path.resolve() issues on Unix
+        # with Windows-style paths like C:\fake\project
+        app_file = tmp_path / "app.py"
+        app_file.write_text("old content")
+
+        config = {
+            "project_root": str(tmp_path),
+            "verification_command": ".\\verify.ps1",
+            "editable_files": ["app.py"],
+        }
+
+        with patch("kopipasta.mcp_server._load_config", return_value=config):
             from kopipasta.mcp_server import EditBlock
 
             apply_edits(
@@ -347,4 +350,4 @@ class TestNoInlineSubprocess:
                     )
                 ]
             )
-        mock_run_cmd.assert_called_once_with(".\\verify.ps1", Path("C:\\fake\\project"))
+        mock_run_cmd.assert_called_once_with(".\\verify.ps1", tmp_path.resolve())

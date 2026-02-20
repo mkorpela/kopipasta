@@ -3,7 +3,6 @@ import os
 import pytest
 from pathlib import Path
 from kopipasta.patcher import apply_patches, parse_llm_output
-from rich.console import Console
 
 
 @pytest.fixture

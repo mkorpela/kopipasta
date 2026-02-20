@@ -489,6 +489,32 @@ def _parse_raw_unified_diff(content: str) -> List[Patch]:
     return []
 
 
+def _detect_indent(lines: List[str]) -> str:
+    """Return the common leading whitespace of the first non-empty line."""
+    for line in lines:
+        if line.strip():
+            return line[: len(line) - len(line.lstrip())]
+    return ""
+
+
+def _reindent_lines(lines: List[str], old_indent: str, new_indent: str) -> List[str]:
+    """
+    Re-indent a list of lines: replace the leading `old_indent` prefix with
+    `new_indent`, preserving additional relative indentation.
+    """
+    if old_indent == new_indent:
+        return lines
+    result = []
+    for line in lines:
+        if line.startswith(old_indent):
+            rest = line[len(old_indent) :]
+            result.append(new_indent + rest)
+        else:
+            # Can't strip old_indent; leave as-is
+            result.append(line)
+    return result
+
+
 def _find_all_sublist_indices(
     full_list: List[str], sub_list: List[str], loose: bool = False
 ) -> List[int]:
@@ -582,9 +608,107 @@ def _apply_diff_patch(
             match_ratio = match.size / len(hunk_original) if hunk_original else 0
 
             if match.size > 0 and match_ratio >= 0.6:
-                # We found a partial match
-                selected_index = match.a
+                # We found a partial match. Apply the hunk changes carefully.
+                # Bug 1 fix: re-indent new_lines to match the file's indentation.
+                # Bug 2 fix: only replace file lines that were actually matched;
+                #            never delete file lines outside the matched window.
+
+                # Determine indentation delta using the matched lines as reference.
+                file_indent = _detect_indent(
+                    original_lines[match.a : match.a + match.size]
+                )
+                hunk_indent = _detect_indent(
+                    hunk_original[match.b : match.b + match.size]
+                )
+
+                # Compute the net diff between hunk_original and hunk_new_lines.
+                # From this diff we know which hunk_original lines are 'deleted'
+                # and which new lines are 'inserted'.
+                hunk_new = hunk["new_lines"]
+                sm = SequenceMatcher(None, hunk_original, hunk_new, autojunk=False)
+                opcodes = sm.get_opcodes()
+
+                # Build a replacement that covers exactly the matched file window
+                # [match.a, match.a + match.size], applying:
+                #   - 'equal' ops within matched range  -> keep actual file line
+                #   - 'replace'/'delete' within matched range -> use hunk_new lines
+                #   - 'insert' ops whose hunk position falls inside matched range
+                #     -> inject new lines at correct position
+                # Hunk positions OUTSIDE the matched range are ignored (Bug 2 fix).
+
+                # Map each hunk_original index to its file index:
+                #   file_idx = match.a + (hunk_idx - match.b)
+                # This is valid only when match.b <= hunk_idx < match.b + match.size.
+
+                result_lines_fuzzy: List[str] = []
+                file_start = match.a
+                file_end = match.a + match.size
+
+                for tag, i1, i2, j1, j2 in opcodes:
+                    # Clamp the hunk_original range to the matched window.
+                    clamped_i1 = max(i1, match.b)
+                    clamped_i2 = min(i2, match.b + match.size)
+
+                    if tag == "equal":
+                        # Use actual file lines for the clamped range.
+                        for hunk_idx in range(clamped_i1, clamped_i2):
+                            file_idx = match.a + (hunk_idx - match.b)
+                            result_lines_fuzzy.append(original_lines[file_idx])
+
+                    elif tag in ("replace", "delete"):
+                        if clamped_i1 < clamped_i2:
+                            # Proportionally map to new_lines range.
+                            frac_start = (clamped_i1 - i1) / max(i2 - i1, 1)
+                            frac_end = (clamped_i2 - i1) / max(i2 - i1, 1)
+                            mapped_j1 = j1 + round(frac_start * (j2 - j1))
+                            mapped_j2 = j1 + round(frac_end * (j2 - j1))
+                            inserted = hunk_new[mapped_j1:mapped_j2]
+                            if file_indent != hunk_indent:
+                                inserted = _reindent_lines(
+                                    inserted, hunk_indent, file_indent
+                                )
+                            result_lines_fuzzy.extend(inserted)
+                        elif (
+                            i1 == match.b + match.size and tag == "replace" and j1 < j2
+                        ):
+                            # The replace op starts exactly at the end of the matched window.
+                            # The hunk_original lines it references don't exist in the file,
+                            # but we should still emit the new_lines (as an insert after context).
+                            inserted = hunk_new[j1:j2]
+                            if file_indent != hunk_indent:
+                                inserted = _reindent_lines(
+                                    inserted, hunk_indent, file_indent
+                                )
+                            result_lines_fuzzy.extend(inserted)
+
+                    elif tag == "insert":
+                        # 'insert' has i1==i2; attach it after the closest matched line.
+                        # Include it if i1 (insertion point in hunk_original) falls
+                        # within [match.b, match.b + match.size].
+                        if match.b <= i1 <= match.b + match.size:
+                            inserted = hunk_new[j1:j2]
+                            if file_indent != hunk_indent:
+                                inserted = _reindent_lines(
+                                    inserted, hunk_indent, file_indent
+                                )
+                            result_lines_fuzzy.extend(inserted)
+
+                start_idx = file_start
+                end_idx = file_end
+                is_overlapping = any(
+                    max(start_idx, r_start) < min(end_idx, r_end)
+                    for r_start, r_end, _ in replacements
+                )
+                if is_overlapping:
+                    console.print(
+                        f"  - [yellow]Skipping hunk #{i + 1}:[/yellow] Overlaps with a previous hunk."
+                    )
+                    continue
+
+                replacements.append((start_idx, end_idx, result_lines_fuzzy))
+                hunks_applied_count += 1
                 match_type = f"fuzzy ({match_ratio:.2f})"
+                continue  # Skip the standard overlap check / append below
             else:
                 console.print(
                     f"  - [yellow]Skipping hunk #{i + 1}:[/yellow] Could not find a match."
@@ -614,7 +738,7 @@ def _apply_diff_patch(
         # --- Validation: Check Overlaps ---
         # The range we propose to replace in the original file:
         start_idx = selected_index
-        end_idx = selected_index + len(hunk_original)
+        end_idx = selected_index + len(hunk_original)  # exact/loose: full hunk size
 
         is_overlapping = any(
             max(start_idx, r_start) < min(end_idx, r_end)
@@ -628,7 +752,16 @@ def _apply_diff_patch(
             continue
 
         # Success!
-        replacements.append((start_idx, end_idx, hunk["new_lines"]))
+        # For loose matches, reindent new_lines to match the file's actual indentation.
+        new_lines_to_apply = hunk["new_lines"]
+        if match_type == "loose" and new_lines_to_apply and hunk_original:
+            file_indent = _detect_indent(original_lines[selected_index:end_idx])
+            hunk_indent = _detect_indent(hunk_original)
+            if file_indent != hunk_indent:
+                new_lines_to_apply = _reindent_lines(
+                    new_lines_to_apply, hunk_indent, file_indent
+                )
+        replacements.append((start_idx, end_idx, new_lines_to_apply))
         hunks_applied_count += 1
 
     if hunks_applied_count == 0:

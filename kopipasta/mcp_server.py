@@ -285,9 +285,11 @@ def read_files(paths: List[str]) -> str:
         config = _load_config()
         project_root = Path(config["project_root"])
         ignore_patterns = read_gitignore()
-        
+
         # Normalize whitelist for consistent comparison
-        editable_files_norm = {_normalize_path(p) for p in config.get("editable_files", [])}
+        editable_files_norm = {
+            _normalize_path(p) for p in config.get("editable_files", [])
+        }
 
         output = []
         for rel_path in paths:
@@ -305,12 +307,14 @@ def read_files(paths: List[str]) -> str:
             if is_binary(str(file_path)):
                 output.append(f"## File: {rel_path}\n(Binary file)\n")
                 continue
-            
+
             # Check permission using normalized paths
             try:
                 rel_path_actual = file_path.relative_to(project_root)
                 rel_path_norm = _normalize_path(str(rel_path_actual))
-                perm = "EDITABLE" if rel_path_norm in editable_files_norm else "READ-ONLY"
+                perm = (
+                    "EDITABLE" if rel_path_norm in editable_files_norm else "READ-ONLY"
+                )
             except ValueError:
                 perm = "READ-ONLY (Outside Root)"
 
@@ -342,10 +346,12 @@ def apply_edits(edits: List[EditBlock]) -> str:
     try:
         config = _load_config()
         project_root = Path(config["project_root"]).resolve()
-        
+
         # Normalize whitelist for consistent comparison
-        editable_files_norm = {_normalize_path(p) for p in config.get("editable_files", [])}
-        
+        editable_files_norm = {
+            _normalize_path(p) for p in config.get("editable_files", [])
+        }
+
         verification_cmd = config.get("verification_command")
 
         # --- Phase 1: Validation & Staging ---
@@ -362,9 +368,9 @@ def apply_edits(edits: List[EditBlock]) -> str:
                 file_path = (project_root / rel_path_raw).resolve()
                 # Prevent path traversal
                 if not str(file_path).startswith(str(project_root)):
-                     return f"Permission Denied: '{rel_path_raw}' resolves outside the project root."
+                    return f"Permission Denied: '{rel_path_raw}' resolves outside the project root."
             except Exception:
-                 return f"Error: Invalid path '{rel_path_raw}'"
+                return f"Error: Invalid path '{rel_path_raw}'"
 
             # Check existence FIRST
             if not file_path.exists():

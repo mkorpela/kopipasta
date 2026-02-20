@@ -9,6 +9,7 @@ These tests protect against regressions where:
 """
 
 import subprocess
+import tempfile
 from unittest.mock import patch, MagicMock
 from pathlib import Path
 
@@ -157,7 +158,8 @@ class TestRunCmdSubprocessArgs:
         """stdin must be DEVNULL to prevent hangs in headless MCP context."""
         mock_proc, side_effect = _mock_popen_factory(returncode=0, stdout_text="ok")
         mock_popen.side_effect = side_effect
-        _run_cmd("echo hello", Path("/tmp"))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _run_cmd("echo hello", Path(tmpdir))
         mock_popen.assert_called_once()
         call_kwargs = mock_popen.call_args
         assert call_kwargs.kwargs.get("stdin") == subprocess.DEVNULL
@@ -174,7 +176,8 @@ class TestRunCmdSubprocessArgs:
         """stdout/stderr must be captured (via temp files) so output is not lost."""
         mock_proc, side_effect = _mock_popen_factory(returncode=0, stdout_text="ok")
         mock_popen.side_effect = side_effect
-        result = _run_cmd("echo hello", Path("/tmp"))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = _run_cmd("echo hello", Path(tmpdir))
         # Popen receives file handles for stdout/stderr (not PIPE, not None)
         call_kwargs = mock_popen.call_args
         assert call_kwargs.kwargs.get("stdout") is not None
@@ -194,7 +197,8 @@ class TestRunCmdSubprocessArgs:
         """proc.wait() must be called with the safe client timeout."""
         mock_proc, side_effect = _mock_popen_factory(returncode=0)
         mock_popen.side_effect = side_effect
-        _run_cmd("echo hello", Path("/tmp"))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _run_cmd("echo hello", Path(tmpdir))
         mock_proc.wait.assert_called_once_with(timeout=SAFE_CLIENT_TIMEOUT)
 
     @patch("kopipasta.mcp_server._get_shell_env", return_value={})
@@ -207,8 +211,9 @@ class TestRunCmdSubprocessArgs:
         """End-to-end: a .ps1 command on Windows should arrive wrapped."""
         mock_proc, side_effect = _mock_popen_factory(returncode=0, stdout_text="passed")
         mock_popen.side_effect = side_effect
-        with patch("kopipasta.mcp_server.platform.system", return_value="Windows"):
-            result = _run_cmd(".\\verify.ps1", Path("/tmp"))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("kopipasta.mcp_server.platform.system", return_value="Windows"):
+                result = _run_cmd(".\\verify.ps1", Path(tmpdir))
 
         actual_cmd = mock_popen.call_args.args[0]
         assert actual_cmd.startswith("powershell")
@@ -235,7 +240,8 @@ class TestRunCmdOutput:
             returncode=1, stdout_text="FAIL", stderr_text="error detail"
         )
         mock_popen.side_effect = side_effect
-        result = _run_cmd("test_cmd", Path("/tmp"))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = _run_cmd("test_cmd", Path(tmpdir))
         assert "$ test_cmd" in result
         assert "Exit Code: 1" in result
         assert "FAIL" in result
@@ -250,7 +256,8 @@ class TestRunCmdOutput:
         _mock_prepare: MagicMock,
         _mock_env: MagicMock,
     ) -> None:
-        result = _run_cmd("bad_cmd", Path("/tmp"))
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+            result = _run_cmd("bad_cmd", Path(tmpdir))
         assert "Error starting command" in result
         assert "boom" in result
 

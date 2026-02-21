@@ -41,6 +41,7 @@ def test_session_lifecycle(git_repo):
     """
     # 1. Capture initial hash
     initial_hash = run_git(["rev-parse", "HEAD"], cwd=git_repo)
+    initial_branch = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=git_repo)
 
     # Pre-configure .gitignore to prevent manual steps usually handled by UI
     (git_repo / ".gitignore").write_text(SESSION_FILENAME)
@@ -51,10 +52,16 @@ def test_session_lifecycle(git_repo):
     assert session.start() is True
     assert session.is_active is True
 
+    # Verify we are on a sandbox branch
+    current_branch = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=git_repo)
+    assert current_branch.startswith("kopipasta/session-")
+
     # 3. Check Metadata
     metadata = session.get_metadata()
     assert metadata is not None
     assert metadata["start_commit"] == initial_hash
+    assert metadata["parent_branch"] == initial_branch
+    assert metadata["session_branch"] == current_branch
 
     # 4. Simulate Work
     (git_repo / "feature.py").write_text("print('feature')")
@@ -65,17 +72,25 @@ def test_session_lifecycle(git_repo):
     new_hash = run_git(["rev-parse", "HEAD"], cwd=git_repo)
     assert new_hash != initial_hash
 
+    # Create an untracked file to test pre-finish auto-commit logic
+    (git_repo / "untracked.py").write_text("print('untracked')")
+
     # 5. Finish (Squash)
     assert session.finish(squash=True) is True
     assert session.is_active is False
 
-    # Verify HEAD is back at initial_hash
-    reset_hash = run_git(["rev-parse", "HEAD"], cwd=git_repo)
-    assert reset_hash == initial_hash
+    # Verify HEAD is back to the parent branch
+    final_branch = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=git_repo)
+    assert final_branch == initial_branch
+
+    # Verify session branch is deleted
+    branches = run_git(["branch"], cwd=git_repo)
+    assert current_branch not in branches
 
     # Verify changes are staged
     status = run_git(["status", "--porcelain"], cwd=git_repo)
-    assert "A  feature.py" in status or "A  AI_SESSION.md" in status
+    assert "A  feature.py" in status
+    assert "A  untracked.py" in status
 
 
 def test_init_session_dirty_check(git_repo):

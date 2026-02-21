@@ -2,6 +2,7 @@ import os
 import re
 import subprocess
 import json
+import uuid
 from datetime import datetime
 from typing import Optional, TypedDict
 
@@ -10,9 +11,11 @@ from kopipasta.git_utils import check_session_gitignore_status, add_to_gitignore
 SESSION_FILENAME = "AI_SESSION.md"
 
 
-class SessionMetadata(TypedDict):
+class SessionMetadata(TypedDict, total=False):
     start_commit: str
     timestamp: str
+    parent_branch: str
+    session_branch: str
 
 
 class Session:
@@ -75,9 +78,26 @@ class Session:
             add_to_gitignore(self.project_root, SESSION_FILENAME)
 
         head_hash = self._get_git_head()
+        parent_branch = self._get_git_branch()
+        session_branch = f"kopipasta/session-{uuid.uuid4().hex[:8]}"
+
+        if parent_branch != "NO_GIT":
+            try:
+                subprocess.run(
+                    ["git", "checkout", "-b", session_branch],
+                    cwd=self.project_root,
+                    check=True,
+                    capture_output=True,
+                )
+            except subprocess.CalledProcessError as e:
+                console_printer(f"Failed to create sandbox branch: {e}")
+                return False
+
         metadata = {
             "start_commit": head_hash or "NO_GIT",
             "timestamp": datetime.now().isoformat(),
+            "parent_branch": parent_branch,
+            "session_branch": session_branch if parent_branch != "NO_GIT" else "NO_GIT",
         }
 
         file_content = (
@@ -105,16 +125,57 @@ class Session:
 
         metadata = self.get_metadata()
         start_commit = metadata.get("start_commit") if metadata else None
+        parent_branch = metadata.get("parent_branch")
+        session_branch = metadata.get("session_branch")
 
-        # 1. Delete File
+        # 1. Auto-commit lingering changes so branch switching succeeds cleanly
+        self.auto_commit(message="kopipasta: pre-finish auto-checkpoint")
+
+        # 2. Delete File
         try:
             os.remove(self.path)
         except OSError as e:
             console_printer(f"Error deleting session file: {e}")
             return False
 
-        # 2. Squash (Soft Reset)
-        if squash and start_commit and start_commit != "NO_GIT":
+        # 3. Merge Sandbox Branch
+        if parent_branch and session_branch and session_branch != "NO_GIT":
+            try:
+                subprocess.run(
+                    ["git", "checkout", parent_branch],
+                    cwd=self.project_root,
+                    check=True,
+                    capture_output=True,
+                )
+
+                if squash:
+                    subprocess.run(
+                        ["git", "merge", "--squash", session_branch],
+                        cwd=self.project_root,
+                        check=True,
+                        capture_output=True,
+                    )
+                else:
+                    subprocess.run(
+                        ["git", "merge", session_branch],
+                        cwd=self.project_root,
+                        check=True,
+                        capture_output=True,
+                    )
+
+                subprocess.run(
+                    ["git", "branch", "-D", session_branch],
+                    cwd=self.project_root,
+                    check=True,
+                    capture_output=True,
+                )
+                return True
+            except subprocess.CalledProcessError as e:
+                console_printer(f"Sandbox merge failed: {e}")
+                return False
+
+        # 3b. Fallback for old sessions (created before branch support)
+        elif squash and start_commit and start_commit != "NO_GIT":
             try:
                 subprocess.run(
                     ["git", "reset", "--soft", start_commit],
@@ -171,6 +232,22 @@ class Session:
             return result.stdout.strip()
         except subprocess.CalledProcessError:
             return None
+
+    def _get_git_branch(self) -> str:
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=self.project_root,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            branch = result.stdout.strip()
+            if branch == "HEAD":
+                return self._get_git_head() or "NO_GIT"
+            return branch
+        except subprocess.CalledProcessError:
+            return "NO_GIT"
 
     def _check_git_status(self, console_printer) -> bool:
         if not self._get_git_head():

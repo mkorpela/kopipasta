@@ -897,7 +897,7 @@ q: Quit and finalize"""
                         f"\n[bold]Session started at commit: {start_commit[:7]}[/bold]"
                     )
                     should_squash = click.confirm(
-                        "Squash session commits (soft reset) to this point?",
+                        "Squash session commits and merge to parent branch?",
                         default=True,
                     )
 
@@ -908,7 +908,7 @@ q: Quit and finalize"""
                     self.logger.info("session_finished", squashed=should_squash)
                     if should_squash:
                         self.console.print(
-                            "[green]Commits squashed. Changes are staged.[/green]"
+                            "[green]Commits squashed and staged. Branch merged.[/green]"
                         )
                         self.console.print("Run `git commit` to finalize the feature.")
 

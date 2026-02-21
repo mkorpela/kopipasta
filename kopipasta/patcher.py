@@ -573,9 +573,21 @@ def _apply_diff_patch(
 
         if not hunk_original:
             # An insert-only hunk (no context lines).
-            replacements.append(
-                (target_line_index, target_line_index, hunk["new_lines"])
-            )
+            new_lines = hunk["new_lines"]
+            new_len = len(new_lines)
+
+            # --- Validation: Already Applied Check (Insert-Only) ---
+            if (
+                original_lines[target_line_index : target_line_index + new_len]
+                == new_lines
+            ):
+                console.print(
+                    f"  - [dim]Skipping hunk #{i + 1}:[/dim] Already applied."
+                )
+                hunks_applied_count += 1
+                continue
+
+            replacements.append((target_line_index, target_line_index, new_lines))
             hunks_applied_count += 1
             continue
 
@@ -695,6 +707,19 @@ def _apply_diff_patch(
 
                 start_idx = file_start
                 end_idx = file_end
+
+                # --- Validation: Already Applied Check (Fuzzy) ---
+                new_len = len(result_lines_fuzzy)
+                if (
+                    original_lines[start_idx : start_idx + new_len]
+                    == result_lines_fuzzy
+                ):
+                    console.print(
+                        f"  - [dim]Skipping hunk #{i + 1}:[/dim] Already applied."
+                    )
+                    hunks_applied_count += 1
+                    continue
+
                 is_overlapping = any(
                     max(start_idx, r_start) < min(end_idx, r_end)
                     for r_start, r_end, _ in replacements
@@ -735,10 +760,25 @@ def _apply_diff_patch(
                 selected_index = candidates[0]
                 match_type += " (first occurrence)"
 
-        # --- Validation: Check Overlaps ---
-        # The range we propose to replace in the original file:
+        # --- Validation: Already Applied Check ---
+        # If applying this hunk would produce no change (the file already
+        # contains new_lines where original_lines are), skip it to prevent
+        # double-apply of append-only or context-only hunks.
         start_idx = selected_index
         end_idx = selected_index + len(hunk_original)  # exact/loose: full hunk size
+
+        candidate_new = hunk["new_lines"]
+        if match_type == "loose" and candidate_new and hunk_original:
+            file_indent = _detect_indent(original_lines[start_idx:end_idx])
+            hunk_indent = _detect_indent(hunk_original)
+            if file_indent != hunk_indent:
+                candidate_new = _reindent_lines(candidate_new, hunk_indent, file_indent)
+
+        new_len = len(candidate_new)
+        if original_lines[start_idx : start_idx + new_len] == candidate_new:
+            console.print(f"  - [dim]Skipping hunk #{i + 1}:[/dim] Already applied.")
+            hunks_applied_count += 1
+            continue
 
         is_overlapping = any(
             max(start_idx, r_start) < min(end_idx, r_end)

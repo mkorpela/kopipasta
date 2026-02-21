@@ -170,3 +170,115 @@ def test_safety_check_confirmed(edge_case_dir, capsys, monkeypatch):
     captured = capsys.readouterr()
     assert "Overwrote" in captured.out
     assert "b" in file_path.read_text()
+
+
+def test_prevent_double_apply_insert_only(edge_case_dir, capsys):
+    """
+    Ensures that an insert-only hunk (no context lines) is idempotent.
+    """
+    file_path = edge_case_dir / "insert.py"
+    file_path.write_text("line 2\nline 3\n")
+
+    # Patch: insert "line 1" at the very beginning
+    llm_output = """
+```python
+# FILE: insert.py
+@@ -1,0 +1,1 @@
++line 1
+```
+"""
+    original_cwd = os.getcwd()
+    os.chdir(edge_case_dir)
+    try:
+        patches = parse_llm_output(llm_output)
+        apply_patches(patches)
+
+        content1 = file_path.read_text()
+        assert content1 == "line 1\nline 2\nline 3\n"
+
+        # Apply again, should skip
+        apply_patches(patches)
+
+        content2 = file_path.read_text()
+        assert content2 == "line 1\nline 2\nline 3\n"
+    finally:
+        os.chdir(original_cwd)
+
+
+def test_prevent_double_apply_append(edge_case_dir, capsys):
+    """
+    Ensures that an append-only hunk applied twice does not duplicate the appended code.
+    """
+    file_path = edge_case_dir / "append.py"
+    file_path.write_text("def existing():\n    pass\n")
+
+    # Patch: append a new function after the existing one
+    llm_output = """
+```python
+# FILE: append.py
+@@ -1,2 +1,4 @@
+ def existing():
+     pass
++
++def new_func():
++    pass
+```
+"""
+    original_cwd = os.getcwd()
+    os.chdir(edge_case_dir)
+    try:
+        # First apply
+        patches1 = parse_llm_output(llm_output)
+        apply_patches(patches1)
+
+        content_after_first = file_path.read_text()
+        assert content_after_first.count("def new_func():") == 1
+
+        # Second apply (should be skipped)
+        patches2 = parse_llm_output(llm_output)
+        apply_patches(patches2)
+
+        content_after_second = file_path.read_text()
+        # This will fail (count will be 2) until we fix the bug
+        assert content_after_second.count("def new_func():") == 1
+    finally:
+        os.chdir(original_cwd)
+
+
+def test_prevent_double_apply_fuzzy(edge_case_dir, capsys):
+    """
+    Ensures that a patch applied via fuzzy matching is idempotent.
+    """
+    file_path = edge_case_dir / "fuzzy.py"
+    file_path.write_text("def init():\n    a = 1\n    b = 2\n    c = 3\n")
+
+    # Context has a typo "c = 4", but the first 3 lines match perfectly.
+    # Longest contiguous match size = 3. hunk_original size = 4.
+    # Ratio = 3/4 = 0.75 (passes the >= 0.6 threshold).
+    llm_output = """
+```python
+# FILE: fuzzy.py
+@@ -1,4 +1,5 @@
+ def init():
+     a = 1
+     b = 2
++    x = 99
+     c = 4
+```
+"""
+    original_cwd = os.getcwd()
+    os.chdir(edge_case_dir)
+    try:
+        patches = parse_llm_output(llm_output)
+        apply_patches(patches)
+
+        content1 = file_path.read_text()
+        assert content1.count("x = 99") == 1
+
+        # Apply again, should skip
+        apply_patches(patches)
+
+        content2 = file_path.read_text()
+        assert content2.count("x = 99") == 1
+    finally:
+        os.chdir(original_cwd)

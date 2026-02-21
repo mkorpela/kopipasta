@@ -1,11 +1,18 @@
+import os
 import subprocess
 import pytest
 from pathlib import Path
 from kopipasta.session import Session, SESSION_FILENAME
 
 
-def run_git(cmd: list, cwd: Path):
-    subprocess.run(["git"] + cmd, cwd=cwd, check=True, capture_output=True)
+def run_git(cmd: list, cwd: Path) -> str:
+    env = os.environ.copy()
+    env["GIT_CONFIG_GLOBAL"] = "/dev/null"
+    env["GIT_CONFIG_SYSTEM"] = "/dev/null"
+    result = subprocess.run(
+        ["git"] + cmd, cwd=cwd, check=True, capture_output=True, text=True, env=env
+    )
+    return result.stdout.strip()
 
 
 @pytest.fixture
@@ -18,6 +25,7 @@ def git_repo(tmp_path: Path):
     run_git(["init"], repo_dir)
     run_git(["config", "user.email", "test@example.com"], repo_dir)
     run_git(["config", "user.name", "Test User"], repo_dir)
+    run_git(["config", "commit.gpgsign", "false"], repo_dir)
 
     # Initial commit
     (repo_dir / "main.py").write_text("print('hello')")
@@ -32,10 +40,7 @@ def test_session_lifecycle(git_repo):
     Tests the full lifecycle using the Session class.
     """
     # 1. Capture initial hash
-    result = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=git_repo, capture_output=True, text=True
-    )
-    initial_hash = result.stdout.strip()
+    initial_hash = run_git(["rev-parse", "HEAD"], cwd=git_repo)
 
     # Pre-configure .gitignore to prevent manual steps usually handled by UI
     (git_repo / ".gitignore").write_text(SESSION_FILENAME)
@@ -57,10 +62,7 @@ def test_session_lifecycle(git_repo):
     run_git(["commit", "-m", "WIP: feature"], git_repo)
 
     # Verify we moved forward
-    result = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=git_repo, capture_output=True, text=True
-    )
-    new_hash = result.stdout.strip()
+    new_hash = run_git(["rev-parse", "HEAD"], cwd=git_repo)
     assert new_hash != initial_hash
 
     # 5. Finish (Squash)
@@ -68,16 +70,11 @@ def test_session_lifecycle(git_repo):
     assert session.is_active is False
 
     # Verify HEAD is back at initial_hash
-    result = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=git_repo, capture_output=True, text=True
-    )
-    reset_hash = result.stdout.strip()
+    reset_hash = run_git(["rev-parse", "HEAD"], cwd=git_repo)
     assert reset_hash == initial_hash
 
     # Verify changes are staged
-    status = subprocess.run(
-        ["git", "status", "--porcelain"], cwd=git_repo, capture_output=True, text=True
-    ).stdout
+    status = run_git(["status", "--porcelain"], cwd=git_repo)
     assert "A  feature.py" in status or "A  AI_SESSION.md" in status
 
 
@@ -102,7 +99,5 @@ def test_auto_commit_changes(git_repo):
     assert session.auto_commit(message="Auto commit test") is True
 
     # Verify clean status
-    result = subprocess.run(
-        ["git", "status", "--porcelain"], cwd=git_repo, capture_output=True, text=True
-    )
-    assert result.stdout.strip() == ""
+    status = run_git(["status", "--porcelain"], cwd=git_repo)
+    assert status == ""

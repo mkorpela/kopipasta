@@ -55,24 +55,6 @@
 3. **Generate:** Create prompt using *only* the filtered files.
 4. **Commit:** Change state of these files from **Delta**  **Base** (Blue).
 
-### Feature 3: The Fix Workflow (`x`)
-
-**Goal:** Auto-diagnose errors with full context.
-
-**Logic:**
-
-1. **Run:** execute `KOPIPASTA_FIX_CMD` (defaults to `pre-commit` or `git diff --check`).
-2. **Capture:** `stdout`, `stderr`.
-3. **Context Assembly:**
-* **Traceback:** Parse `stderr` for paths. Add them to **Delta**.
-* **Diff:** Capture `git diff HEAD`.
-
-
-4. **Generate:** Prompt = Error + Diff + Content of Delta files.
-* *Note:* Do *not* auto-commit Delta  Base here, as the user might want to `e` (Extend) later with the same context if they manually add more files.
-
-
-
 ### Feature 4: Clear Selection (`c`)
 
 **Goal:** Manual cleanup.
@@ -100,7 +82,6 @@
 | `Space` | **Toggle** | Unselected  Delta  Base  Unselected. |
 | `p` | **Process** | Universal paste. Handles Patches, Imports (Append/Replace), Resets. |
 | `e` | **Extend** | Copies Delta files. Transitions Delta  Base. |
-| `x` | **Fix** | Runs command. Adds error files to Delta. Copies prompt. |
 | `c` | **Clear Base** | Unselects all Blue files. Keeps Green files. |
 | `q` | **Quit** | Copies full context (Base + Delta). |
 
@@ -121,14 +102,12 @@
 * [ ] Implement `[A]ppend / [R]eplace` logic in `p` handler.
 * [ ] Ensure patched files promote to Delta.
 
-### Phase 3: Workflow Actions (`e`, `x`, `c`)
+### Phase 3: Workflow Actions (`e`, `c`)
 
 * [ ] Implement `e`: Filter Delta, Generate, Commit (Delta  Base).
 * [ ] Implement `c`: Clear Base only.
-* [ ] Implement `x`: Run cmd, parse traceback  Delta, include `git diff`.
 
 ### Phase 4: Prompt Templates
 
 * [ ] Update System Prompt to explain `<<<DELETE>>>` and `<<<RESET>>>`.
-* [ ] Create `fix_template` (Error + Diff + Files).
 * [ ] Create `extension_template` (Files only).

@@ -22,18 +22,6 @@ Selection is managed via a three-state engine to distinguish between background 
     - `Space` cycle: `Unselected` -> `Delta` -> `Unselected`. If `Base`, toggles to `Delta`.
     - **Promotion**: Files transition `Delta` -> `Base` during "Extend Context" (`e`), "Patch" (`p`), or "Quit" (`q`) to mark them as synced for the next turn.
 
-### Fix Workflow (`x` hotkey)
-The fix workflow runs a command, captures errors, detects affected files, and generates a diagnostic prompt.
-*   **Command Resolution** (3-tier fallback):
-    1.  HTML comment in `AI_CONTEXT.md`: `<!-- KOPIPASTA_FIX_CMD: your command here -->`
-    2.  `.git/hooks/pre-commit` (platform-aware: POSIX checks `+x` bit; Windows invokes via `sh`/`bash`).
-    3.  `git diff --check HEAD` (universal fallback).
-*   **Path Detection**: `find_paths_in_text` is reused from Intelligent Import. Its delimiter regex includes `:;,` to support linter output formats (e.g., `path/file.py:10:5: E302`).
-*   **Prompt Assembly**: Error output + `git diff HEAD` + content of affected Delta files. Uses `FIX_TEMPLATE` in `prompt.py`.
-*   **State Transitions**: Detected files are added to **Delta**. Base files found in errors are promoted to Delta. The user then pastes the fix prompt into the LLM, copies the response, and uses `p` to apply patches.
-*   **Configuration Pattern**: The `<!-- KOPIPASTA_FIX_CMD: ... -->` HTML comment is machine-parseable, invisible in rendered markdown, and consistent with the `KOPIPASTA_METADATA` pattern used in `AI_SESSION.md`.
-*   **No auto-commit**: Unlike the `p` handler, `x` does not auto-commit. The user reviews and commits manually after applying the LLM's fix.
-
 ### Ralph Loop (`r` hotkey) — MCP Agent Integration
 The Ralph Loop enables an external AI agent (e.g. Claude Desktop) to iteratively patch and test code via MCP until a verification command passes.
 *   **Decoupled Architecture**: The `kopipasta` TUI and the MCP Server (`kopipasta/mcp_server.py`) run as separate processes. They communicate implicitly via the filesystem (`.ralph.json`, project files).
@@ -45,7 +33,7 @@ The Ralph Loop enables an external AI agent (e.g. Claude Desktop) to iteratively
 *   **Auto-Configure Claude Desktop**: `_action_ralph` calls `configure_claude_desktop()` (`kopipasta/claude.py`) to inject the MCP server entry into `claude_desktop_config.json`. Backs up existing config before modifying.
 *   **Claude Desktop `cwd`/`env` Limitation**: Claude Desktop ignores `cwd` and `env` fields in `claude_desktop_config.json`. The workaround is to use `/bin/sh -c "KOPIPASTA_PROJECT_ROOT='...' exec python -m kopipasta.mcp_server"` so the env var is baked into the shell command string. The MCP server resolves config via `_get_project_root_override()` which checks CLI args, then `KOPIPASTA_PROJECT_ROOT` env var, then `Path.cwd()` as fallback.
 *   **Config Overwrite**: `configure_claude_desktop()` always overwrites an existing `kopipasta-ralph` entry (no short-circuit on match) to ensure the command/args stay current.
-*   **No auto-commit**: Like `x`, the Ralph workflow does not auto-commit. The agent's changes are reviewed by the user.
+*   **No auto-commit**: The Ralph workflow does not auto-commit. The agent's changes are reviewed by the user.
 
 ### Intelligent Import (Universal Intake)
 The `p` (Process) command acts as a universal intake for LLM output:

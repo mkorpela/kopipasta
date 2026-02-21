@@ -1,5 +1,4 @@
 import os
-import subprocess
 import shutil
 import json
 from typing import Any, Dict, List, Optional, Tuple
@@ -21,7 +20,6 @@ from kopipasta.file import (
     read_file_contents,
 )
 from kopipasta.prompt import get_file_snippet
-from kopipasta.prompt import generate_fix_prompt
 from kopipasta.prompt import generate_extension_prompt
 from kopipasta.cache import load_selection_from_cache, clear_cache, save_task_to_cache
 from kopipasta.cache import load_task_from_cache
@@ -30,15 +28,9 @@ from kopipasta.ops import (
     sanitize_string,
     estimate_tokens,
 )
-from kopipasta.analysis import (
-    propose_and_add_dependencies,
-    grep_files_in_directory,
-    select_from_grep_results,
-)
 from kopipasta.selection import SelectionManager, FileState
 from kopipasta.session import Session, SESSION_FILENAME
 from kopipasta.patcher import find_paths_in_text
-from kopipasta.config import read_fix_command
 from kopipasta.git_utils import add_to_gitignore, check_session_gitignore_status
 from kopipasta.logger import get_logger
 
@@ -367,10 +359,9 @@ class TreeSelector:
     def _show_help(self) -> Panel:
         """Create help panel"""
 
-        action_list = ["c: Clear", "g: Grep", "p: Patch", "x: Fix"]
+        action_list = ["c: Clear", "p: Patch"]
         if self.manager.delta_count > 0:
             action_list.append("e: Extend")
-        action_list.append("d: Deps")
 
         actions = "   ".join(action_list)
         if self.session.is_active:
@@ -406,54 +397,6 @@ q: Quit and finalize"""
         selection_info = f"[dim]Selected:[/dim] {self.manager.delta_count} delta, {self.manager.base_count} base | ~{self.manager.char_count:,} chars (~{estimate_tokens(self.manager.char_count):,} tokens)"
 
         return f"\n{current_info} | {selection_info} | {session_indicator}\n"
-
-    def _handle_grep(self, node: FileNode):
-        """Handle grep search in directory"""
-        if not node.is_dir:
-            self.console.print("[red]Grep only works on directories[/red]")
-            return
-
-        pattern = click.prompt("Enter search pattern")
-        if not pattern:
-            return
-
-        self.logger.info("action_grep", pattern=pattern, directory=node.relative_path)
-        self.console.print(f"Searching for '{pattern}' in {node.relative_path}...")
-
-        grep_results = grep_files_in_directory(pattern, node.path, self.ignore_patterns)
-        if not grep_results:
-            self.console.print(f"[yellow]No matches found for '{pattern}'[/yellow]")
-            return
-
-        # Show results and let user select
-        selected_files, _ = select_from_grep_results(
-            grep_results, self.manager.char_count
-        )
-
-        # Add selected files
-        added_count = 0
-        for file_tuple in selected_files:
-            file_path, is_snippet, chunks, _ = file_tuple
-            abs_path = os.path.abspath(file_path)
-
-            # Check if already selected
-            if self.manager.get_state(abs_path) == FileState.UNSELECTED:
-                self.manager.set_state(
-                    abs_path, FileState.DELTA, is_snippet=is_snippet, chunks=chunks
-                )
-                added_count += 1
-                # Ensure the file is visible in the tree
-                self._ensure_path_visible(abs_path)
-
-        # Show summary of what was added
-        if added_count > 0:
-            self.console.print(
-                f"\n[green]Added {added_count} files from grep results[/green]"
-            )
-        else:
-            self.console.print(
-                "\n[yellow]All selected files were already in selection[/yellow]"
-            )
 
     def _handle_apply_patches(self):
         """Handles the 'p' keypress to apply patches from pasted text."""
@@ -551,215 +494,6 @@ q: Quit and finalize"""
         except KeyboardInterrupt:
             self.console.print("\n[red]Patch application cancelled.[/red]")
             self.logger.info("action_p_interrupt")
-
-    def _handle_fix(self):
-        """
-        Handles the 'x' keypress: Run a fix command, capture errors,
-        detect affected files, generate a diagnostic prompt, and copy to clipboard.
-        """
-        self.logger.info("action_x_start")
-        fix_cmd = read_fix_command(self.project_root_abs)
-
-        self.console.clear()
-
-        session_active = self.session.is_active
-        start_commit = None
-        current_head = None
-        self.console.print(
-            Panel(
-                f"[bold cyan]🔧 Fix Workflow[/bold cyan]\n\n"
-                f"   Command: [bold]{fix_cmd}[/bold]\n\n"
-                f"   Press [bold]Enter[/bold] to run, or [bold]Ctrl-C[/bold] to cancel.\n"
-                f"   [dim]Configure via AI_CONTEXT.md: <!-- KOPIPASTA_FIX_CMD: your command -->[/dim]",
-                title="Fix",
-                border_style="yellow",
-            )
-        )
-
-        try:
-            click.pause()
-        except KeyboardInterrupt:
-            self.console.print("\n[red]Fix cancelled.[/red]")
-            self.logger.info("action_x_abort")
-            return
-
-        # --- Run the command ---
-        self.console.print(f"\n[bold]Running:[/bold] {fix_cmd}\n")
-        self.logger.info("command_exec_start", command=fix_cmd)
-
-        # --- Session-aware git state management ---
-        if session_active:
-            metadata = self.session.get_metadata()
-            start_commit = metadata.get("start_commit") if metadata else None
-            if start_commit and start_commit != "NO_GIT":
-                try:
-                    result = subprocess.run(
-                        ["git", "rev-parse", "HEAD"],
-                        capture_output=True,
-                        text=True,
-                        cwd=self.project_root_abs,
-                        check=True,
-                    )
-                    current_head = result.stdout.strip()
-                except subprocess.CalledProcessError:
-                    current_head = None
-
-                if current_head:
-                    # Soft reset: session work becomes staged for pre-commit
-                    try:
-                        subprocess.run(
-                            ["git", "reset", "--soft", start_commit],
-                            cwd=self.project_root_abs,
-                            check=True,
-                            capture_output=True,
-                        )
-                    except subprocess.CalledProcessError as e:
-                        self.console.print(
-                            f"[yellow]Warning: Could not prepare git state: {e}[/yellow]"
-                        )
-                        current_head = None  # Skip restore
-
-        combined_output = ""
-        return_code = -1
-        try:
-            try:
-                # Stream output in real-time while capturing it
-                process = subprocess.Popen(
-                    fix_cmd,
-                    shell=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    cwd=self.project_root_abs,
-                )
-
-                # Read and display output line by line in real-time
-                if process.stdout:
-                    for line in process.stdout:
-                        self.console.print(f"  [dim]{line.rstrip()}[/dim]")
-                        combined_output += line
-
-                # Wait for process to complete
-                return_code = process.wait(timeout=120)
-                self.logger.info(
-                    "command_exec_finish", command=fix_cmd, return_code=return_code
-                )
-            finally:
-                # --- Always restore git state ---
-                if session_active and current_head:
-                    try:
-                        subprocess.run(
-                            ["git", "reset", "--soft", current_head],
-                            cwd=self.project_root_abs,
-                            check=True,
-                            capture_output=True,
-                        )
-                    except subprocess.CalledProcessError:
-                        self.console.print(
-                            f"[bold red]CRITICAL: Could not restore git state! Run: git reset --soft {current_head}[/bold red]"
-                        )
-
-        except subprocess.TimeoutExpired:
-            self.console.print(
-                "[bold red]Command timed out after 120 seconds.[/bold red]"
-            )
-            self.logger.error("command_exec_timeout", command=fix_cmd)
-            if process:
-                process.kill()
-            return
-        except Exception as e:
-            self.console.print(f"[bold red]Failed to run command: {e}[/bold red]")
-            self.logger.error("command_exec_fail", command=fix_cmd, error=str(e))
-            return
-
-        if return_code == 0:
-            self.console.print(
-                "[bold green]✅ Command succeeded! No errors to fix.[/bold green]"
-            )
-            # Auto-commit any formatter changes (e.g. ruff --fix)
-            if session_active and current_head:
-                self.session.auto_commit("kopipasta: auto-format fixes")
-            return
-
-        # --- Command failed: show output ---
-        self.console.print(
-            f"\n[bold yellow]⚠ Command exited with code {return_code}[/bold yellow]\n"
-        )
-
-        # --- Detect affected files from error output ---
-        all_project_files = self._get_all_unignored_files()
-        found_paths = find_paths_in_text(combined_output, all_project_files)
-
-        if found_paths:
-            self.console.print(
-                f"\n[bold cyan]🔍 Detected {len(found_paths)} affected file(s):[/bold cyan]"
-            )
-            for p in sorted(found_paths)[:15]:
-                self.console.print(f"  • {p}")
-            if len(found_paths) > 15:
-                self.console.print(f"  ... and {len(found_paths) - 15} more.")
-
-            self.logger.info("action_x_files_detected", count=len(found_paths))
-
-            # Add to Delta
-            for path in found_paths:
-                abs_p = os.path.abspath(os.path.join(self.project_root_abs, path))
-                if os.path.isfile(abs_p):
-                    self._ensure_path_visible(abs_p)
-                    if self.manager.get_state(abs_p) == FileState.UNSELECTED:
-                        self.manager.set_state(abs_p, FileState.DELTA)
-                    elif self.manager.get_state(abs_p) == FileState.BASE:
-                        self.manager.mark_as_delta(abs_p)
-        else:
-            self.console.print(
-                "\n[yellow]Could not auto-detect affected files from error output.[/yellow]"
-            )
-            self.logger.info("action_x_no_files_detected")
-
-        # --- Capture git diff ---
-        git_diff = ""
-        try:
-            diff_ref = "HEAD"
-            if session_active and start_commit and start_commit != "NO_GIT":
-                diff_ref = start_commit
-            diff_result = subprocess.run(
-                ["git", "diff", diff_ref],
-                capture_output=True,
-                text=True,
-                cwd=self.project_root_abs,
-                timeout=30,
-            )
-            git_diff = diff_result.stdout.strip()
-        except Exception:
-            pass  # Non-fatal: diff is optional context
-
-        # Auto-commit any formatter changes before generating prompt
-        if session_active and current_head:
-            self.session.auto_commit("kopipasta: auto-format fixes")
-
-        # --- Generate and copy prompt ---
-        affected_file_tuples = self.manager.get_delta_files()
-        prompt_text = generate_fix_prompt(
-            command=fix_cmd,
-            error_output=combined_output.strip(),
-            git_diff=git_diff,
-            affected_files=affected_file_tuples,
-            env_vars={},  # env_vars are handled at the prompt layer
-        )
-
-        try:
-            pyperclip.copy(prompt_text)
-            self.console.print(
-                "\n[bold green]📋 Fix prompt copied to clipboard![/bold green]"
-            )
-            self.console.print(
-                f"[dim]Contains: error output + git diff + {len(affected_file_tuples)} file(s)[/dim]"
-            )
-            self.logger.info("action_x_complete", prompt_len=len(prompt_text))
-        except pyperclip.PyperclipException:
-            self.console.print(
-                "\n[red]Failed to copy to clipboard. Prompt printed above.[/red]"
-            )
 
     def _get_all_unignored_files(self) -> List[str]:
         """Walks the project to find all non-binary, non-ignored files for path scanning."""
@@ -1142,26 +876,6 @@ q: Quit and finalize"""
             f"{node.name} is large ({size_str}). Include full content?", default=False
         )
 
-    def _show_dependencies(self, node: FileNode):
-        """Show and optionally add dependencies for a file"""
-        if node.is_dir:
-            return
-
-        self.console.print(f"\nAnalyzing dependencies for {node.relative_path}...")
-
-        # Create a temporary files list for the dependency analyzer
-        files_list = self.manager.get_selected_files()
-
-        # Use imported function from ops
-        new_deps, _ = propose_and_add_dependencies(
-            node.path, self.project_root_abs, files_list, self.manager.char_count
-        )
-        if new_deps:
-            self.logger.info(
-                "action_d_added", count=len(new_deps), parent_file=node.relative_path
-            )
-        click.pause("Press any key to continue...")
-
     def _action_ralph(self):
         """Configures the MCP environment for the 'Ralph Loop'."""
         self.logger.info("action_ralph_start")
@@ -1213,7 +927,7 @@ q: Quit and finalize"""
         )
 
         # 3. Get Verification Command (Prioritize last used from config)
-        default_cmd = read_fix_command(self.project_root_abs) or "pytest"
+        default_cmd = "pytest"
 
         # Check existing config for previous command
         config_path = os.path.join(self.project_root_abs, RALPH_CONFIG_FILENAME)
@@ -1307,11 +1021,8 @@ q: Quit and finalize"""
 
         # Actions
         bind(["r"], self._action_ralph)
-        bind(["g"], self._action_grep)
         bind(["p"], self._action_patch)
         bind(["e"], self._action_extend)
-        bind(["d"], self._action_deps)
-        bind(["x"], self._action_fix)
         bind(["n"], self._action_session_start)
         bind(["c"], self._action_clear_menu)
         bind(["u"], self._handle_session_update)
@@ -1391,26 +1102,9 @@ q: Quit and finalize"""
         if target_node:
             self._toggle_directory(target_node)
 
-    def _action_grep(self):
-        node = self._get_current_node()
-        if node:
-            self.console.print()
-            self._handle_grep(node)
-
     def _action_patch(self):
         self._handle_apply_patches()
         click.pause("Press any key to return to the file selector...")
-
-    def _action_fix(self):
-        self._handle_fix()
-        click.pause("Press any key to return to the file selector...")
-
-    def _action_deps(self):
-        node = self._get_current_node()
-        if node:
-            self.console.print()
-            self._show_dependencies(node)
-            click.pause("Press any key to continue...")
 
     def _action_clear_menu(self):
         """Opens the Clear/Reset submenu."""

@@ -89,23 +89,6 @@ Mid-conversation, you often need to show the LLM one or two new files without re
 3.  `kopipasta` copies a **minimal prompt** containing *only* the Green files.
 4.  The files are automatically promoted to **Cyan/Base** (synced) for future turns.
 
-### Fix Workflow (`x`)
-
-When a commit fails or a linter reports errors, press `x` to auto-diagnose:
-
-1.  `kopipasta` runs a configurable command (e.g., your pre-commit hook or linter).
-2.  If it fails, error output is captured and scanned for project file paths.
-3.  Affected files are added to **Delta** (Green) automatically.
-4.  A diagnostic prompt (errors + `git diff` + affected files) is copied to your clipboard.
-5.  Paste into your LLM, copy the response, press `p` to apply fixes.
-
-**Configuration:** Add an HTML comment anywhere in `AI_CONTEXT.md`:
-```html
-<!-- KOPIPASTA_FIX_CMD: uv run pre-commit run --all-files -->
-```
-
-**Fallback:** If no command is configured, `kopipasta` checks for `.git/hooks/pre-commit`, then falls back to `git diff --check HEAD`.
-
 ### Ralph Loop (`r`) : MCP Agent Integration
 
 > "If success is just a passing shell script, why are you doing the work?"
@@ -130,11 +113,8 @@ Turn `kopipasta` into a secure, verifiable sandbox for AI agents (like Claude De
 | `Space` | **Toggle** | Cycle selection: `Unselected` $\leftrightarrow$ `Delta` (Green). |
 | `p` | **Process** | Universal Intake. Applies patches OR imports file paths from text. |
 | `e` | **Extend** | Copy only **Delta** (Green) files to clipboard -> Promote to Base. |
-| `x` | **Fix** | Run fix command, detect affected files, copy diagnostic prompt. |
 | `c` | **Clear** | Open Clear/Reset menu (Selection, Task, or All). |
 | `s` | **Snippet** | Toggle Snippet Mode (include only first 50 lines). |
-| `d` | **Deps** | Analyze imports and add related local files. |
-| `g` | **Grep** | Search text patterns inside a directory. |
 | `a` | **Add All** | Add all files in the current directory. |
 | `r` | **Ralph** | Configure MCP Server for Agentic workflows (Claude Desktop). |
 | `n` | **Start** | Initialize `AI_SESSION.md`. |

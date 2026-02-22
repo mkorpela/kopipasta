@@ -323,15 +323,10 @@ def is_large_file(file_path, threshold=102400):
     return os.path.getsize(file_path) > threshold
 
 
-def _normalize_method_name(name: str) -> str:
-    """Convert dunder names like __init__ to init; leave others unchanged."""
-    if name.startswith("__") and name.endswith("__") and len(name) > 4:
-        return name[2:-2]
-    return name
-
-
 def extract_symbols(path: str) -> List[str]:
     """Extract top-level class and function symbols from a Python file.
+
+    Private names (starting with '_') are omitted.
 
     Returns a list of symbol strings:
       - "class ClassName(method1, method2)" for classes
@@ -351,15 +346,17 @@ def extract_symbols(path: str) -> List[str]:
     for node in ast.iter_child_nodes(tree):
         if isinstance(node, ast.ClassDef):
             methods = [
-                _normalize_method_name(child.name)
+                child.name
                 for child in ast.iter_child_nodes(node)
                 if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and not child.name.startswith("_")
             ]
             if methods:
                 symbols.append(f"class {node.name}({', '.join(methods)})")
             else:
                 symbols.append(f"class {node.name}")
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            symbols.append(f"def {node.name}")
+            if not node.name.startswith("_"):
+                symbols.append(f"def {node.name}")
 
     return symbols

@@ -120,7 +120,7 @@ class TreeSelector:
             else:  # It's a file
                 total_size += child.size
                 state = self.manager.get_state(child.path)
-                if state != FileState.UNSELECTED:
+                if state in (FileState.BASE, FileState.DELTA):
                     is_snippet = self.manager.is_snippet(child.path)
                     if is_snippet:
                         selected_size += len(get_file_snippet(child.path))

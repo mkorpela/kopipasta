@@ -288,9 +288,11 @@ class KopipastaApp:
             selected_files, file_char_count, map_files = tree_selector.run(
                 self.paths_for_tree, self.files_to_preselect
             )
-            self.files_to_include.extend(selected_files)
-            self.map_files.extend(map_files)
-            self.current_char_count += file_char_count
+            self.files_to_include = selected_files
+            self.map_files = map_files
+            # Re-calculate total to prevent double-counting cached selections
+            web_size = sum(len(content) for _, content in self.web_contents.values())
+            self.current_char_count = file_char_count + web_size
         except KeyboardInterrupt:
             print("\nSelection cancelled.")
             sys.exit(0)

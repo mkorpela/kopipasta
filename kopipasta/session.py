@@ -124,9 +124,14 @@ class Session:
             return False
 
         metadata = self.get_metadata()
-        start_commit = metadata.get("start_commit") if metadata else None
-        parent_branch = metadata.get("parent_branch")
-        session_branch = metadata.get("session_branch")
+        if metadata:
+            start_commit = metadata.get("start_commit")
+            parent_branch = metadata.get("parent_branch")
+            session_branch = metadata.get("session_branch")
+        else:
+            start_commit = None
+            parent_branch = None
+            session_branch = None
 
         # 1. Auto-commit lingering changes so branch switching succeeds cleanly
         self.auto_commit(message="kopipasta: pre-finish auto-checkpoint")

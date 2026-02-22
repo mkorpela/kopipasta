@@ -1,4 +1,3 @@
-import pytest
 from kopipasta.skeleton import skeletonize_python
 
 
@@ -20,12 +19,7 @@ def test_skeletonize_preserves_class_and_method_signature():
 
 
 def test_skeletonize_multiline_function_body():
-    source = (
-        "def foo():\n"
-        "    x = 1\n"
-        "    y = 2\n"
-        "    return x + y\n"
-    )
+    source = "def foo():\n    x = 1\n    y = 2\n    return x + y\n"
     result = skeletonize_python(source)
     assert "def foo():" in result
     assert "x = 1" not in result

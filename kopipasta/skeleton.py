@@ -1,4 +1,5 @@
 """Skeletonization: strip function/method bodies, preserving signatures."""
+
 import ast
 from typing import List, Tuple, Union
 
@@ -10,7 +11,7 @@ def _add_body_replacement(
 ) -> None:
     body = node.body
     body_start = body[0].lineno
-    body_end = body[-1].end_lineno
+    body_end = body[-1].end_lineno or body_start
     func_line = lines[node.lineno - 1]
     func_indent = len(func_line) - len(func_line.lstrip())
     body_indent = " " * (func_indent + 4)

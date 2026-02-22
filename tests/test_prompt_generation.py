@@ -169,13 +169,21 @@ def test_get_project_structure_returns_json(tmp_path):
     assert parsed["notes.md"] == []  # Non-Python file has no symbols
 
 
-def test_generate_prompt_template_with_map_files(tmp_path):
+@patch("kopipasta.prompt.load_template")
+def test_generate_prompt_template_with_map_files(mock_load_template, tmp_path):
     """MAP files are included in File Contents as skeletonized content."""
+    from jinja2 import Template
+    from kopipasta.prompt import DEFAULT_TEMPLATE
+
     py_file = tmp_path / "service.py"
-    py_file.write_text(
-        "class Service:\n"
-        "    def run(self):\n"
-        "        return 'running'\n"
+    py_file.write_text("class Service:\n    def run(self):\n        return 'running'\n")
+
+    mock_load_template.return_value = Template(
+        DEFAULT_TEMPLATE, keep_trailing_newline=True
+    )
+
+    mock_load_template.return_value = Template(
+        DEFAULT_TEMPLATE, keep_trailing_newline=True
     )
 
     old_cwd = os.getcwd()

@@ -1,4 +1,3 @@
-import pytest
 from pathlib import Path
 from kopipasta.file import extract_symbols
 
@@ -7,9 +6,7 @@ def test_extract_symbols_from_python_class(tmp_path: Path):
     """extract_symbols returns class name with method names."""
     py_file = tmp_path / "example.py"
     py_file.write_text(
-        "class Foo:\n"
-        "    def __init__(self): pass\n"
-        "    def bar(self): pass\n"
+        "class Foo:\n    def __init__(self): pass\n    def bar(self): pass\n"
     )
     result = extract_symbols(str(py_file))
     assert result == ["class Foo(init, bar)"]
@@ -62,9 +59,7 @@ def test_extract_symbols_mixed(tmp_path: Path):
     """extract_symbols handles a mix of top-level classes and functions."""
     py_file = tmp_path / "example.py"
     py_file.write_text(
-        "def standalone(): pass\n"
-        "class Bar:\n"
-        "    def method(self): pass\n"
+        "def standalone(): pass\nclass Bar:\n    def method(self): pass\n"
     )
     result = extract_symbols(str(py_file))
     assert result == ["def standalone", "class Bar(method)"]

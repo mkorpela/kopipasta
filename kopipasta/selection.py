@@ -108,7 +108,12 @@ class SelectionManager:
         return results
 
     def _calculate_file_size(self, path: str) -> int:
-        state, is_snippet, chunks = self._files[path]
+        abs_path = os.path.abspath(path)
+        if abs_path not in self._files:
+            return 0
+        state, is_snippet, chunks = self._files[abs_path]
+        if state == FileState.MAP:
+            return 0
         if chunks:
             return sum(len(c) for c in chunks)
         if is_snippet:
@@ -127,9 +132,9 @@ class SelectionManager:
         abs_path = os.path.abspath(path)
         current_state = self.get_state(abs_path)
         if current_state == FileState.UNSELECTED:
-            self._files[abs_path] = (FileState.MAP, False, None)
+            self.set_state(abs_path, FileState.MAP)
         elif current_state == FileState.MAP:
-            self._files.pop(abs_path, None)
+            self.set_state(abs_path, FileState.UNSELECTED)
         # BASE and DELTA are intentionally left unchanged.
 
     def get_map_files(self) -> List[str]:

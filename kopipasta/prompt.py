@@ -285,9 +285,7 @@ def get_language_for_file(file_path):
     return language_map.get(extension, "")
 
 
-def _build_dir_dict(
-    dir_path: str, ignore_patterns: List[str]
-) -> Dict[str, Any]:
+def _build_dir_dict(dir_path: str, ignore_patterns: List[str]) -> Dict[str, Any]:
     """Recursively build a nested dict representing a directory's contents."""
     result: Dict[str, Any] = {}
     try:
@@ -315,7 +313,9 @@ def _build_dir_dict(
     return result
 
 
-def get_project_structure(ignore_patterns: List[str], search_paths: Optional[List[str]] = None) -> str:
+def get_project_structure(
+    ignore_patterns: List[str], search_paths: Optional[List[str]] = None
+) -> str:
     """Return a minified JSON string describing the project file tree.
 
     Leaf nodes are lists of symbol strings (from extract_symbols).

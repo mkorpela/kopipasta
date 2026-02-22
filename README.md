@@ -16,10 +16,11 @@
   📁 Project Files
   |-- 📂 src/
   |   |-- ● 📄 main.py (4.2 KB)
-  |   |-- ○ 📄 utils.py (1.5 KB)
+  |   |-- ◐ 📄 utils.py (1.5 KB)
+  |   |-- ○ 📄 server.py
   |-- ● 📄 AI_SESSION.md (0.8 KB)
 
-  [j/k]: Nav  [Space]: Toggle  [p]: Patch  [e]: Extend  [q]: Copy & Quit
+  [j/k]: Nav  [Space]: Toggle  [m]: Map  [p]: Patch  [e]: Extend  [q]: Copy & Quit
   Context: 2 files | ~5,000 chars | ~1,400 tokens
 ```
 
@@ -36,16 +37,18 @@ The workflow is a fast, iterative cycle:
 3.  **Patch:** Press `p` in `kopipasta` and paste the LLM's response to apply changes or import new files.
 4.  **Iterate:** Review with `git diff`, then repeat for the next step.
 
-## The Three-State Selection Model
+## The Four-State Selection Model
 
-`kopipasta` tracks file state to distinguish between background context and active focus:
+`kopipasta` tracks file state to distinguish between background context, active focus, and structural hints:
 
 1.  **Unselected (White/Dim)**: File is not included in the prompt.
 2.  **Base (Cyan)**: **"Synced Context."** Files that have already been sent to the LLM in a previous turn.
 3.  **Delta (Green)**: **"Active Focus."** Newly selected files, files found via path scanning, or applied patches.
+4.  **Map (Yellow)**: **"Skeleton Context."** Includes only top-level class and function signatures (Python only) to save tokens.
 
 **Transitions:**
 *   **Space**: Toggles a file between **Unselected** and **Delta** (Green).
+*   **Map (`m`)**: Toggles a file between **Unselected** and **Map** (Yellow).
 *   **Extend (`e`)**: Copies only **Delta** files to the clipboard, then promotes them to **Base**.
 *   **Patch (`p`)**: Promotes patched files to **Delta** (marking them as the current focus).
 
@@ -68,6 +71,9 @@ The "Laws of Physics" for your project. This file is **always pinned** to the pr
 
 ### 👤 Profile (`~/.config/kopipasta/ai_profile.md`)
 Your global preferences (e.g., "I use VS Code", "Always use TypeScript"). Injected into every prompt automatically.
+
+### 🌱 The Gardener (Lifecycle Loop)
+The interactive workflow (`Start` -> `Update` -> `Finish`) that harvests fleeting session knowledge into permanent project context.
 
 ## Usage
 
@@ -110,11 +116,14 @@ Turn `kopipasta` into a secure, verifiable sandbox for AI agents (like Claude De
 
 | Key | Action | Description |
 | :--- | :--- | :--- |
+| `↑/↓` or `k/j` | **Navigate** | Move cursor up/down. |
+| `←/→` or `h/l` | **Collapse/Expand** | Open/close directory branches. |
 | `Space` | **Toggle** | Cycle selection: `Unselected` $\leftrightarrow$ `Delta` (Green). |
+| `m` | **Map** | Cycle selection: `Unselected` $\leftrightarrow$ `Map` (Yellow skeleton). |
 | `p` | **Process** | Universal Intake. Applies patches OR imports file paths from text. |
 | `e` | **Extend** | Copy only **Delta** (Green) files to clipboard -> Promote to Base. |
 | `c` | **Clear** | Open Clear/Reset menu (Selection, Task, or All). |
-| `s` | **Snippet** | Toggle Snippet Mode (include only first 50 lines). |
+| `s` | **Snippet** | Toggle Snippet Mode (include only first 50 lines, marked with `◐`). |
 | `a` | **Add All** | Add all files in the current directory. |
 | `r` | **Ralph** | Configure MCP Server for Agentic workflows (Claude Desktop). |
 | `n` | **Start** | Initialize `AI_SESSION.md`. |

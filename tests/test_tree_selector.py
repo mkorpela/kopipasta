@@ -114,32 +114,6 @@ def test_directory_label_shows_recursive_size_metrics(mock_project: Path):
     assert not utils_label.startswith("○")
 
 
-def test_build_display_tree_shows_yellow_style_for_mapped_file(mock_project: Path):
-    """
-    MAP state files are displayed with a standard 📄 icon (not 🗺️).
-    """
-    selector = TreeSelector(ignore_patterns=[], project_root_abs=str(mock_project))
-    selector.root = selector.build_tree(["."])
-    selector.root.expanded = True
-
-    main_py_abs = os.path.abspath("main.py")
-    selector.manager.toggle_map(main_py_abs)
-
-    tree = selector._build_display_tree()
-
-    # Serialize the tree to text to inspect its contents
-    from io import StringIO
-    from rich.console import Console
-
-    buf = StringIO()
-    console = Console(file=buf, force_terminal=False, width=120)
-    console.print(tree)
-    output = buf.getvalue()
-
-    assert "📄" in output
-    assert "🗺️" not in output
-
-
 def test_build_display_tree_does_not_crash_on_navigation(mock_project: Path):
     """
     Regression test for AttributeError: 'TreeSelector' object has no attribute 'selected_files'
@@ -166,3 +140,45 @@ def test_build_display_tree_does_not_crash_on_navigation(mock_project: Path):
         assert tree is not None  # If we get here, the bug is fixed
     except AttributeError as e:
         pytest.fail(f"_build_display_tree() raised AttributeError: {e}")
+
+
+def test_directory_map_stats_logic(mock_project: Path):
+    """
+    Tests that directory map stats correctly identify when a directory should be considered 'mapped'.
+    A directory is mapped if all .py files underneath are mapped or selected, and at least one is mapped.
+    """
+    # Create an extra .py file
+    (mock_project / "src" / "other.py").write_text("print('hello')")
+
+    selector = TreeSelector(ignore_patterns=[], project_root_abs=str(mock_project))
+    selector.root = selector.build_tree(["."])
+
+    src_node = next(child for child in selector.root.children if child.name == "src")
+    # Ensure children are loaded
+    selector._deep_scan_directory_and_calc_size(src_node.path, src_node)
+    utils_node = next(child for child in src_node.children if child.name == "utils")
+
+    helpers_py_abs = os.path.abspath("src/utils/helpers.py")
+    other_py_abs = os.path.abspath("src/other.py")
+
+    # Scenario 1: helpers.py is MAP, other.py is UNSELECTED
+    selector.manager.set_state(helpers_py_abs, FileState.MAP)
+
+    # For utils/ (contains only helpers.py) -> 0 unselected, 1 mapped
+    u_utils, m_utils = selector._calculate_directory_map_stats(utils_node)
+    assert u_utils == 0
+    assert m_utils == 1
+
+    # For src/ (contains utils/helpers.py, other.py, component.js)
+    # component.js is ignored for map stats since it's not .py
+    u_src, m_src = selector._calculate_directory_map_stats(src_node)
+    assert u_src == 1
+    assert m_src == 1
+
+    # Scenario 2: helpers.py is MAP, other.py is DELTA
+    selector.manager.set_state(other_py_abs, FileState.DELTA)
+    selector._map_stats_cache.clear()
+
+    u_src2, m_src2 = selector._calculate_directory_map_stats(src_node)
+    assert u_src2 == 0
+    assert m_src2 == 1

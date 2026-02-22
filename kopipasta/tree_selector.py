@@ -90,6 +90,7 @@ class TreeSelector:
         self.quit_selection = False
         self.viewport_offset = 0  # First visible item index
         self._metrics_cache: Dict[str, Tuple[int, int]] = {}
+        self._map_stats_cache: Dict[str, Tuple[int, int]] = {}
         self._init_key_bindings()
 
     def _calculate_directory_metrics(self, node: FileNode) -> Tuple[int, int]:
@@ -129,6 +130,38 @@ class TreeSelector:
 
         self._metrics_cache[node.path] = (total_size, selected_size)
         return total_size, selected_size
+
+    def _calculate_directory_map_stats(self, node: FileNode) -> Tuple[int, int]:
+        """Recursively calculate unselected and mapped .py files for a directory."""
+        if not node.is_dir:
+            return 0, 0
+
+        # Use instance cache for this render cycle
+        if node.path in self._map_stats_cache:
+            return self._map_stats_cache[node.path]
+
+        # Ensure directory is scanned
+        if not node.children:
+            self._deep_scan_directory_and_calc_size(node.path, node)
+
+        unselected_py = 0
+        map_py = 0
+
+        for child in node.children:
+            if child.is_dir:
+                child_u, child_m = self._calculate_directory_map_stats(child)
+                unselected_py += child_u
+                map_py += child_m
+            else:  # It's a file
+                if child.path.endswith(".py"):
+                    state = self.manager.get_state(child.path)
+                    if state == FileState.UNSELECTED:
+                        unselected_py += 1
+                    elif state == FileState.MAP:
+                        map_py += 1
+
+        self._map_stats_cache[node.path] = (unselected_py, map_py)
+        return unselected_py, map_py
 
     def build_tree(self, paths: List[str]) -> FileNode:
         """Build tree structure from given paths."""
@@ -255,6 +288,7 @@ class TreeSelector:
     def _build_display_tree(self) -> Tree:
         """Build Rich tree for display with viewport"""
         self._metrics_cache = {}  # Clear cache for each new render
+        self._map_stats_cache = {}  # Clear cache for map stats
 
         # Get terminal size
         _, term_height = shutil.get_terminal_size()
@@ -293,8 +327,6 @@ class TreeSelector:
         # Track what level each visible item is at for proper tree structure
         level_stacks = {}  # level -> stack of tree nodes
 
-        mapped_files = self.manager.get_map_files()
-
         for i in range(self.viewport_offset, viewport_end):
             node, level = flat_tree[i]
 
@@ -310,8 +342,8 @@ class TreeSelector:
                 else:
                     size_str = ""  # Don't show size for empty dirs
 
-                dir_abs = os.path.abspath(node.path) + os.sep
-                is_mapped = any(p.startswith(dir_abs) for p in mapped_files)
+                unselected_py, map_py = self._calculate_directory_map_stats(node)
+                is_mapped = (map_py > 0) and (unselected_py == 0)
 
                 if is_current:
                     style = "bold yellow" if is_mapped else "bold cyan"
@@ -326,12 +358,11 @@ class TreeSelector:
                 # File selection indicator and icon
                 abs_path = os.path.abspath(node.path)
                 state = self.manager.get_state(abs_path)
+                icon = "📄"
                 if state == FileState.MAP:
-                    icon = "📄"
                     selection = "○"
                     style = "bold yellow" if is_current else "yellow"
                 elif state != FileState.UNSELECTED:
-                    icon = "📄"
                     is_snippet = self.manager.is_snippet(abs_path)
                     selection = "◐" if is_snippet else "●"
                     if state == FileState.DELTA:
@@ -339,7 +370,6 @@ class TreeSelector:
                     else:  # BASE
                         style = "bold cyan" if is_current else "cyan"
                 else:
-                    icon = "📄"
                     selection = "○"
                     style = "bold cyan" if is_current else ""
 

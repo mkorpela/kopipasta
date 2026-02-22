@@ -1042,6 +1042,16 @@ q: Quit and finalize"""
                 added_count += 1
                 self._ensure_path_visible(abs_path)
 
+    def _preselect_map_files(self, map_files_to_preselect: List[str]):
+        """Pre-selects a list of files as MAP passed from the command line/cache."""
+        for file_path in map_files_to_preselect:
+            abs_path = os.path.abspath(file_path)
+            if self.manager.get_state(abs_path) != FileState.UNSELECTED:
+                continue
+            if os.path.isfile(abs_path) and not is_binary(abs_path) and abs_path.endswith(".py"):
+                self.manager.set_state(abs_path, FileState.MAP)
+                self._ensure_path_visible(abs_path)
+
     def _init_key_bindings(self):
         """Initializes the keyboard command dispatch table."""
         self.key_map: dict[str, Any] = {}
@@ -1272,13 +1282,18 @@ q: Quit and finalize"""
         raise KeyboardInterrupt()
 
     def run(
-        self, initial_paths: List[str], files_to_preselect: Optional[List[str]] = None
+        self, initial_paths: List[str], 
+        files_to_preselect: Optional[List[str]] = None,
+        map_files_to_preselect: Optional[List[str]] = None
     ) -> Tuple[List[FileTuple], int, List[str]]:
         """Run the interactive tree selector"""
         self.root = self.build_tree(initial_paths)
 
         if files_to_preselect:
             self._preselect_files(files_to_preselect)
+
+        if map_files_to_preselect:
+            self._preselect_map_files(map_files_to_preselect)
 
         # Don't use Live mode, instead manually control the display
         while not self.quit_selection:

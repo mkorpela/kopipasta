@@ -18,6 +18,10 @@ def get_selection_cache_file() -> Path:
     return get_cache_file_path() / "last_selection.json"
 
 
+def get_map_cache_file() -> Path:
+    return get_cache_file_path() / "last_map.json"
+
+
 def get_task_cache_file() -> Path:
     return get_cache_file_path() / "last_task.txt"
 
@@ -33,6 +37,17 @@ def save_selection_to_cache(files_to_include: List[FileTuple]):
         print(f"\nWarning: Could not save selection to cache: {e}")
 
 
+def save_map_to_cache(map_files: List[str]):
+    """Saves the list of mapped file relative paths to the cache."""
+    cache_file = get_map_cache_file()
+    relative_paths = sorted([os.path.relpath(f) for f in map_files])
+    try:
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump(relative_paths, f, indent=2)
+    except IOError as e:
+        print(f"\nWarning: Could not save map selection to cache: {e}")
+
+
 def load_selection_from_cache() -> List[str]:
     """Loads the list of selected files from the cache file."""
     cache_file = get_selection_cache_file()
@@ -45,6 +60,21 @@ def load_selection_from_cache() -> List[str]:
             return [p for p in paths if os.path.exists(p)]
     except (IOError, json.JSONDecodeError) as e:
         print(f"\nWarning: Could not load previous selection from cache: {e}")
+        return []
+
+
+def load_map_from_cache() -> List[str]:
+    """Loads the list of mapped files from the cache file."""
+    cache_file = get_map_cache_file()
+    if not cache_file.exists():
+        return []
+    try:
+        with open(cache_file, "r", encoding="utf-8") as f:
+            paths = json.load(f)
+            # Filter out paths that no longer exist
+            return [p for p in paths if os.path.exists(p)]
+    except (IOError, json.JSONDecodeError) as e:
+        print(f"\nWarning: Could not load previous map selection from cache: {e}")
         return []
 
 
@@ -72,11 +102,15 @@ def load_task_from_cache() -> Optional[str]:
 
 
 def clear_cache():
-    """Clears all cached data (selection and task)."""
+    """Clears all cached data (selection, map, and task)."""
     try:
         selection_file = get_selection_cache_file()
         if selection_file.exists():
             os.remove(selection_file)
+
+        map_file = get_map_cache_file()
+        if map_file.exists():
+            os.remove(map_file)
 
         task_file = get_task_cache_file()
         if task_file.exists():

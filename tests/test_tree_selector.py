@@ -114,9 +114,9 @@ def test_directory_label_shows_recursive_size_metrics(mock_project: Path):
     assert not utils_label.startswith("○")
 
 
-def test_build_display_tree_shows_map_icon_for_mapped_file(mock_project: Path):
+def test_build_display_tree_shows_yellow_style_for_mapped_file(mock_project: Path):
     """
-    MAP state files are displayed with a 🗺️ icon and yellow style.
+    MAP state files are displayed with a standard 📄 icon (not 🗺️).
     """
     selector = TreeSelector(ignore_patterns=[], project_root_abs=str(mock_project))
     selector.root = selector.build_tree(["."])
@@ -136,7 +136,8 @@ def test_build_display_tree_shows_map_icon_for_mapped_file(mock_project: Path):
     console.print(tree)
     output = buf.getvalue()
 
-    assert "🗺️" in output
+    assert "📄" in output
+    assert "🗺️" not in output
 
 
 def test_build_display_tree_does_not_crash_on_navigation(mock_project: Path):

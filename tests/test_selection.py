@@ -130,6 +130,15 @@ def test_toggle_map_map_to_unselected(manager, tmp_path):
     assert manager.get_state(path) == FileState.UNSELECTED
 
 
+def test_toggle_map_ignores_non_python(manager, tmp_path):
+    """toggle_map ignores files that don't end in .py."""
+    f = tmp_path / "file.txt"
+    f.write_text("content")
+    path = str(f)
+    manager.toggle_map(path)
+    assert manager.get_state(path) == FileState.UNSELECTED
+
+
 def test_toggle_map_does_not_affect_base(manager, tmp_path):
     """toggle_map does not change files in BASE state."""
     f = tmp_path / "file.py"

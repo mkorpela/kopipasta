@@ -126,9 +126,12 @@ class SelectionManager:
     def toggle_map(self, path: str) -> None:
         """Toggle MAP state: Unselected -> MAP -> Unselected.
 
+        Only applies to .py files.
         Does not affect files in BASE or DELTA state.
         MAP files do not contribute to char_count.
         """
+        if not path.endswith(".py"):
+            return
         abs_path = os.path.abspath(path)
         current_state = self.get_state(abs_path)
         if current_state == FileState.UNSELECTED:

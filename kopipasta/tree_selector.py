@@ -293,13 +293,15 @@ class TreeSelector:
         # Track what level each visible item is at for proper tree structure
         level_stacks = {}  # level -> stack of tree nodes
 
+        mapped_files = self.manager.get_map_files()
+
         for i in range(self.viewport_offset, viewport_end):
             node, level = flat_tree[i]
 
             # Determine style and icon
             is_current = i == self.current_index
-            style = "bold cyan" if is_current else ""
             label = Text()
+
             if node.is_dir:
                 icon = "📂" if node.expanded else "📁"
                 total_size, selected_size = self._calculate_directory_metrics(node)
@@ -307,6 +309,15 @@ class TreeSelector:
                     size_str = f" ({get_human_readable_size(selected_size)} / {get_human_readable_size(total_size)})"
                 else:
                     size_str = ""  # Don't show size for empty dirs
+
+                dir_abs = os.path.abspath(node.path) + os.sep
+                is_mapped = any(p.startswith(dir_abs) for p in mapped_files)
+
+                if is_current:
+                    style = "bold yellow" if is_mapped else "bold cyan"
+                else:
+                    style = "yellow" if is_mapped else ""
+
                 label.append(f"{icon} {node.name}{size_str}", style=style)
             else:
                 # It's a file
@@ -316,20 +327,21 @@ class TreeSelector:
                 abs_path = os.path.abspath(node.path)
                 state = self.manager.get_state(abs_path)
                 if state == FileState.MAP:
-                    icon = "🗺️"
+                    icon = "📄"
                     selection = "○"
-                    style = "yellow " + style
+                    style = "bold yellow" if is_current else "yellow"
                 elif state != FileState.UNSELECTED:
                     icon = "📄"
                     is_snippet = self.manager.is_snippet(abs_path)
                     selection = "◐" if is_snippet else "●"
                     if state == FileState.DELTA:
-                        style = "green " + style
+                        style = "bold green" if is_current else "green"
                     else:  # BASE
-                        style = "cyan " + style
+                        style = "bold cyan" if is_current else "cyan"
                 else:
                     icon = "📄"
                     selection = "○"
+                    style = "bold cyan" if is_current else ""
 
                 label.append(f"{selection} ", style="dim")
                 label.append(f"{icon} {node.name}{size_str}", style=style)
@@ -1134,9 +1146,13 @@ q: Quit and finalize"""
                 for child in n.children:
                     collect_files(child)
             else:
-                all_files.append(n)
+                if n.path.endswith(".py"):
+                    all_files.append(n)
 
         collect_files(node)
+
+        if not all_files:
+            return
 
         any_unmapped = any(
             self.manager.get_state(f.path) != FileState.MAP

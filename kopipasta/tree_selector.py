@@ -310,13 +310,17 @@ class TreeSelector:
                 label.append(f"{icon} {node.name}{size_str}", style=style)
             else:
                 # It's a file
-                icon = "📄"
                 size_str = f" ({get_human_readable_size(node.size)})"
 
-                # File selection indicator
+                # File selection indicator and icon
                 abs_path = os.path.abspath(node.path)
                 state = self.manager.get_state(abs_path)
-                if state != FileState.UNSELECTED:
+                if state == FileState.MAP:
+                    icon = "🗺️"
+                    selection = "○"
+                    style = "yellow " + style
+                elif state != FileState.UNSELECTED:
+                    icon = "📄"
                     is_snippet = self.manager.is_snippet(abs_path)
                     selection = "◐" if is_snippet else "●"
                     if state == FileState.DELTA:
@@ -324,6 +328,7 @@ class TreeSelector:
                     else:  # BASE
                         style = "cyan " + style
                 else:
+                    icon = "📄"
                     selection = "○"
 
                 label.append(f"{selection} ", style="dim")
@@ -371,7 +376,7 @@ class TreeSelector:
         actions += "   r: Ralph (MCP)"
 
         help_text = f"""[bold]Navigation:[/bold]  ↑/k: Up  ↓/j: Down  →/l/Enter: Expand  ←/h: Collapse
-[bold]Selection:[/bold]  Space: Toggle selection  a: Add all in dir     s: Snippet mode
+[bold]Selection:[/bold]  Space: Toggle selection  a: Add all in dir     s: Snippet mode  m: Map (skeleton)
 [bold]Actions:[/bold]    {actions}
 q: Quit and finalize"""
 
@@ -1018,6 +1023,7 @@ q: Quit and finalize"""
         bind([" "], self._action_toggle)
         bind(["s"], self._action_snippet)
         bind(["a"], self._action_add_all)
+        bind(["m"], self._action_map)
 
         # Actions
         bind(["r"], self._action_ralph)
@@ -1102,6 +1108,51 @@ q: Quit and finalize"""
         if target_node:
             self._toggle_directory(target_node)
 
+    def _action_map(self):
+        """Toggle MAP (skeleton) state for the current file or directory."""
+        node = self._get_current_node()
+        if not node:
+            return
+        if node.is_dir:
+            self._toggle_map_directory(node)
+        else:
+            self.manager.toggle_map(node.path)
+
+    def _toggle_map_directory(self, node: FileNode) -> None:
+        """Toggle MAP state for all UNSELECTED files in a directory.
+
+        Files in BASE or DELTA state are not affected.
+        If any file is unmapped, map all unmapped files.
+        If all files are already mapped, unmap them.
+        """
+        all_files: List[FileNode] = []
+
+        def collect_files(n: FileNode) -> None:
+            if n.is_dir:
+                if not n.children:
+                    self._deep_scan_directory_and_calc_size(n.path, n)
+                for child in n.children:
+                    collect_files(child)
+            else:
+                all_files.append(n)
+
+        collect_files(node)
+
+        any_unmapped = any(
+            self.manager.get_state(f.path) != FileState.MAP
+            and self.manager.get_state(f.path) == FileState.UNSELECTED
+            for f in all_files
+        )
+
+        for file_node in all_files:
+            state = self.manager.get_state(file_node.path)
+            if any_unmapped:
+                if state == FileState.UNSELECTED:
+                    self.manager.toggle_map(file_node.path)
+            else:
+                if state == FileState.MAP:
+                    self.manager.toggle_map(file_node.path)
+
     def _action_patch(self):
         self._handle_apply_patches()
         click.pause("Press any key to return to the file selector...")
@@ -1176,7 +1227,7 @@ q: Quit and finalize"""
 
     def run(
         self, initial_paths: List[str], files_to_preselect: Optional[List[str]] = None
-    ) -> Tuple[List[FileTuple], int]:
+    ) -> Tuple[List[FileTuple], int, List[str]]:
         """Run the interactive tree selector"""
         self.root = self.build_tree(initial_paths)
 
@@ -1215,4 +1266,5 @@ q: Quit and finalize"""
 
         # Convert selections to FileTuple format
         files_to_include = self.manager.get_selected_files()
-        return files_to_include, self.manager.char_count
+        map_files = self.manager.get_map_files()
+        return files_to_include, self.manager.char_count, map_files

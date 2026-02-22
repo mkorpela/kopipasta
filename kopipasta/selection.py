@@ -8,6 +8,7 @@ class FileState(Enum):
     UNSELECTED = auto()
     BASE = auto()  # Blue/Cyan: Previously synced context
     DELTA = auto()  # Green: New changes or active focus
+    MAP = auto()  # Yellow: Skeletonized version shown in prompt; not "selected"
 
 
 class SelectionManager:
@@ -96,10 +97,13 @@ class SelectionManager:
         self.set_state(path, FileState.DELTA, is_snippet=is_snippet, chunks=chunks)
 
     def get_selected_files(self) -> List[Tuple[str, bool, Optional[List[str]], str]]:
-        """Returns files in the format expected by the prompt generator."""
+        """Returns files in the format expected by the prompt generator.
+
+        Excludes MAP files; use get_map_files() to retrieve those separately.
+        """
         results = []
         for path, (state, is_snippet, chunks) in self._files.items():
-            if state != FileState.UNSELECTED:
+            if state not in (FileState.UNSELECTED, FileState.MAP):
                 results.append((path, is_snippet, chunks, get_language_for_file(path)))
         return results
 
@@ -113,6 +117,24 @@ class SelectionManager:
             return os.path.getsize(path)
         except OSError:
             return 0
+
+    def toggle_map(self, path: str) -> None:
+        """Toggle MAP state: Unselected -> MAP -> Unselected.
+
+        Does not affect files in BASE or DELTA state.
+        MAP files do not contribute to char_count.
+        """
+        abs_path = os.path.abspath(path)
+        current_state = self.get_state(abs_path)
+        if current_state == FileState.UNSELECTED:
+            self._files[abs_path] = (FileState.MAP, False, None)
+        elif current_state == FileState.MAP:
+            self._files.pop(abs_path, None)
+        # BASE and DELTA are intentionally left unchanged.
+
+    def get_map_files(self) -> List[str]:
+        """Returns paths of files currently in MAP state."""
+        return [p for p, (s, _, _) in self._files.items() if s == FileState.MAP]
 
     def clear_base(self):
         """Removes all files in BASE state, keeping DELTA."""

@@ -87,6 +87,7 @@ class KopipastaApp:
         # Core State
         self.project_root_abs = os.path.abspath(os.getcwd())
         self.files_to_include: List[FileTuple] = []
+        self.map_files: List[str] = []
         self.web_contents: Dict[str, Tuple[FileTuple, str]] = {}
         self.paths_for_tree: List[str] = []
         self.files_to_preselect: List[str] = []
@@ -284,10 +285,11 @@ class KopipastaApp:
 
         tree_selector = TreeSelector(self.ignore_patterns, self.project_root_abs)
         try:
-            selected_files, file_char_count = tree_selector.run(
+            selected_files, file_char_count, map_files = tree_selector.run(
                 self.paths_for_tree, self.files_to_preselect
             )
             self.files_to_include.extend(selected_files)
+            self.map_files.extend(map_files)
             self.current_char_count += file_char_count
         except KeyboardInterrupt:
             print("\nSelection cancelled.")
@@ -321,6 +323,7 @@ class KopipastaApp:
             user_profile=self.user_profile,
             project_context=self.project_context,
             session_state=self.session_state,
+            map_files=self.map_files if self.map_files else None,
         )
 
         # Get Task

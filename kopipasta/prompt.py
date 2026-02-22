@@ -1,14 +1,15 @@
+import json
 import os
 import shutil
 import subprocess
 import uuid
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional
 
 from jinja2 import Template
 
-from kopipasta.file import FileTuple, read_file_contents, is_ignored
+from kopipasta.file import FileTuple, extract_symbols, read_file_contents, is_ignored
 from prompt_toolkit import prompt as prompt_toolkit_prompt
 from prompt_toolkit.styles import Style
 from rich.console import Console
@@ -34,7 +35,7 @@ DEFAULT_TEMPLATE = """{% if user_profile -%}
 
 ## Project Structure
 
-```
+```json
 {{ structure }}
 ```
 
@@ -284,43 +285,58 @@ def get_language_for_file(file_path):
     return language_map.get(extension, "")
 
 
-def get_project_structure(ignore_patterns, search_paths=None):
+def _build_dir_dict(
+    dir_path: str, ignore_patterns: List[str]
+) -> Dict[str, Any]:
+    """Recursively build a nested dict representing a directory's contents."""
+    result: Dict[str, Any] = {}
+    try:
+        items = sorted(os.listdir(dir_path))
+    except (PermissionError, FileNotFoundError):
+        return result
+
+    dirs = []
+    files = []
+    for item in items:
+        item_path = os.path.join(dir_path, item)
+        if is_ignored(item_path, ignore_patterns):
+            continue
+        if os.path.isdir(item_path):
+            dirs.append(item)
+        elif os.path.isfile(item_path):
+            files.append(item)
+
+    for d in dirs:
+        result[d] = _build_dir_dict(os.path.join(dir_path, d), ignore_patterns)
+
+    for f in files:
+        result[f] = extract_symbols(os.path.join(dir_path, f))
+
+    return result
+
+
+def get_project_structure(ignore_patterns: List[str], search_paths: Optional[List[str]] = None) -> str:
+    """Return a minified JSON string describing the project file tree.
+
+    Leaf nodes are lists of symbol strings (from extract_symbols).
+    Non-Python files get an empty list [].
+    """
     if not search_paths:
         search_paths = ["."]
 
-    tree = []
+    structure: Dict[str, Any] = {}
+
     for start_path in search_paths:
         if os.path.isfile(start_path):
             if not is_ignored(start_path, ignore_patterns):
-                tree.append(f"|-- {os.path.basename(start_path)}")
+                name = os.path.basename(start_path)
+                structure[name] = extract_symbols(start_path)
             continue
 
-        for root, dirs, files in os.walk(start_path):
-            dirs.sort()
-            files.sort()
-            dirs[:] = [
-                d
-                for d in dirs
-                if not is_ignored(os.path.join(root, d), ignore_patterns)
-            ]
-            files = [
-                f
-                for f in files
-                if not is_ignored(os.path.join(root, f), ignore_patterns)
-            ]
+        dir_contents = _build_dir_dict(os.path.abspath(start_path), ignore_patterns)
+        structure.update(dir_contents)
 
-            rel_path = os.path.relpath(root, start_path)
-            level = 0 if rel_path == "." else rel_path.count(os.sep) + 1
-
-            indent = " " * 4 * level + "|-- "
-            display_name = start_path if level == 0 else os.path.basename(root)
-            tree.append(f"{indent}{display_name}/")
-
-            subindent = " " * 4 * (level + 1) + "|-- "
-            for f in files:
-                tree.append(f"{subindent}{f}")
-
-    return "\n".join(tree)
+    return json.dumps(structure, separators=(",", ":"))
 
 
 def handle_env_variables(
@@ -376,6 +392,7 @@ def generate_prompt_template(
     user_profile: Optional[str] = None,
     project_context: Optional[str] = None,
     session_state: Optional[str] = None,
+    map_files: Optional[List[str]] = None,
 ) -> Tuple[str, int]:
     """
     Generates the prompt using the Jinja2 template.
@@ -414,6 +431,28 @@ def generate_prompt_template(
                 "content": content,
             }
         )
+
+    # 2b. Append MAP files as skeletonized content.
+    if map_files:
+        from kopipasta.skeleton import skeletonize_python
+
+        for file_path in map_files:
+            relative_path = os.path.relpath(file_path)
+            language = get_language_for_file(file_path)
+            try:
+                source = read_file_contents(file_path)
+                content = skeletonize_python(source)
+            except Exception:
+                content = ""
+            processed_files.append(
+                {
+                    "path": relative_path,
+                    "relative_path": relative_path,
+                    "description": " (map)",
+                    "language": language,
+                    "content": content,
+                }
+            )
 
     # 3. Prepare Web Contents List
     processed_web_pages = []

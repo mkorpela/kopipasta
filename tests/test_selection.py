@@ -1,3 +1,4 @@
+import os
 import pytest
 from kopipasta.selection import SelectionManager, FileState
 
@@ -98,6 +99,82 @@ def test_snippet_handling(manager, tmp_path):
     # The size for snippet in SelectionManager uses get_file_snippet which usually returns 50 lines.
     # Our test file is 1 line, so it should be the same, but we verify the manager tracks it.
     assert manager.char_count == 1000
+
+
+def test_map_state_exists():
+    """FileState.MAP enum value exists."""
+    assert FileState.MAP is not None
+
+
+def test_toggle_map_unselected_to_map(manager, tmp_path):
+    """toggle_map cycles Unselected -> MAP."""
+    f = tmp_path / "file.py"
+    f.write_text("content")
+    path = str(f)
+    manager.toggle_map(path)
+    assert manager.get_state(path) == FileState.MAP
+
+
+def test_toggle_map_map_to_unselected(manager, tmp_path):
+    """toggle_map cycles MAP -> Unselected."""
+    f = tmp_path / "file.py"
+    f.write_text("content")
+    path = str(f)
+    manager.toggle_map(path)
+    manager.toggle_map(path)
+    assert manager.get_state(path) == FileState.UNSELECTED
+
+
+def test_toggle_map_does_not_affect_base(manager, tmp_path):
+    """toggle_map does not change files in BASE state."""
+    f = tmp_path / "file.py"
+    f.write_text("content")
+    path = str(f)
+    manager.set_state(path, FileState.BASE)
+    manager.toggle_map(path)
+    assert manager.get_state(path) == FileState.BASE
+
+
+def test_toggle_map_does_not_affect_delta(manager, tmp_path):
+    """toggle_map does not change files in DELTA state."""
+    f = tmp_path / "file.py"
+    f.write_text("content")
+    path = str(f)
+    manager.set_state(path, FileState.DELTA)
+    manager.toggle_map(path)
+    assert manager.get_state(path) == FileState.DELTA
+
+
+def test_map_state_not_counted_in_char_count(manager, tmp_path):
+    """MAP files do not contribute to char_count."""
+    f = tmp_path / "file.py"
+    f.write_text("some content here")
+    path = str(f)
+    manager.toggle_map(path)
+    assert manager.char_count == 0
+
+
+def test_get_map_files_returns_map_files(manager, tmp_path):
+    """get_map_files returns paths of files in MAP state."""
+    f1 = tmp_path / "mapped.py"
+    f2 = tmp_path / "selected.py"
+    f1.write_text("a")
+    f2.write_text("b")
+    manager.toggle_map(str(f1))
+    manager.set_state(str(f2), FileState.DELTA)
+    mapped = manager.get_map_files()
+    assert os.path.abspath(str(f1)) in mapped
+    assert os.path.abspath(str(f2)) not in mapped
+
+
+def test_map_not_in_selected_files(manager, tmp_path):
+    """MAP files are not included in get_selected_files()."""
+    f = tmp_path / "file.py"
+    f.write_text("content")
+    path = str(f)
+    manager.toggle_map(path)
+    selected = manager.get_selected_files()
+    assert all(s[0] != os.path.abspath(path) for s in selected)
 
 
 def test_delta_retrieval_and_promotion(manager, tmp_path):

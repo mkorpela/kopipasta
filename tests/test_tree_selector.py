@@ -114,6 +114,31 @@ def test_directory_label_shows_recursive_size_metrics(mock_project: Path):
     assert not utils_label.startswith("○")
 
 
+def test_build_display_tree_shows_map_icon_for_mapped_file(mock_project: Path):
+    """
+    MAP state files are displayed with a 🗺️ icon and yellow style.
+    """
+    selector = TreeSelector(ignore_patterns=[], project_root_abs=str(mock_project))
+    selector.root = selector.build_tree(["."])
+    selector.root.expanded = True
+
+    main_py_abs = os.path.abspath("main.py")
+    selector.manager.toggle_map(main_py_abs)
+
+    tree = selector._build_display_tree()
+
+    # Serialize the tree to text to inspect its contents
+    from io import StringIO
+    from rich.console import Console
+
+    buf = StringIO()
+    console = Console(file=buf, force_terminal=False, width=120)
+    console.print(tree)
+    output = buf.getvalue()
+
+    assert "🗺️" in output
+
+
 def test_build_display_tree_does_not_crash_on_navigation(mock_project: Path):
     """
     Regression test for AttributeError: 'TreeSelector' object has no attribute 'selected_files'

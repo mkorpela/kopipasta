@@ -1,3 +1,5 @@
+import os
+import json
 from unittest.mock import patch
 from kopipasta.prompt import generate_prompt_template, DEFAULT_TEMPLATE
 
@@ -55,7 +57,7 @@ def test_generate_prompt_template_regression(
     expected_parts = [
         "# Project Overview\n\n",
         "## Project Structure\n\n",
-        "```\n",
+        "```json\n",
         "|-- root\n",
         "    |-- file.py\n",
         "```\n\n",
@@ -139,3 +141,59 @@ def test_generate_extension_prompt(tmp_path):
     assert "# FILE: new_logic.py" in prompt
     assert "def added(): pass" in prompt
     assert "```python" in prompt
+
+
+def test_get_project_structure_returns_json(tmp_path):
+    """get_project_structure returns a minified JSON string with symbol lists."""
+    from kopipasta.prompt import get_project_structure
+
+    (tmp_path / "main.py").write_text("def main(): pass\n")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "util.py").write_text("class Util: pass\n")
+    (tmp_path / "notes.md").write_text("# Notes")
+
+    old_cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        result = get_project_structure([])
+    finally:
+        os.chdir(old_cwd)
+
+    parsed = json.loads(result)
+    assert "main.py" in parsed
+    assert parsed["main.py"] == ["def main"]
+    assert "sub" in parsed
+    assert "util.py" in parsed["sub"]
+    assert parsed["sub"]["util.py"] == ["class Util"]
+    assert "notes.md" in parsed
+    assert parsed["notes.md"] == []  # Non-Python file has no symbols
+
+
+def test_generate_prompt_template_with_map_files(tmp_path):
+    """MAP files are included in File Contents as skeletonized content."""
+    py_file = tmp_path / "service.py"
+    py_file.write_text(
+        "class Service:\n"
+        "    def run(self):\n"
+        "        return 'running'\n"
+    )
+
+    old_cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        result, _ = generate_prompt_template(
+            files_to_include=[],
+            ignore_patterns=[],
+            web_contents={},
+            env_vars={},
+            search_paths=["."],
+            map_files=[str(py_file)],
+        )
+    finally:
+        os.chdir(old_cwd)
+
+    assert "# FILE: service.py (map)" in result
+    assert "class Service:" in result
+    assert "def run(self):" in result
+    assert "return 'running'" not in result  # Body stripped by skeletonize
+    assert "..." in result

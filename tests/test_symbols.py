@@ -3,17 +3,17 @@ from kopipasta.file import extract_symbols
 
 
 def test_extract_symbols_from_python_class(tmp_path: Path):
-    """extract_symbols returns class name with public method names; private methods omitted."""
+    """extract_symbols returns class name with public and dunder method names."""
     py_file = tmp_path / "example.py"
     py_file.write_text(
         "class Foo:\n    def __init__(self): pass\n    def bar(self): pass\n"
     )
     result = extract_symbols(str(py_file))
-    assert result == ["class Foo(bar)"]
+    assert result == ["class Foo(init, bar)"]
 
 
 def test_extract_symbols_private_methods_omitted(tmp_path: Path):
-    """Methods starting with '_' (including dunders) are omitted."""
+    """Single-underscore private methods are omitted; dunders are kept and normalized."""
     py_file = tmp_path / "example.py"
     py_file.write_text(
         "class Foo:\n"
@@ -22,11 +22,11 @@ def test_extract_symbols_private_methods_omitted(tmp_path: Path):
         "    def _private(self): pass\n"
     )
     result = extract_symbols(str(py_file))
-    assert result == ["class Foo"]
+    assert result == ["class Foo(init, repr)"]
 
 
 def test_extract_symbols_private_top_level_function_omitted(tmp_path: Path):
-    """Top-level functions starting with '_' are omitted."""
+    """Top-level single-underscore private functions are omitted; dunders are kept."""
     py_file = tmp_path / "example.py"
     py_file.write_text(
         "def public(): pass\n"

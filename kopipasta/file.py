@@ -323,10 +323,28 @@ def is_large_file(file_path, threshold=102400):
     return os.path.getsize(file_path) > threshold
 
 
+def _is_dunder(name: str) -> bool:
+    """Return True for dunder names like __init__, __repr__."""
+    return name.startswith("__") and name.endswith("__") and len(name) > 4
+
+
+def _is_private(name: str) -> bool:
+    """Return True for private names (starting with '_') that are not dunders."""
+    return name.startswith("_") and not _is_dunder(name)
+
+
+def _normalize_method_name(name: str) -> str:
+    """Convert dunder names like __init__ to init; leave others unchanged."""
+    if _is_dunder(name):
+        return name[2:-2]
+    return name
+
+
 def extract_symbols(path: str) -> List[str]:
     """Extract top-level class and function symbols from a Python file.
 
-    Private names (starting with '_') are omitted.
+    Private names (starting with '_') are omitted; dunder names are kept
+    and normalized (e.g. __init__ -> init).
 
     Returns a list of symbol strings:
       - "class ClassName(method1, method2)" for classes
@@ -346,17 +364,17 @@ def extract_symbols(path: str) -> List[str]:
     for node in ast.iter_child_nodes(tree):
         if isinstance(node, ast.ClassDef):
             methods = [
-                child.name
+                _normalize_method_name(child.name)
                 for child in ast.iter_child_nodes(node)
                 if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and not child.name.startswith("_")
+                and not _is_private(child.name)
             ]
             if methods:
                 symbols.append(f"class {node.name}({', '.join(methods)})")
             else:
                 symbols.append(f"class {node.name}")
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if not node.name.startswith("_"):
+            if not _is_private(node.name):
                 symbols.append(f"def {node.name}")
 
     return symbols

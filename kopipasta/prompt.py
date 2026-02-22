@@ -285,7 +285,9 @@ def get_language_for_file(file_path):
     return language_map.get(extension, "")
 
 
-def _build_dir_dict(dir_path: str, ignore_patterns: List[str]) -> Dict[str, Any]:
+def _build_dir_dict(
+    dir_path: str, ignore_patterns: List[str], map_files_set: set
+) -> Dict[str, Any]:
     """Recursively build a nested dict representing a directory's contents."""
     result: Dict[str, Any] = {}
     try:
@@ -305,16 +307,24 @@ def _build_dir_dict(dir_path: str, ignore_patterns: List[str]) -> Dict[str, Any]
             files.append(item)
 
     for d in dirs:
-        result[d] = _build_dir_dict(os.path.join(dir_path, d), ignore_patterns)
+        result[d] = _build_dir_dict(
+            os.path.join(dir_path, d), ignore_patterns, map_files_set
+        )
 
     for f in files:
-        result[f] = extract_symbols(os.path.join(dir_path, f))
+        file_abs = os.path.abspath(os.path.join(dir_path, f))
+        if file_abs in map_files_set:
+            result[f] = extract_symbols(file_abs)
+        else:
+            result[f] = []
 
     return result
 
 
 def get_project_structure(
-    ignore_patterns: List[str], search_paths: Optional[List[str]] = None
+    ignore_patterns: List[str],
+    search_paths: Optional[List[str]] = None,
+    map_files: Optional[List[str]] = None,
 ) -> str:
     """Return a minified JSON string describing the project file tree.
 
@@ -324,16 +334,22 @@ def get_project_structure(
     if not search_paths:
         search_paths = ["."]
 
+    map_files_set = set(os.path.abspath(p) for p in (map_files or []))
     structure: Dict[str, Any] = {}
 
     for start_path in search_paths:
         if os.path.isfile(start_path):
             if not is_ignored(start_path, ignore_patterns):
                 name = os.path.basename(start_path)
-                structure[name] = extract_symbols(start_path)
+                start_abs = os.path.abspath(start_path)
+                structure[name] = (
+                    extract_symbols(start_path) if start_abs in map_files_set else []
+                )
             continue
 
-        dir_contents = _build_dir_dict(os.path.abspath(start_path), ignore_patterns)
+        dir_contents = _build_dir_dict(
+            os.path.abspath(start_path), ignore_patterns, map_files_set
+        )
         structure.update(dir_contents)
 
     return json.dumps(structure, separators=(",", ":"))
@@ -401,7 +417,7 @@ def generate_prompt_template(
     env_decisions: Dict[str, str] = {}
 
     # 1. Prepare Project Structure
-    structure_tree = get_project_structure(ignore_patterns, search_paths)
+    structure_tree = get_project_structure(ignore_patterns, search_paths, map_files)
 
     # 2. Prepare File Contents List
     processed_files = []
@@ -431,28 +447,6 @@ def generate_prompt_template(
                 "content": content,
             }
         )
-
-    # 2b. Append MAP files as skeletonized content.
-    if map_files:
-        from kopipasta.skeleton import skeletonize_python
-
-        for file_path in map_files:
-            relative_path = os.path.relpath(file_path)
-            language = get_language_for_file(file_path)
-            try:
-                source = read_file_contents(file_path)
-                content = skeletonize_python(source)
-            except Exception:
-                content = ""
-            processed_files.append(
-                {
-                    "path": relative_path,
-                    "relative_path": relative_path,
-                    "description": " (map)",
-                    "language": language,
-                    "content": content,
-                }
-            )
 
     # 3. Prepare Web Contents List
     processed_web_pages = []

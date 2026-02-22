@@ -59,7 +59,7 @@ class SelectionManager:
             self.set_state(path, FileState.DELTA, is_snippet=is_snippet)
         elif current_state == FileState.DELTA:
             self.set_state(path, FileState.UNSELECTED)
-        elif current_state == FileState.BASE:
+        elif current_state in (FileState.BASE, FileState.MAP):
             self.set_state(path, FileState.DELTA, is_snippet=is_snippet)
 
     def promote_all_to_base(self):

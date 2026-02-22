@@ -51,6 +51,11 @@ def test_toggle_cycle(manager, tmp_path):
     manager.toggle(path)
     assert manager.get_state(path) == FileState.DELTA
 
+    # 4. Map -> Delta
+    manager.set_state(path, FileState.MAP)
+    manager.toggle(path)
+    assert manager.get_state(path) == FileState.DELTA
+
 
 def test_promote_to_base(manager, tmp_path):
     f1 = tmp_path / "f1.txt"

@@ -722,15 +722,15 @@ q: Quit and finalize"""
 
         collect_files(node)
 
-        # Check if any are unselected
-        any_unselected = any(
-            self.manager.get_state(f.path) == FileState.UNSELECTED for f in all_files
+        # Check if any are not DELTA
+        any_not_delta = any(
+            self.manager.get_state(f.path) != FileState.DELTA for f in all_files
         )
 
-        if any_unselected:
-            # Select all unselected files
+        if any_not_delta:
+            # Select all as DELTA
             for file_node in all_files:
-                if self.manager.get_state(file_node.path) == FileState.UNSELECTED:
+                if self.manager.get_state(file_node.path) != FileState.DELTA:
                     self.manager.set_state(file_node.path, FileState.DELTA)
         else:
             # Unselect all files

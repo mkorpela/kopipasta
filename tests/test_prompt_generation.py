@@ -147,15 +147,21 @@ def test_get_project_structure_returns_json(tmp_path):
     """get_project_structure returns a minified JSON string with symbol lists."""
     from kopipasta.prompt import get_project_structure
 
-    (tmp_path / "main.py").write_text("def main(): pass\n")
+    main_py = tmp_path / "main.py"
+    main_py.write_text("def main(): pass\n")
     (tmp_path / "sub").mkdir()
-    (tmp_path / "sub" / "util.py").write_text("class Util: pass\n")
+    util_py = tmp_path / "sub" / "util.py"
+    util_py.write_text("class Util: pass\n")
+    unmapped_py = tmp_path / "sub" / "unmapped.py"
+    unmapped_py.write_text("def hidden(): pass\n")
     (tmp_path / "notes.md").write_text("# Notes")
 
     old_cwd = os.getcwd()
     os.chdir(tmp_path)
     try:
-        result = get_project_structure([])
+        result = get_project_structure(
+            [], search_paths=["."], map_files=[str(main_py), str(util_py)]
+        )
     finally:
         os.chdir(old_cwd)
 
@@ -165,13 +171,15 @@ def test_get_project_structure_returns_json(tmp_path):
     assert "sub" in parsed
     assert "util.py" in parsed["sub"]
     assert parsed["sub"]["util.py"] == ["class Util"]
+    assert "unmapped.py" in parsed["sub"]
+    assert parsed["sub"]["unmapped.py"] == []  # Not in map_files
     assert "notes.md" in parsed
     assert parsed["notes.md"] == []  # Non-Python file has no symbols
 
 
 @patch("kopipasta.prompt.load_template")
 def test_generate_prompt_template_with_map_files(mock_load_template, tmp_path):
-    """MAP files are included in File Contents as skeletonized content."""
+    """MAP files are included in the JSON Project Structure, but NOT in File Contents."""
     from jinja2 import Template
     from kopipasta.prompt import DEFAULT_TEMPLATE
 
@@ -200,8 +208,8 @@ def test_generate_prompt_template_with_map_files(mock_load_template, tmp_path):
     finally:
         os.chdir(old_cwd)
 
-    assert "# FILE: service.py (map)" in result
-    assert "class Service:" in result
-    assert "def run(self):" in result
-    assert "return 'running'" not in result  # Body stripped by skeletonize
-    assert "..." in result
+    # Should be in the JSON tree structure
+    assert '"service.py":["class Service(run)"]' in result
+    # Should NOT be in the file contents
+    assert "# FILE: service.py (map)" not in result
+    assert "class Service:" not in result

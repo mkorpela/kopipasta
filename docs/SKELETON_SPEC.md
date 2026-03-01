@@ -1,146 +1,63 @@
-# Specification: Semantic Skeletons (Replacing Blind Snippets)
+# Specification: Semantic Maps (AST-Driven Project Context)
 
-## 1. Problem Statement: The Flaw in "Blind Snippets"
-Currently, pressing `s` in `kopipasta` activates "Snippet Mode", which indiscriminately grabs the first 50 lines (or 4KB) of a file. 
+## 1. Problem Statement: The Need for High-Density Context
+Previously, the Map (`m`) state in `kopipasta` provided project-wide visibility but was semantically shallow. It extracted only the names of classes and functions (e.g., `class User(login)`). This forced the LLM to guess data contracts, arguments, and return types, often requiring a full file load (`Space`) just to see a function signature.
 
-**The Mechanical Failure:** 
-A 50-line cutoff is semantically blind. It frequently truncates files in the middle of a `for` loop, cuts off the return types of functions, or captures 40 lines of import statements while missing the actual class definition. 
+While we have Snippet (`s`) mode to indiscriminately grab the top 50 lines of a file, Snippets are semantically blind. A 50-line cutoff frequently truncates files in the middle of a `for` loop, cuts off the return types of functions, or captures 40 lines of import statements while missing the actual class definition. We need a way to provide deep semantic context without the token cost of a full file or the randomness of a raw snippet.
 
-**The Semantic Impact:** 
-The LLM receives fragmented, broken syntax that confuses its context window. It spends attention trying to guess the missing braces rather than understanding the architecture.
+## 2. The Solution: "Semantic Maps"
+Instead of replacing the Snippet functionality, we enhance the Map (`m`) functionality to generate a **Semantic Skeleton**. 
+When a file is mapped, `kopipasta` parses it into an Abstract Syntax Tree (AST), extracts the critical contracts (signatures, types, docstrings), and unparses them into a highly compressed, readable representation.
 
-## 2. The Solution: "Semantic Skeletons" (AST-Driven Compression)
-We will repurpose the `s` hotkey to generate a **Semantic Skeleton**. 
-Instead of truncating text, `kopipasta` will parse the file into an Abstract Syntax Tree (AST), strip out the low-value implementation details (the "noise"), and unparse it back into valid syntax (the "signal").
-
-This creates a 4-tier semantic "Zoom Level" in the `kopipasta` UI:
+This creates a robust 4-tier semantic "Zoom Level" in the `kopipasta` UI:
 1. **Unselected (Hidden)**
-2. **Map (`m`)**: Project-wide scale. (Names only: `class User(login)`).
-3. **Skeleton (`s`)**: File-wide scale. (Contracts, Docstrings, and Topologies).
+2. **Map (`m`)**: Project-wide scale. (Semantic Skeletons: Full signatures and docstrings).
+3. **Snippet (`s`)**: Top-of-file scale. (Raw 50-line fallback, unchanged).
 4. **Focus (`Space`)**: Implementation scale. (Full source code).
 
 ---
 
-## 3. Language-Specific Skeleton Rules
+## 3. Language-Specific Semantic Rules
 
-### 3.1 Python (via standard `ast` module)
-* **Keep:** Imports, top-level variables, class definitions, method/function signatures (with type hints), and docstrings.
+### 3.1 Python (via standard `ast` module) - **IMPLEMENTED**
+* **Keep:** Class definitions (with base classes), method/function signatures (with type hints and default args), and the first line of docstrings.
 * **Strip:** The internal logic/body of all functions and methods.
-* **Replace With:** `...` (Python's native Ellipsis) or `pass`.
+* **Format:** `def name(args) -> type  # Docstring` or `class Name(Base) [methods]  # Docstring`.
 
-**Before (Raw - 400 tokens):**
+**Before (Legacy Map - Low Context):**
 ```python
-def process_payment(user_id: int, amount: float) -> bool:
-    """Charges the user and updates the ledger."""
-    user = db.get_user(user_id)
-    if not user.is_active:
-        raise ValueError("Inactive user")
-    # ... 40 lines of Stripe API calls ...
-    db.update_ledger(user_id, amount)
-    return True
+class PaymentProcessor(process_payment)
 ```
-**After (Skeleton - ~30 tokens):**
+**After (Semantic Map - High Context):**
 ```python
-def process_payment(user_id: int, amount: float) -> bool:
-    """Charges the user and updates the ledger."""
-    ...
+class PaymentProcessor(BaseService) [process_payment]  # Handles Stripe transactions.
+def process_payment(self, user_id: int, amount: float) -> bool  # Charges the user and updates the ledger.
 ```
 
-### 3.2 JSON (via Schema Inference)
+### 3.2 JSON (via Schema Inference) - *FUTURE*
 Large JSON arrays of identical objects destroy token limits.
 * **Keep:** The shape of the data.
 * **Strip:** The duplicate items.
 * **Replace With:** A generated TypeScript-style interface or a truncated representation with a meta-comment.
 
-**Before (Raw - 10,000 lines):**
-```json
-[
-  { "id": 1, "name": "Alice", "role": "admin", "metadata": {"last_login": "2024-01-01"} },
-  { "id": 2, "name": "Bob", "role": "user", "metadata": {"last_login": "2024-01-02"} },
-  // ... 998 more objects ...
-]
-```
-**After (Skeleton):**
-```typescript
-/* INFERRED SCHEMA (Array of 1000 items) */
-type JsonData = Array<{
-  id: number;
-  name: string;
-  role: string;
-  metadata: {
-    last_login: string;
-  }
-}>;
-```
-
-### 3.3 React / JSX / TSX (via `tree-sitter`)
+### 3.3 React / JSX / TSX (via `tree-sitter`) - *FUTURE*
 React components are bloated by visual styling. 
-* **Keep:** Component signatures, Props interfaces, custom child components (`<StatusBadge />`), and dynamic data bindings (`{user.name}`).
-* **Strip:** Tailwind `className` attributes, inline `<svg>` blocks, and standard HTML attributes (`style`, `aria-*`).
-
-**Before (Raw - High Token Cost):**
-```tsx
-export function UserCard({ user }: { user: User }) {
-  return (
-    <div className="flex items-center p-4 bg-white shadow-md rounded-lg hover:bg-gray-50">
-      <svg viewBox="0 0 24 24" className="w-6 h-6 text-gray-400">...</svg>
-      <h2 className="text-xl font-bold text-gray-800">{user.name}</h2>
-      <StatusBadge status={user.status} size="small" />
-    </div>
-  );
-}
-```
-**After (Skeleton - Pure Component Topology):**
-```tsx
-export function UserCard({ user }: { user: User }) {
-  return (
-    <div>
-      <h2>{user.name}</h2>
-      <StatusBadge status={user.status} size="small" />
-    </div>
-  );
-}
-```
+* **Keep:** Component signatures, Props interfaces.
+* **Strip:** Implementation details and massive JSX blocks.
 
 ---
 
-## 4. Implementation Plan (`kopipasta`)
+## 4. Implementation Details (`kopipasta`)
 
 ### 4.1 UI & State Updates
-* **Keybinding:** The `s` key remains the toggle.
-* **Labeling:** In the TUI, replace the `(snippet)` label with `(skeleton)`.
-* **SelectionManager:** The internal tuple `(state, is_snippet, chunks)` conceptually treats `is_snippet` as `is_skeleton`. 
+* **Keybinding:** The `m` key toggles Semantic Map mode. `s` remains the raw snippet mode.
+* **Extraction:** Handled natively in Python via `extract_symbols()` in `kopipasta/file.py`.
 
-### 4.2 Module Creation: `skeletonizer.py`
-Create a new module dedicated to semantic compression.
-
-```python
-def generate_skeleton(file_path: str) -> str:
-    """Returns a semantically compressed version of the file."""
-    ext = get_extension(file_path)
-    
-    try:
-        if ext == ".py":
-            return _skeletonize_python(file_path)
-        elif ext == ".json":
-            return _skeletonize_json(file_path)
-        elif ext in [".js", ".ts", ".jsx", ".tsx"]:
-            return _skeletonize_treesitter(file_path)
-        else:
-            # Fallback for unsupported languages
-            return _fallback_snippet(file_path)
-    except Exception as e:
-        # Graceful degradation on syntax errors
-        return _fallback_snippet(file_path)
-```
-
-### 4.3 Phased Rollout
-* **Phase 1 (Zero Dependency):** Implement Python AST unparsing (using the built-in `ast` module) and JSON schema inference. Update the UI to reflect the new "Skeleton" terminology.
-* **Phase 2 (Tree-sitter Integration):** Introduce the `tree-sitter` dependency to support JS/TS/JSX stripping. This unlocks the massive token savings for frontend codebases.
-
----
-
-## 5. Architectural Impact
-1. **Context Window Multiplication:** By shrinking a 1000-line file into a 50-line skeleton, you can load the architecture of 20 distinct files into the prompt for the token cost of 1.
-2. **Elimination of Noise:** The LLM is forced to focus on the API boundaries and data contracts, preventing it from hallucinating or obsessing over irrelevant implementation details.
-3. **Graceful Degradation:** If a file contains a syntax error preventing AST parsing, `kopipasta` seamlessly falls back to the legacy 50-line string truncation, ensuring the tool never breaks your workflow.
+### 4.2 Python AST Parsing Pattern
+To natively support complex formatting (like type hints, async, and default arguments), we avoid brittle string parsing or regex. Instead:
+1. Parse the code into an AST and walk the nodes.
+2. Create a shallow copy of the node (e.g., `ast.FunctionDef`, `ast.ClassDef`).
+3. Replace its `.body` with `[ast.Pass()]`.
+4. Clear decorators if necessary (to save space and reduce noise).
+5. Use `ast.unparse()` to reliably generate the correct Python signature string natively.
+6. Use `ast.get_docstring()` to extract and append the first line of the docstring.

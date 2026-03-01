@@ -167,7 +167,7 @@ def test_get_project_structure_returns_json(tmp_path):
 
     parsed = json.loads(result)
     assert "main.py" in parsed
-    assert parsed["main.py"] == ["def main"]
+    assert parsed["main.py"] == ["def main()"]
     assert "sub" in parsed
     assert "util.py" in parsed["sub"]
     assert parsed["sub"]["util.py"] == ["class Util"]
@@ -209,7 +209,7 @@ def test_generate_prompt_template_with_map_files(mock_load_template, tmp_path):
         os.chdir(old_cwd)
 
     # Should be in the JSON tree structure
-    assert '"service.py":["class Service(run)"]' in result
+    assert '"service.py":["class Service [run]"]' in result
     # Should NOT be in the file contents
     assert "# FILE: service.py (map)" not in result
     assert "class Service:" not in result

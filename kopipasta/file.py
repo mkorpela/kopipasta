@@ -1,4 +1,5 @@
 import ast
+import copy
 import fnmatch
 import os
 from typing import List, Optional, Tuple, Set
@@ -340,6 +341,40 @@ def _normalize_method_name(name: str) -> str:
     return name
 
 
+def _get_signature(node: ast.AST) -> str:
+    """Unparse the signature of a class or function, omitting the body."""
+    n = copy.copy(node)
+    n.body = [ast.Pass()]
+    if hasattr(n, 'decorator_list'):
+        n.decorator_list = []
+    try:
+        code = ast.unparse(n).replace('\r\n', '\n')
+        suffix = ":\n    pass"
+        if code.endswith(suffix):
+            sig = code[:-len(suffix)]
+        elif code.endswith(": pass"):
+            sig = code[:-6]
+        else:
+            sig = code.split(":\n")[0]
+        # Ensure single line (removes newlines from multiline signatures)
+        return " ".join(sig.split())
+    except Exception:
+        # Fallback if unparse fails
+        if isinstance(node, ast.ClassDef):
+            return f"class {node.name}"
+        return f"def {node.name}"
+
+
+def _get_docstring_suffix(node: ast.AST) -> str:
+    """Extract the first line of the docstring."""
+    doc = ast.get_docstring(node)
+    if doc:
+        first_line = doc.strip().split('\n')[0].strip()
+        if first_line:
+            return f"  # {first_line}"
+    return ""
+
+
 def extract_symbols(path: str) -> List[str]:
     """Extract top-level class and function symbols from a Python file.
 
@@ -347,8 +382,8 @@ def extract_symbols(path: str) -> List[str]:
     and normalized (e.g. __init__ -> init).
 
     Returns a list of symbol strings:
-      - "class ClassName(method1, method2)" for classes
-      - "def func_name" for top-level functions/async functions
+      - "class ClassName(Base) [method1, method2]  # Docstring" for classes
+      - "def func_name(arg: type) -> type  # Docstring" for top-level functions
     Returns [] for non-Python files or on parse errors.
     """
     if not path.endswith(".py"):
@@ -368,13 +403,17 @@ def extract_symbols(path: str) -> List[str]:
                 for child in ast.iter_child_nodes(node)
                 if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
                 and not _is_private(child.name)
-            ]
+                ]
+            sig = _get_signature(node)
+            doc = _get_docstring_suffix(node)
             if methods:
-                symbols.append(f"class {node.name}({', '.join(methods)})")
+                symbols.append(f"{sig} [{', '.join(methods)}]{doc}")
             else:
-                symbols.append(f"class {node.name}")
+                symbols.append(f"{sig}{doc}")
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if not _is_private(node.name):
-                symbols.append(f"def {node.name}")
+                sig = _get_signature(node)
+                doc = _get_docstring_suffix(node)
+                symbols.append(f"{sig}{doc}")
 
     return symbols

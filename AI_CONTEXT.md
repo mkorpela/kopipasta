@@ -61,6 +61,10 @@ The `p` (Process) command acts as a universal intake for LLM output:
 *   **Empty Patch Prevention**: When a markdown header provides `initial_path` but an explicit `# FILE:` inside the block overrides it, the parser must NOT finalize an empty patch for the markdown header's path. Instead, it skips finalization when `initial_is_explicit=False` and `current_lines` is empty.
 *   **Lookback Blank Line Handling**: The blank-line skip in `_find_header_context` must `continue` after decrementing `k`, or it double-decrements and skips the actual header line.
 
+### AST & Semantic Parsing
+*   **Python Signature Extraction**: Use native `ast.unparse()` for extracting function/class signatures (e.g., Map mode, Semantic Skeletons) rather than string parsing or regex. Create a shallow copy of the AST node and replace its `.body` with `[ast.Pass()]` to safely unparse complex type hints, async definitions, and default arguments.
+*   **Map Mode Formatting**: Python Map mode (`m`) outputs full signatures and the first line of docstrings. Extracted class methods are enclosed in square brackets `[...]` to clearly distinguish them from inherited base classes `(Base)`.
+
 ### Development Standards
 *   **Language**: Python 3.10+.
 *   **Typing**: Strict type hints (`mypy` compliant) are mandatory for all function signatures.

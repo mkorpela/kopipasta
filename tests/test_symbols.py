@@ -9,7 +9,7 @@ def test_extract_symbols_from_python_class(tmp_path: Path):
         "class Foo:\n    def __init__(self): pass\n    def bar(self): pass\n"
     )
     result = extract_symbols(str(py_file))
-    assert result == ["class Foo(init, bar)"]
+    assert result == ["class Foo [init, bar]"]
 
 
 def test_extract_symbols_private_methods_omitted(tmp_path: Path):
@@ -22,7 +22,7 @@ def test_extract_symbols_private_methods_omitted(tmp_path: Path):
         "    def _private(self): pass\n"
     )
     result = extract_symbols(str(py_file))
-    assert result == ["class Foo(init, repr)"]
+    assert result == ["class Foo [init, repr]"]
 
 
 def test_extract_symbols_private_top_level_function_omitted(tmp_path: Path):
@@ -34,7 +34,7 @@ def test_extract_symbols_private_top_level_function_omitted(tmp_path: Path):
         "def __dunder(): pass\n"
     )
     result = extract_symbols(str(py_file))
-    assert result == ["def public"]
+    assert result == ["def public()"]
 
 
 def test_extract_symbols_top_level_function(tmp_path: Path):
@@ -42,7 +42,7 @@ def test_extract_symbols_top_level_function(tmp_path: Path):
     py_file = tmp_path / "example.py"
     py_file.write_text("def helper():\n    pass\n")
     result = extract_symbols(str(py_file))
-    assert result == ["def helper"]
+    assert result == ["def helper()"]
 
 
 def test_extract_symbols_async_function(tmp_path: Path):
@@ -50,7 +50,7 @@ def test_extract_symbols_async_function(tmp_path: Path):
     py_file = tmp_path / "example.py"
     py_file.write_text("async def fetch():\n    pass\n")
     result = extract_symbols(str(py_file))
-    assert result == ["def fetch"]
+    assert result == ["async def fetch()"]
 
 
 def test_extract_symbols_non_python_returns_empty(tmp_path: Path):
@@ -67,6 +67,24 @@ def test_extract_symbols_invalid_python_returns_empty(tmp_path: Path):
     assert extract_symbols(str(py_file)) == []
 
 
+def test_extract_symbols_signatures_and_docstrings(tmp_path: Path):
+    """extract_symbols parses signatures and extracts the first line of docstrings."""
+    py_file = tmp_path / "example.py"
+    py_file.write_text(
+        'def process(a: int, b: str = "default") -> bool:\n'
+        '    """Processes the data.\n    More details.\n    """\n'
+        '    return True\n'
+        '\n'
+        'class MyModel(BaseModel):\n'
+        '    """Database model."""\n'
+        '    def save(self): pass\n'
+    )
+    result = extract_symbols(str(py_file))
+    assert result == [
+        "def process(a: int, b: str='default') -> bool  # Processes the data.",
+        "class MyModel(BaseModel) [save]  # Database model."
+    ]
+
 def test_extract_symbols_mixed(tmp_path: Path):
     """extract_symbols handles a mix of top-level classes and functions."""
     py_file = tmp_path / "example.py"
@@ -74,7 +92,7 @@ def test_extract_symbols_mixed(tmp_path: Path):
         "def standalone(): pass\nclass Bar:\n    def method(self): pass\n"
     )
     result = extract_symbols(str(py_file))
-    assert result == ["def standalone", "class Bar(method)"]
+    assert result == ["def standalone()", "class Bar [method]"]
 
 
 def test_extract_symbols_empty_class(tmp_path: Path):

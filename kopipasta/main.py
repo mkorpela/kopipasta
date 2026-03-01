@@ -124,7 +124,11 @@ class KopipastaApp:
 
             self._run_interactive_selection()
 
-            if not self.files_to_include and not self.web_contents and not self.map_files:
+            if (
+                not self.files_to_include
+                and not self.web_contents
+                and not self.map_files
+            ):
                 print("No files or web content were selected. Exiting.")
                 self.logger.info("app_exit_no_selection")
                 return
@@ -296,7 +300,9 @@ class KopipastaApp:
         tree_selector = TreeSelector(self.ignore_patterns, self.project_root_abs)
         try:
             selected_files, file_char_count, map_files = tree_selector.run(
-                self.paths_for_tree, self.files_to_preselect, self.map_files_to_preselect
+                self.paths_for_tree,
+                self.files_to_preselect,
+                self.map_files_to_preselect,
             )
             self.files_to_include = selected_files
             self.map_files = map_files

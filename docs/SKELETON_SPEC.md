@@ -40,10 +40,21 @@ Large JSON arrays of identical objects destroy token limits.
 * **Strip:** The duplicate items.
 * **Replace With:** A generated TypeScript-style interface or a truncated representation with a meta-comment.
 
-### 3.3 React / JSX / TSX (via `tree-sitter`) - *FUTURE*
-React components are bloated by visual styling. 
-* **Keep:** Component signatures, Props interfaces.
-* **Strip:** Implementation details and massive JSX blocks.
+### 3.3 React / JSX / TSX (via `tree-sitter`) - **IMPLEMENTED**
+React components are bloated by visual styling and internal state (hooks).
+* **Keep:** Component signatures (including arrow functions, default exports, and HOC-wrapped components like `memo`), Props interfaces, type aliases, and JS/TS classes.
+* **Strip:** Implementation details, internal hooks (`useState`, `useEffect`), and massive JSX return blocks.
+* **Format:** `function Button({ label, onClick })` or `interface CardProps`
+
+**Before (Legacy Map - Low Context):**
+Empty (or raw snippet fallback).
+
+**After (Semantic Map - High Context):**
+```tsx
+interface CardProps
+const Card: React.FC<CardProps> = ({ title, children }) =>
+function useAuth()  // Custom hook to manage authentication state.
+```
 
 ---
 

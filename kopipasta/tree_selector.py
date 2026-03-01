@@ -1048,7 +1048,11 @@ q: Quit and finalize"""
             abs_path = os.path.abspath(file_path)
             if self.manager.get_state(abs_path) != FileState.UNSELECTED:
                 continue
-            if os.path.isfile(abs_path) and not is_binary(abs_path) and abs_path.endswith(".py"):
+            if (
+                os.path.isfile(abs_path)
+                and not is_binary(abs_path)
+                and abs_path.endswith(".py")
+            ):
                 self.manager.set_state(abs_path, FileState.MAP)
                 self._ensure_path_visible(abs_path)
 
@@ -1282,9 +1286,10 @@ q: Quit and finalize"""
         raise KeyboardInterrupt()
 
     def run(
-        self, initial_paths: List[str], 
+        self,
+        initial_paths: List[str],
         files_to_preselect: Optional[List[str]] = None,
-        map_files_to_preselect: Optional[List[str]] = None
+        map_files_to_preselect: Optional[List[str]] = None,
     ) -> Tuple[List[FileTuple], int, List[str]]:
         """Run the interactive tree selector"""
         self.root = self.build_tree(initial_paths)

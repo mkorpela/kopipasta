@@ -5,6 +5,15 @@ import os
 from typing import List, Optional, Tuple, Set
 from pathlib import Path
 
+try:
+    import tree_sitter
+    import tree_sitter_javascript
+    import tree_sitter_typescript
+
+    HAS_TREE_SITTER = True
+except ImportError:
+    HAS_TREE_SITTER = False
+
 FileTuple = Tuple[str, bool, Optional[List[str]], str]
 
 # --- Caches ---
@@ -345,13 +354,13 @@ def _get_signature(node: ast.AST) -> str:
     """Unparse the signature of a class or function, omitting the body."""
     n = copy.copy(node)
     n.body = [ast.Pass()]
-    if hasattr(n, 'decorator_list'):
+    if hasattr(n, "decorator_list"):
         n.decorator_list = []
     try:
-        code = ast.unparse(n).replace('\r\n', '\n')
+        code = ast.unparse(n).replace("\r\n", "\n")
         suffix = ":\n    pass"
         if code.endswith(suffix):
-            sig = code[:-len(suffix)]
+            sig = code[: -len(suffix)]
         elif code.endswith(": pass"):
             sig = code[:-6]
         else:
@@ -369,14 +378,209 @@ def _get_docstring_suffix(node: ast.AST) -> str:
     """Extract the first line of the docstring."""
     doc = ast.get_docstring(node)
     if doc:
-        first_line = doc.strip().split('\n')[0].strip()
+        first_line = doc.strip().split("\n")[0].strip()
         if first_line:
             return f"  # {first_line}"
     return ""
 
 
+def _extract_frontend_symbols(path: str) -> List[str]:
+    if not HAS_TREE_SITTER:
+        return []
+
+    _, ext = os.path.splitext(path)
+    ext = ext.lower()
+
+    try:
+        with open(path, "rb") as f:
+            source_bytes = f.read()
+    except IOError:
+        return []
+
+    try:
+        if ext == ".ts":
+            lang = tree_sitter.Language(tree_sitter_typescript.language_typescript())
+        elif ext == ".tsx":
+            lang = tree_sitter.Language(tree_sitter_typescript.language_tsx())
+        else:
+            lang = tree_sitter.Language(tree_sitter_javascript.language())
+
+        parser = tree_sitter.Parser(lang)
+        tree = parser.parse(source_bytes)
+    except Exception:
+        return []
+
+    symbols = []
+
+    def _get_jsdoc_summary(node) -> str:
+        prev = node.prev_named_sibling
+        if prev and prev.type == "comment":
+            text = (
+                source_bytes[prev.start_byte : prev.end_byte]
+                .decode("utf-8", errors="ignore")
+                .strip()
+            )
+            for line in text.split("\n"):
+                cleaned = line.strip("/*\t\r ")
+                if cleaned and not cleaned.startswith("@"):
+                    return f"  // {cleaned}"
+        return ""
+
+    def process_node(node, doc_node=None):
+        if doc_node is None:
+            doc_node = node
+
+        def _find_func(n):
+            if n.type in (
+                "arrow_function",
+                "function_expression",
+                "function_declaration",
+                "generator_function_expression",
+                "generator_function_declaration",
+            ):
+                return n
+            for child in n.named_children:
+                res = _find_func(child)
+                if res:
+                    return res
+            return None
+
+        def _extract_func_sig(start_node, f_node, d_node):
+            body = f_node.child_by_field_name("body")
+            if not body:
+                for child in f_node.children:
+                    if child.type == "statement_block":
+                        body = child
+                        break
+            if body:
+                sig = (
+                    source_bytes[start_node.start_byte : body.start_byte]
+                    .decode("utf-8", errors="ignore")
+                    .strip()
+                )
+                sig = " ".join(sig.split())
+                if not sig.endswith("=>") and f_node.type == "arrow_function":
+                    sig += " =>"
+                doc = _get_jsdoc_summary(d_node)
+                symbols.append(f"{sig}{doc}")
+
+        if node.type in ("export_statement", "export_default_statement"):
+            for child in node.named_children:
+                process_node(child, doc_node=node)
+            return
+
+        if node.type in ("function_declaration", "generator_function_declaration"):
+            body_node = None
+            for child in node.children:
+                if child.type == "statement_block":
+                    body_node = child
+                    break
+
+            if body_node:
+                sig = (
+                    source_bytes[node.start_byte : body_node.start_byte]
+                    .decode("utf-8", errors="ignore")
+                    .strip()
+                )
+            else:
+                sig = (
+                    source_bytes[node.start_byte : node.end_byte]
+                    .decode("utf-8", errors="ignore")
+                    .strip()
+                )
+
+            sig = " ".join(sig.split())
+            doc = _get_jsdoc_summary(doc_node)
+            symbols.append(f"{sig}{doc}")
+
+        elif node.type in ("lexical_declaration", "variable_declaration"):
+            for decl in node.named_children:
+                if decl.type == "variable_declarator":
+                    value_node = decl.child_by_field_name("value")
+                    if value_node:
+                        func_node = _find_func(value_node)
+                        if func_node:
+                            _extract_func_sig(node, func_node, doc_node)
+
+        elif node.type == "call_expression":
+            func_node = _find_func(node)
+            if func_node:
+                _extract_func_sig(node, func_node, doc_node)
+
+        elif node.type == "class_declaration":
+            name_node = node.child_by_field_name("name")
+            name = (
+                source_bytes[name_node.start_byte : name_node.end_byte].decode(
+                    "utf-8", errors="ignore"
+                )
+                if name_node
+                else "Anonymous"
+            )
+
+            heritage = ""
+            for child in node.children:
+                if child.type == "class_heritage":
+                    h_text = (
+                        source_bytes[child.start_byte : child.end_byte]
+                        .decode("utf-8", errors="ignore")
+                        .strip()
+                    )
+                    if h_text.startswith("extends "):
+                        heritage = f"({h_text[8:].strip()})"
+                    break
+
+            methods = []
+            for child in node.children:
+                if child.type == "class_body":
+                    for m in child.named_children:
+                        if m.type == "method_definition":
+                            m_name = m.child_by_field_name("name")
+                            if m_name:
+                                methods.append(
+                                    source_bytes[
+                                        m_name.start_byte : m_name.end_byte
+                                    ].decode("utf-8", errors="ignore")
+                                )
+
+            doc = _get_jsdoc_summary(doc_node)
+            sig = f"class {name}{heritage}"
+            if methods:
+                symbols.append(f"{sig} [{', '.join(methods)}]{doc}")
+            else:
+                symbols.append(f"{sig}{doc}")
+
+        elif node.type == "interface_declaration":
+            name_node = node.child_by_field_name("name")
+            name = (
+                source_bytes[name_node.start_byte : name_node.end_byte].decode(
+                    "utf-8", errors="ignore"
+                )
+                if name_node
+                else ""
+            )
+            doc = _get_jsdoc_summary(doc_node)
+            symbols.append(f"interface {name}{doc}")
+
+        elif node.type == "type_alias_declaration":
+            name_node = node.child_by_field_name("name")
+            name = (
+                source_bytes[name_node.start_byte : name_node.end_byte].decode(
+                    "utf-8", errors="ignore"
+                )
+                if name_node
+                else ""
+            )
+            doc = _get_jsdoc_summary(doc_node)
+            symbols.append(f"type {name}{doc}")
+
+    for child in tree.root_node.named_children:
+        process_node(child)
+
+    return symbols
+
+
 def extract_symbols(path: str) -> List[str]:
-    """Extract top-level class and function symbols from a Python file.
+    """Extract top-level class and function symbols from supported files.
 
     Private names (starting with '_') are omitted; dunder names are kept
     and normalized (e.g. __init__ -> init).
@@ -386,6 +590,9 @@ def extract_symbols(path: str) -> List[str]:
       - "def func_name(arg: type) -> type  # Docstring" for top-level functions
     Returns [] for non-Python files or on parse errors.
     """
+    if path.endswith((".js", ".jsx", ".ts", ".tsx")):
+        return _extract_frontend_symbols(path)
+
     if not path.endswith(".py"):
         return []
     try:
@@ -403,7 +610,7 @@ def extract_symbols(path: str) -> List[str]:
                 for child in ast.iter_child_nodes(node)
                 if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
                 and not _is_private(child.name)
-                ]
+            ]
             sig = _get_signature(node)
             doc = _get_docstring_suffix(node)
             if methods:

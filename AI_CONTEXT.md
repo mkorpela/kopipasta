@@ -64,6 +64,8 @@ The `p` (Process) command acts as a universal intake for LLM output:
 ### AST & Semantic Parsing
 *   **Python Signature Extraction**: Use native `ast.unparse()` for extracting function/class signatures (e.g., Map mode, Semantic Skeletons) rather than string parsing or regex. Create a shallow copy of the AST node and replace its `.body` with `[ast.Pass()]` to safely unparse complex type hints, async definitions, and default arguments.
 *   **Map Mode Formatting**: Python Map mode (`m`) outputs full signatures and the first line of docstrings. Extracted class methods are enclosed in square brackets `[...]` to clearly distinguish them from inherited base classes `(Base)`.
+*   **Frontend Signature Extraction (JS/TS/React)**: Use `tree-sitter` bindings (`tree-sitter-javascript`, `tree-sitter-typescript`) to parse `.js`, `.jsx`, `.ts`, and `.tsx` files. Gracefully degrade (return empty) if bindings are unavailable.
+*   **React Edge Cases**: When parsing AST for frontend components, actively handle Higher-Order Components (HOCs like `memo` or `forwardRef`) and default exports by recursively searching `call_expression` and `export` nodes to find the underlying `function_expression` or `arrow_function`.
 
 ### Development Standards
 *   **Language**: Python 3.10+.

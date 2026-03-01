@@ -29,9 +29,7 @@ def test_extract_symbols_private_top_level_function_omitted(tmp_path: Path):
     """Top-level single-underscore private functions are omitted; dunders are kept."""
     py_file = tmp_path / "example.py"
     py_file.write_text(
-        "def public(): pass\n"
-        "def _private(): pass\n"
-        "def __dunder(): pass\n"
+        "def public(): pass\ndef _private(): pass\ndef __dunder(): pass\n"
     )
     result = extract_symbols(str(py_file))
     assert result == ["def public()"]
@@ -53,11 +51,11 @@ def test_extract_symbols_async_function(tmp_path: Path):
     assert result == ["async def fetch()"]
 
 
-def test_extract_symbols_non_python_returns_empty(tmp_path: Path):
-    """Non-Python files return an empty list."""
-    js_file = tmp_path / "script.js"
-    js_file.write_text("function foo() {}")
-    assert extract_symbols(str(js_file)) == []
+def test_extract_symbols_unsupported_returns_empty(tmp_path: Path):
+    """Unsupported file extensions return an empty list."""
+    txt_file = tmp_path / "notes.txt"
+    txt_file.write_text("Just some notes")
+    assert extract_symbols(str(txt_file)) == []
 
 
 def test_extract_symbols_invalid_python_returns_empty(tmp_path: Path):
@@ -73,17 +71,18 @@ def test_extract_symbols_signatures_and_docstrings(tmp_path: Path):
     py_file.write_text(
         'def process(a: int, b: str = "default") -> bool:\n'
         '    """Processes the data.\n    More details.\n    """\n'
-        '    return True\n'
-        '\n'
-        'class MyModel(BaseModel):\n'
+        "    return True\n"
+        "\n"
+        "class MyModel(BaseModel):\n"
         '    """Database model."""\n'
-        '    def save(self): pass\n'
+        "    def save(self): pass\n"
     )
     result = extract_symbols(str(py_file))
     assert result == [
         "def process(a: int, b: str='default') -> bool  # Processes the data.",
-        "class MyModel(BaseModel) [save]  # Database model."
+        "class MyModel(BaseModel) [save]  # Database model.",
     ]
+
 
 def test_extract_symbols_mixed(tmp_path: Path):
     """extract_symbols handles a mix of top-level classes and functions."""

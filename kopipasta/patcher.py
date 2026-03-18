@@ -341,6 +341,11 @@ def _parse_diff_hunks(diff_content: str) -> List[Hunk]:
     """Parses the content of a diff block into a list of Hunks."""
     hunks: List[Hunk] = []
     lines = diff_content.splitlines()
+
+    # Remove trailing empty lines to prevent them from being parsed as
+    # trimmed blank context lines when padding exists at the end of a block.
+    while lines and lines[-1] == "":
+        lines.pop()
     current_hunk: Optional[Hunk] = None
 
     # Regex to parse the hunk header: @@ -12,3 +15,5 @@
@@ -367,8 +372,8 @@ def _parse_diff_hunks(diff_content: str) -> List[Hunk]:
             current_hunk["original_lines"].append(line[1:])
         elif line.startswith("+"):
             current_hunk["new_lines"].append(line[1:])
-        elif line.startswith(" "):
-            line_content = line[1:]
+        elif line.startswith(" ") or line == "":
+            line_content = line[1:] if line.startswith(" ") else ""
             current_hunk["original_lines"].append(line_content)
             current_hunk["new_lines"].append(line_content)
         # Ignore other lines like '---', '+++', '\ No newline at end of file'

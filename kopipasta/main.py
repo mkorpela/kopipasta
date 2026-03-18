@@ -328,6 +328,12 @@ class KopipastaApp:
             f"Summary: Added {added_files_count} files/patches and {added_web_count} web sources."
         )
 
+        # Reload memory files (Context, Session, Profile) in case they were patched
+        # during the interactive loop before we generate the final prompt.
+        self.project_context = read_project_context(self.project_root_abs)
+        self.session_state = read_session_state(self.project_root_abs)
+        self.user_profile = read_global_profile()
+
         # Deduplicate auto-loaded memory files
         self._deduplicate_memory_files()
 

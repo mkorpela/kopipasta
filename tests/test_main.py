@@ -40,7 +40,7 @@ def test_finalize_and_output_reloads_state(tmp_path: Path, monkeypatch):
     with (
         patch("kopipasta.main.save_selection_to_cache"),
         patch("kopipasta.main.save_map_to_cache"),
-        patch("kopipasta.main.pyperclip.copy") as mock_copy,
+        patch("kopipasta.main.copy_to_clipboard") as mock_copy,
         patch("builtins.print"),
     ):
         # 4. Trigger prompt generation

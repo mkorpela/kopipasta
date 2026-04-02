@@ -4,7 +4,9 @@ def sanitize_string(text: str) -> str:
     that might have been introduced by Windows terminal input.
     """
     try:
-        return text.encode("utf-16", "surrogatepass").decode("utf-16")
+        # Fix surrogate pairs from Windows terminal
+        text = text.encode("utf-16", "surrogatepass").decode("utf-16")
+        return text.encode("utf-8", errors="replace").decode("utf-8")
     except Exception:
         return text
 

@@ -8,7 +8,6 @@ from rich.console import Console
 from rich.tree import Tree
 from rich.panel import Panel
 from rich.text import Text
-import pyperclip
 import click
 
 from kopipasta.patcher import apply_patches, parse_llm_output
@@ -21,6 +20,7 @@ from kopipasta.file import (
 )
 from kopipasta.prompt import get_file_snippet
 from kopipasta.prompt import generate_extension_prompt
+from kopipasta.clipboard import copy_to_clipboard, ClipboardError
 from kopipasta.cache import load_selection_from_cache, clear_cache, save_task_to_cache
 from kopipasta.cache import load_task_from_cache
 from kopipasta.claude import configure_claude_desktop
@@ -577,7 +577,7 @@ q: Quit and finalize"""
         prompt_text = generate_extension_prompt(delta_files, {})
 
         try:
-            pyperclip.copy(prompt_text)
+            copy_to_clipboard(prompt_text, self.console)
             self.console.print(
                 f"\n[green]📋 Extended context ({len(delta_files)} files) copied to clipboard![/green]"
             )
@@ -589,7 +589,7 @@ q: Quit and finalize"""
             )
             self.logger.info("action_e_complete", count=len(delta_files))
 
-        except pyperclip.PyperclipException:
+        except ClipboardError:
             self.console.print("\n[red]Failed to copy to clipboard.[/red]")
 
         click.pause("Press any key to return...")
@@ -705,9 +705,9 @@ q: Quit and finalize"""
         )
 
         try:
-            pyperclip.copy(prompt_text)
+            copy_to_clipboard(prompt_text, self.console)
             self.console.print("\n[green]📋 Prompt copied to clipboard![/green]")
-        except pyperclip.PyperclipException:
+        except ClipboardError:
             self.console.print(
                 "\n[yellow]Could not copy to clipboard. Please copy the text above manually.[/yellow]"
             )

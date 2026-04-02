@@ -4,7 +4,6 @@ import argparse
 import sys
 from typing import Dict, List, Optional, Tuple
 import requests
-import pyperclip
 from rich.console import Console
 from pygments import highlight
 from pygments.lexers import get_lexer_for_filename, TextLexer
@@ -19,6 +18,7 @@ from kopipasta.ops import (
     sanitize_string,
     estimate_tokens,
 )
+from kopipasta.clipboard import copy_to_clipboard, ClipboardError
 from kopipasta.config import (
     read_env_file,
     read_gitignore,
@@ -143,6 +143,8 @@ class KopipastaApp:
     def _configure_platform(self):
         """Platform-specific setup."""
         if sys.platform == "win32":
+            # Force UTF-8 code page in Windows console to prevent emoji/unicode crashes
+            os.system("chcp 65001 >nul 2>&1")
             try:
                 sys.stdin.reconfigure(encoding="utf-8", errors="replace")
                 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -408,7 +410,7 @@ class KopipastaApp:
         print("-" * 80)
 
         try:
-            pyperclip.copy(final_prompt)
+            copy_to_clipboard(final_prompt, self.console)
             print("\n--- Included Files & Content ---\n")
             for file_path, is_snippet, chunks, _ in sorted(
                 self.files_to_include, key=lambda x: x[0]
@@ -441,7 +443,7 @@ class KopipastaApp:
             print(
                 f"Prompt has been copied to clipboard. Final size: {final_char_count} characters (~ {final_token_estimate} tokens)"
             )
-        except pyperclip.PyperclipException as e:
+        except ClipboardError as e:
             print(f"\nWarning: Failed to copy to clipboard: {e}")
             print("You can manually copy the prompt above.")
 

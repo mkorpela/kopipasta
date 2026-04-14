@@ -91,6 +91,13 @@ class TreeSelector:
         self.viewport_offset = 0  # First visible item index
         self._metrics_cache: Dict[str, Tuple[int, int]] = {}
         self._map_stats_cache: Dict[str, Tuple[int, int]] = {}
+
+        self.search_mode = False
+        self.search_query = ""
+        self.search_results: List[FileNode] = []
+        self.search_index = 0
+        self._all_files_cache: Optional[List[FileNode]] = None
+
         self._init_key_bindings()
 
     def _calculate_directory_metrics(self, node: FileNode) -> Tuple[int, int]:
@@ -417,7 +424,7 @@ class TreeSelector:
             actions += "   n: Start Session"
         actions += "   r: Ralph (MCP)"
 
-        help_text = f"""[bold]Navigation:[/bold]  ↑/k: Up  ↓/j: Down  →/l/Enter: Expand  ←/h: Collapse
+        help_text = f"""[bold]Navigation:[/bold]  ↑/k: Up  ↓/j: Down  →/l/Enter: Expand  ←/h: Collapse  /: Search
 [bold]Selection:[/bold]  Space: Toggle selection  a: Add all in dir     s: Snippet mode  m: Map (skeleton)
 [bold]Actions:[/bold]    {actions}
 q: Quit and finalize"""
@@ -1066,6 +1073,7 @@ q: Quit and finalize"""
                 self.key_map[key] = action
 
         # Navigation
+        bind(["/", "\x06"], self._action_search)  # / or Ctrl+F
         bind(["\x1b[A", "\xe0H", "k"], self._nav_up)
         bind(["\x1b[B", "\xe0P", "j"], self._nav_down)
         bind(["\x1b[5~"], self._nav_page_up)
@@ -1285,6 +1293,118 @@ q: Quit and finalize"""
         self.logger.info("action_interrupt_signal")
         raise KeyboardInterrupt()
 
+    def _action_search(self):
+        """Activates interactive search mode."""
+        self.search_mode = True
+        self.search_query = ""
+        self.search_index = 0
+        self._update_search_results()
+        
+    def _update_search_results(self):
+        if self._all_files_cache is None:
+            all_nodes = self._get_all_nodes(self.root)
+            self._all_files_cache = [n for n in all_nodes if not n.is_dir]
+            
+        if not self.search_query:
+            self.search_results = self._all_files_cache[:20]
+            self.search_index = 0
+            return
+            
+        scored = []
+        for n in self._all_files_cache:
+            score = self._fuzzy_match_score(self.search_query, n.relative_path)
+            if score > 0:
+                scored.append((score, n))
+                
+        scored.sort(key=lambda x: x[0], reverse=True)
+        self.search_results = [n for s, n in scored][:20]
+        self.search_index = 0
+
+    def _fuzzy_match_score(self, term: str, path: str) -> float:
+        term = term.lower()
+        path = path.lower()
+        basename = os.path.basename(path)
+        
+        if term == basename:
+            return 100.0
+        if term in basename:
+            return 50.0 + (len(term) / len(basename))
+        if term in path:
+            return 10.0 + (len(term) / len(path))
+            
+        score = 0.0
+        idx = 0
+        for char in term:
+            idx = path.find(char, idx)
+            if idx == -1:
+                return 0.0
+            score += 1.0
+            idx += 1
+        return score / len(path)
+        
+    def _jump_to_node(self, target_node: FileNode):
+        self._ensure_path_visible(target_node.path)
+        flat_tree = self._flatten_tree(self.root)
+        self.visible_nodes = [node for node, _ in flat_tree]
+        for i, node in enumerate(self.visible_nodes):
+            if node == target_node:
+                self.current_index = i
+                break
+
+    def _render_search_mode(self):
+        # Display the search bar
+        search_text = Text(f"Search: {self.search_query}_", style="bold cyan")
+        self.console.print(Panel(search_text, border_style="cyan"))
+        
+        # Display results
+        if not self.search_results:
+            self.console.print("  [dim]No results found.[/dim]")
+        else:
+            for i, node in enumerate(self.search_results):
+                prefix = " > " if i == self.search_index else "   "
+                style = "bold green" if i == self.search_index else "white"
+                
+                # Show file state if we want? The user just wanted to find the file.
+                # Let's show selection state as well for context.
+                state = self.manager.get_state(node.path)
+                state_icon = "○"
+                if state == FileState.DELTA:
+                    state_icon = "[green]●[/green]"
+                elif state == FileState.BASE:
+                    state_icon = "[cyan]●[/cyan]"
+                elif state == FileState.MAP:
+                    state_icon = "[yellow]○[/yellow]"
+                    
+                self.console.print(f"[{style}]{prefix}{state_icon} {node.relative_path}[/{style}]")
+            
+        self.console.print("\n[dim]Up/Down: Navigate | Enter: Select & Go | Esc: Cancel[/dim]")
+
+    def _handle_search_input(self):
+        try:
+            key = click.getchar()
+        except KeyboardInterrupt:
+            self.search_mode = False
+            return
+            
+        if key in ('\x1b', '\x1b\x1b'):
+            self.search_mode = False
+        elif key in ('\r', '\n'):
+            if self.search_results:
+                target_node = self.search_results[self.search_index]
+                self._toggle_selection(target_node)
+                self._jump_to_node(target_node)
+            self.search_mode = False
+        elif key in ('\x08', '\x7f'):
+            self.search_query = self.search_query[:-1]
+            self._update_search_results()
+        elif key in ('\x1b[A', '\xe0H'): # Up
+            self.search_index = max(0, self.search_index - 1)
+        elif key in ('\x1b[B', '\xe0P'): # Down
+            self.search_index = min(len(self.search_results) - 1, self.search_index + 1)
+        elif len(key) == 1 and key.isprintable():
+            self.search_query += key
+            self._update_search_results()
+
     def run(
         self,
         initial_paths: List[str],
@@ -1304,6 +1424,11 @@ q: Quit and finalize"""
         while not self.quit_selection:
             # Clear and redraw
             self.console.clear()
+            
+            if getattr(self, "search_mode", False):
+                self._render_search_mode()
+                self._handle_search_input()
+                continue
 
             # Draw tree
             tree = self._build_display_tree()

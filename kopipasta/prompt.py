@@ -79,7 +79,7 @@ Every code block must start with a comment line specifying the file path.
 Example: `// FILE: src/utils.py` or `# FILE: config.toml`
 
 **Rule 2: Modification vs. Creation**
-- **To EDIT an existing file**: Use **Unified Diff** format (with `@@ ... @@` headers). 
+- **To EDIT an existing file**: Use **Unified Diff** format (with `@@ ... @@` headers) OR **Search/Replace** blocks (`<<<<` ... `====` ... `>>>>`). 
 - **To CREATE or OVERWRITE a file**: Provide the **FULL** file content.
 - **To DELETE a file**: Output a code block containing exactly `<<<DELETE>>>`.
 

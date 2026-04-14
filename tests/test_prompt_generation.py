@@ -94,7 +94,7 @@ def test_generate_prompt_template_regression(
         "Every code block must start with a comment line specifying the file path.\n",
         "Example: `// FILE: src/utils.py` or `# FILE: config.toml`\n\n",
         "**Rule 2: Modification vs. Creation**\n",
-        "- **To EDIT an existing file**: Use **Unified Diff** format (with `@@ ... @@` headers). \n",
+        "- **To EDIT an existing file**: Use **Unified Diff** format (with `@@ ... @@` headers) OR **Search/Replace** blocks (`<<<<` ... `====` ... `>>>>`). \n",
         "- **To CREATE or OVERWRITE a file**: Provide the **FULL** file content.\n",
         "- **To DELETE a file**: Output a code block containing exactly `<<<DELETE>>>`.\n\n",
         "**Rule 3: The Reset Marker**\n",

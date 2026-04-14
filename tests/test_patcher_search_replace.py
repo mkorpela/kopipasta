@@ -111,6 +111,31 @@ Dd
         os.chdir(original_cwd)
 
 
+def test_split_block_search_replace(search_replace_dir):
+    """
+    Ensures that if the LLM puts the file name in one markdown block,
+    and the search/replace content in the next one, they still parse.
+    """
+    llm_output = "### app.py\n\n```diff\n<<<< SEARCH\nfoo\n====\nbar\n>>>> REPLACE\n```\n"
+    patches = parse_llm_output(llm_output)
+    assert len(patches) == 1
+    assert patches[0]["file_path"] == "app.py"
+    assert patches[0]["content"][0]["original_lines"] == ["foo"]
+    assert patches[0]["content"][0]["new_lines"] == ["bar"]
+
+
+def test_short_markers_search_replace(search_replace_dir):
+    """
+    Ensures that short markers (<<<) are correctly matched.
+    """
+    llm_output = "### app.py\n\n```diff\n<<<\nfoo\n===\nbar\n>>>\n```\n"
+    patches = parse_llm_output(llm_output)
+    assert len(patches) == 1
+    assert patches[0]["file_path"] == "app.py"
+    assert patches[0]["content"][0]["original_lines"] == ["foo"]
+    assert patches[0]["content"][0]["new_lines"] == ["bar"]
+
+
 def test_mixed_header_styles(search_replace_dir):
     """
     Ensures that if explicit header is present, it takes precedence over markdown header,

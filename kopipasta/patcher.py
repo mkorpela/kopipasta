@@ -59,6 +59,7 @@ class PatchParser:
         self.blocks_found = 0
         self.current_line_idx = 0
         self.last_block_end_idx = -1
+        self.last_parsed_path: Optional[str] = None
 
     def parse(self) -> List[Patch]:
         while self.current_line_idx < len(self.lines):
@@ -235,6 +236,7 @@ class PatchParser:
 
         if current_path:
             self._finalize_patch(current_path, current_lines)
+            self.last_parsed_path = current_path
 
         # Fallback: Try Raw Parsing strategies
         elif valid_headers_found == 0:
@@ -246,21 +248,37 @@ class PatchParser:
                 self.patches.extend(raw_patches)
                 return
 
-            # Note: Search/Replace blocks (<<<< ==== >>>>) are handled inside _finalize_patch.
-            # If we are here (valid_headers_found == 0), it means we have no file context at all,
-            # so we can't attach a search/replace block to a file.
+            # Strategy B: Search/Replace Block
+            search_replace_hunks = _parse_search_replace_block(lines)
+            if search_replace_hunks and self.last_parsed_path:
+                self.patches.append(
+                    {"file_path": self.last_parsed_path, "type": "diff", "content": search_replace_hunks}
+                )
+                return
+
+            # Strategy C: Diff Hunks without header but with last_parsed_path
+            if self.last_parsed_path and self.DIFF_HUNK_HEADER_REGEX.search(raw_content):
+                hunks = _parse_diff_hunks(raw_content)
+                if hunks:
+                    self.patches.append(
+                        {"file_path": self.last_parsed_path, "type": "diff", "content": hunks}
+                    )
+                    return
 
             self._log_skip_warning(lines, info_string)
 
-    def _finalize_patch(self, path: str, lines: List[str]):
+    def _finalize_patch(self, path: str, lines: List[str]) -> bool:
         if not path:
-            return
+            return False
         content = "\n".join(lines).strip()
+
+        if not content:
+            return False
 
         # 1. Check for Deletion Marker
         if content == self.DELETION_MARKER:
             self.patches.append({"file_path": path, "type": "delete", "content": ""})
-            return
+            return True
 
         # 2. Check for Unified Diff
         if self.DIFF_HUNK_HEADER_REGEX.search(content):
@@ -269,7 +287,7 @@ class PatchParser:
                 self.patches.append(
                     {"file_path": path, "type": "diff", "content": hunks}
                 )
-                return
+                return True
 
         # 3. Check for Search/Replace Block (<<<< ... ==== ... >>>>)
         search_replace_hunks = _parse_search_replace_block(lines)
@@ -277,10 +295,11 @@ class PatchParser:
             self.patches.append(
                 {"file_path": path, "type": "diff", "content": search_replace_hunks}
             )
-            return
+            return True
 
         # 4. Default to Full File
         self.patches.append({"file_path": path, "type": "full", "content": content})
+        return True
 
     def _log_skip_warning(self, lines: List[str], info_string: str):
         if not self.console:
@@ -400,10 +419,10 @@ def _parse_search_replace_block(lines: List[str]) -> List[Hunk]:
     current_orig: List[str] = []
     current_new: List[str] = []
 
-    # Regex for markers (allow 4 or more chars)
-    re_start = re.compile(r"^<{4,}\s*$")
-    re_mid = re.compile(r"^={4,}\s*$")
-    re_end = re.compile(r"^>{4,}\s*$")
+    # Regex for markers (allow 3 or more chars, plus optional trailing text like 'SEARCH')
+    re_start = re.compile(r"^<{3,}.*$")
+    re_mid = re.compile(r"^={3,}.*$")
+    re_end = re.compile(r"^>{3,}.*$")
 
     for line in lines:
         if state == S_TEXT:

@@ -118,6 +118,7 @@ Turn `kopipasta` into a secure, verifiable sandbox for AI agents (like Claude De
 | :--- | :--- | :--- |
 | `↑/↓` or `k/j` | **Navigate** | Move cursor up/down. |
 | `←/→` or `h/l` | **Collapse/Expand** | Open/close directory branches. |
+| `/` or `f` | **Search** | Interactive fuzzy search mode. |
 | `Space` | **Toggle** | Cycle selection: `Unselected` $\leftrightarrow$ `Delta` (Green). |
 | `m` | **Map** | Cycle selection: `Unselected` $\leftrightarrow$ `Map` (Yellow skeleton). |
 | `p` | **Process** | Universal Intake. Applies patches OR imports file paths from text. |
@@ -128,7 +129,7 @@ Turn `kopipasta` into a secure, verifiable sandbox for AI agents (like Claude De
 | `r` | **Ralph** | Configure MCP Server for Agentic workflows (Claude Desktop). |
 | `n` | **Start** | Initialize `AI_SESSION.md`. |
 | `u` | **Update** | Generate "Handover" prompt to update session state. |
-| `f` | **Finish** | Generate "Harvest" prompt, delete session, and squash. |
+| `d` | **Done** | Generate "Harvest" prompt, delete session, and squash. |
 | `Enter` | **Expand** | Expand or collapse directory. |
 | `q` | **Quit** | Finalize selection, copy full context (Base + Delta), and exit. |
 

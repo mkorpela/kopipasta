@@ -252,16 +252,26 @@ class PatchParser:
             search_replace_hunks = _parse_search_replace_block(lines)
             if search_replace_hunks and self.last_parsed_path:
                 self.patches.append(
-                    {"file_path": self.last_parsed_path, "type": "diff", "content": search_replace_hunks}
+                    {
+                        "file_path": self.last_parsed_path,
+                        "type": "diff",
+                        "content": search_replace_hunks,
+                    }
                 )
                 return
 
             # Strategy C: Diff Hunks without header but with last_parsed_path
-            if self.last_parsed_path and self.DIFF_HUNK_HEADER_REGEX.search(raw_content):
+            if self.last_parsed_path and self.DIFF_HUNK_HEADER_REGEX.search(
+                raw_content
+            ):
                 hunks = _parse_diff_hunks(raw_content)
                 if hunks:
                     self.patches.append(
-                        {"file_path": self.last_parsed_path, "type": "diff", "content": hunks}
+                        {
+                            "file_path": self.last_parsed_path,
+                            "type": "diff",
+                            "content": hunks,
+                        }
                     )
                     return
 

@@ -116,7 +116,9 @@ def test_split_block_search_replace(search_replace_dir):
     Ensures that if the LLM puts the file name in one markdown block,
     and the search/replace content in the next one, they still parse.
     """
-    llm_output = "### app.py\n\n```diff\n<<<< SEARCH\nfoo\n====\nbar\n>>>> REPLACE\n```\n"
+    llm_output = (
+        "### app.py\n\n```diff\n<<<< SEARCH\nfoo\n====\nbar\n>>>> REPLACE\n```\n"
+    )
     patches = parse_llm_output(llm_output)
     assert len(patches) == 1
     assert patches[0]["file_path"] == "app.py"

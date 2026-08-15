@@ -72,7 +72,7 @@ def discover() -> List[Tuple[str, str, bool, bool, str]]:
          "claude on PATH" if shutil.which("claude") else "claude not on PATH"),
         ("anthropic", f"anthropic:{os.environ.get('ANTHROPIC_MODEL', 'claude-opus-5')}",
          bool(os.environ.get("ANTHROPIC_API_KEY")), True, "ANTHROPIC_API_KEY"),
-        ("gemini", f"gemini:{os.environ.get('GEMINI_MODEL', 'gemini-3-pro')}",
+        ("gemini", f"gemini:{os.environ.get('GEMINI_MODEL', 'gemini-3.7-flash')}",
          bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")), False,
          "GEMINI_API_KEY or GOOGLE_API_KEY"),
         ("openai", f"openai:{os.environ.get('OPENAI_MODEL', 'gpt-5')}",

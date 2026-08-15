@@ -328,7 +328,7 @@ class KopipastaApp:
     # Every verb in spec §3, implemented or not. The dispatch rule has to know
     # all their names: the failure being prevented is a typo'd or not-yet-built
     # verb being silently treated as a filename and opening the TUI.
-    SUBCOMMANDS = ("tui", "pack", "ask", "patch", "apply", "map", "session", "config")
+    SUBCOMMANDS = ("tui", "ask", "apply", "map", "session", "config")
     TUI_SUBCOMMAND = "tui"
     IMPLEMENTED_SUBCOMMANDS = (TUI_SUBCOMMAND,) + tuple(VERBS)
 

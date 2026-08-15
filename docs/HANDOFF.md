@@ -209,15 +209,13 @@ Worth keeping, because each came from something that went wrong:
 
 ## 6. What is not done
 
-**`ask` and `config` are built** (`kopipasta/core/`, see §8 below). **`pack`, `patch`,
-`apply`, `map` and `session` are not.** They are recognised and exit 1 with "not implemented
+**`ask` and `config` are built** (`kopipasta/core/`, see §8 below). **`apply`,
+`map` and `session` are not.** They are recognised and exit 1 with "not implemented
 yet" instead of being silently treated as filenames (`main.py:_resolve_subcommand`).
 
-`pack` is now a small job: it is `ask` without the model call, over the same
-resolver/budget/context core, and `--backend none` already does exactly that inside `ask`.
-`patch` is `ask --apply` plus `core/patchflow.py`; the pieces it needs — zoned editable /
-read-only rendering, `--mode patch`, the "backend behaved as an agent" diagnosis — are in
-place and exercised.
+`pack` and `patch` were removed as top-level subcommands in favor of `kopipasta ask --dry-run`
+and `kopipasta ask --apply`. The apply pipeline adds zoned editable/read-only enforcement,
+dirty-worktree checks, and `--verify` hooks.
 
 Also outstanding:
 

@@ -42,7 +42,7 @@ def test_the_error_names_the_known_subcommands(monkeypatch):
     """A refusal that does not say what IS allowed just costs another round trip."""
     with pytest.raises(UsageError) as e:
         _parse(["pak"])
-    for verb in ("pack", "ask", "apply"):
+    for verb in ("ask", "apply"):
         assert verb in str(e.value)
 
 
@@ -119,7 +119,7 @@ def test_specced_but_unimplemented_verbs_say_so(tmp_path, monkeypatch):
     """A verb that is specced and unbuilt says so. "Not yet" and "no such
     thing" send the caller to different places, and neither is a filename."""
     monkeypatch.chdir(tmp_path)
-    for verb in ("pack", "patch", "apply", "map", "session"):
+    for verb in ("apply", "map", "session"):
         with pytest.raises(UsageError, match="not implemented yet"):
             _parse([verb])
 

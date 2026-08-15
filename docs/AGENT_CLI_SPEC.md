@@ -90,9 +90,7 @@ deterministically, verified, reported as a diffstat.
 ```
 kopipasta                            # interactive TUI (default, no subcommand)
 kopipasta tui                        # the same, named explicitly
-kopipasta pack    [selectors]        # assemble a context payload. No model call.
-kopipasta ask     [selectors] -q ... # pack + ask the model + record the turn
-kopipasta patch   [selectors] -q ... # ask --apply: apply the returned patch
+kopipasta ask     [selectors] -q ... # assemble context + ask model + record turn (--apply to write)
 kopipasta apply   <file|->           # apply an existing model response. No model call.
 kopipasta map     [selectors]        # symbol skeleton only (cheap whole-repo map)
 kopipasta session {new|ls|show|end}  # manage on-disk conversations
@@ -100,14 +98,11 @@ kopipasta config  --show             # resolved configuration and where each val
 ```
 
 Note what is **absent** from every line: the model and the provider. Those are configuration
-(§6). `kopipasta ask -q "..."` is the whole common path.
+(§6). `kopipasta ask -q "..."` is the whole common path. Adding `--apply` executes the returned
+code patches against the workspace.
 
-`patch` is exactly `ask --apply`. It earns its own verb because agents read `--help`, and verbs
-are cheaper to discover than flags.
-
-`pack` and `apply` matter independently of any model integration: together they are a two-command
-version of the whole loop that works with any model access, including none. They are the honest
-primitives that keep the no-black-boxes promise intact.
+Assembling context without calling a model is handled directly by `kopipasta ask --dry-run`
+(or `--backend none`).
 
 ### Dispatch
 
@@ -191,7 +186,7 @@ under-counts silently overshoots the window the flag exists to protect. Count wi
 and bias it pessimistic. (Findings §2.5: the original 3.6 chars/token assumption measured 44% low
 on real input.)
 
-`kopipasta pack --budget 400k --json` shows the size and shape of a payload before any money is
+`kopipasta ask --budget 400k --dry-run --json` shows the size and shape of a payload before any money is
 spent on it.
 
 ---
@@ -588,7 +583,7 @@ Two rules for anything added here:
 ## 15. Open Questions
 
 - **Cost is easy to hide.** A 500k-token frontload is real money and agents call things in loops.
-  `pack --json` shows the size before spending and `--max-cost` refuses above a threshold, but an
+  `ask --dry-run --json` shows the size before spending and `--max-cost` refuses above a threshold, but an
   accidental `while true; do kopipasta ask --all; done` must not be cheap to write by mistake.
 - **Cache economics at target scale.** Reuse is proven at ~20k tokens against a design targeting
   400k–1M. Larger caches cost more to hold, and the TTL is an uncosted guess: nobody has priced

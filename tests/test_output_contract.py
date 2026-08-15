@@ -201,7 +201,7 @@ def test_a_dash_h_after_a_double_dash_does_not_disable_the_redirect(tmp_path):
 def test_refusals_keep_stdout_empty(tmp_path):
     """An agent redirecting stdout to a file must get an empty file on
     failure, not an error message it might mistake for a prompt."""
-    for args in (["--edit-template"], ["pack"], ["--nonexistent-flag"]):
+    for args in (["--edit-template"], ["apply"], ["--nonexistent-flag"]):
         result = run_cli(args, tmp_path)
         assert result.returncode != 0
         assert result.stdout == "", f"{args} wrote {result.stdout!r} to stdout"

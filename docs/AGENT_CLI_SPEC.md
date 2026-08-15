@@ -235,6 +235,33 @@ This is the single highest-leverage decision in this plan. It delivers **both** 
 with zero new dependencies, zero API-key custody, and zero provider abstraction to maintain —
 and it lets the calling agent choose the oracle's model per invocation. Ship this first.
 
+#### The oracle must be a completion, not an agent
+
+Verified the hard way in the spike (`spike/oracle.py`). The first `patch` run returned no code
+at all:
+
+> *"The edit tool needs permission approval from you to modify `kopipasta/prompt.py`."*
+
+`claude -p` is an **agent**. Handed a task and a file, it reaches for its own Edit tool instead
+of emitting a patch — then blocks on a permission prompt that no one will ever answer. The
+harness we are borrowing wants to do the work, not describe it. Same payload with tools
+disabled produced a clean four-hunk patch on the first try.
+
+So the `exec:` contract has a second clause: **the command must be invoked in completion mode,
+with file and shell tools off.** The oracle's only output channel is stdout.
+
+```
+claude    exec:claude -p --disallowedTools "Edit,Write,Read,Bash,Glob,Grep,Task,..."
+codex     exec:codex exec --sandbox read-only
+llm       exec:llm -m <model>            # no tools by default
+```
+
+kopipasta should ship these as named presets (`--backend claude-cli`) rather than making every
+caller remember the flag list, and should **detect the failure** rather than returning an empty
+patch: a `patch`-mode response containing no code blocks, especially one mentioning permission
+or tool approval, is a backend misconfiguration — exit `3` with that diagnosis, not exit `5`
+("model produced a bad patch"). The two failures have completely different fixes.
+
 ### Phase 2: native API backend
 
 `--backend anthropic` (or `KOPIPASTA_BACKEND`), key from `ANTHROPIC_API_KEY` **only** —

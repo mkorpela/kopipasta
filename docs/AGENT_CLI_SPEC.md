@@ -1,5 +1,10 @@
 # Specification: kopipasta as an Agent-Facing CLI ("Context Oracle")
 
+> **Companion document:** `AGENT_CLI_FINDINGS.md` is the empirical log — what was actually run,
+> the numbers, what broke, and which parts of this spec are measured versus still assumed.
+> This document reads as if everything is settled; that one tells you what is not. Read it
+> before implementing.
+
 ## 1. The Repositioning
 
 `kopipasta` was built for a world where **the human is the transport**: select files in a TUI,

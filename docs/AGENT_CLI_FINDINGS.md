@@ -8,8 +8,13 @@ this file tells you which parts are load-bearing measurements and which are stil
 
 Most of what follows was measured in a Linux sandbox with the `claude` CLI available and **no
 provider API keys** — that constraint shapes what could and could not be verified there. The
-`anthropic:` results in §2.7 came from a real key on the repo owner's machine; nothing else has
-been run against a real provider.
+`anthropic:` results in §2.7 came from a real key on the repo owner's machine; the `gemini:`
+results in §2.9 from a real key on Windows and again on macOS. `openai:` has still never been
+run against a real provider (§5).
+
+Three numbers in here have now been taken on more than one machine, and **one of them moved**
+(§2.9). Where a figure has an `n` next to it, that is why. Treat anything without one as a
+single sample.
 
 ---
 
@@ -26,7 +31,7 @@ been run against a real provider.
 | One-shot patch (use case B) | **live-verified** | 4 hunks, +32/−17, 119 tests green |
 | `anthropic:` backend | **live-verified** | real API, twice (cold + post-fix) — §2.7 |
 | Raw-API cache behaviour | **ANSWERED: no lag** | §2.7 |
-| `gemini:` backend | **live-verified** | real API; implicit caching fails, explicit works — §2.9 |
+| `gemini:` backend | **live-verified** | real API; explicit caching works, implicit is a coin flip — §2.9 |
 | Gemini cache lifecycle (TTL/close/reap) | **live-verified** | 99.9% reuse, 0 orphan resources after |
 | `openai:` backend | **wire format only** | mock; never saw a real response |
 | Gemini 1M context for a real repo | **CONFIRMED** | `inputTokenLimit: 1048576` on `gemini-3.7-flash` |
@@ -199,7 +204,7 @@ The generalisable lesson: **`except Exception: ...; continue` around a blocking 
 infinite-loop generator.** Fixing the guard alone would have closed this instance; making
 recurring failures terminate is what closes the class.
 
-### 2.9 Gemini implicit caching gives 0% on the access pattern we actually have
+### 2.9 Gemini implicit caching cannot be budgeted on; explicit caching can
 
 The `gemini:` adapter shipped with no cache control at all — it posted a bare `generateContent`
 and relied on implicit caching. Measured against the real API (`gemini-3.7-flash`, 58,232-char
@@ -239,6 +244,37 @@ Both arms now run in `livecheck` back to back, on the same model, seconds apart:
 So the §2.7 lesson generalises: **on both providers the reuse has to be asked for.** Neither
 gives you prefix economics for free. We knew that for Anthropic and wrote the adapter
 accordingly; for Gemini we wrote it in the module docstring and then did not implement it.
+
+#### Re-measured on macOS: the control arm is not 0%, it is a coin flip
+
+The `0.0%` above was a real reading, but it does not reproduce. Re-run on the macstudio
+(same model, same payload, 8 consecutive runs of the control arm):
+
+| arm | turn 2 cache share | n |
+|---|---|---|
+| `gemini` (explicit `cachedContents`) | **99.9%** every time | 4/4 |
+| `gemini-implicit` (control) | **74.3%** (12,264 / ~16,507) | 6/8 |
+| `gemini-implicit` (control) | **0.0%** | 2/8 |
+
+The hit is always *exactly* 12,264 tokens — the same block-aligned figure as the exact-repeat
+hit in the table above, so it is the same prefix-cache mechanism, now reaching a case it did not
+reach before. Whether Google changed the lookup or the earlier 0/7 was an unlucky window cannot
+be settled from here; either way **the "implicit gives you nothing" claim is retired.**
+
+The conclusion it was supporting survives, and is in fact better supported by the new numbers
+than by the old ones. The argument was never "implicit returns zero" — it is **"implicit is not
+a promise."** 99.9% on every single run is something you can put in a budget; 74.3% on six runs
+out of eight, with no way to tell in advance which run you are on, is not. An intermittent
+optimisation is worse than an absent one for planning purposes, because it sets an expectation
+it does not keep.
+
+Two process notes, both of which cost a re-run to learn:
+
+- **The number was quoted from one measurement.** A single reading of an *opportunistic*
+  provider behaviour is a sample, not a constant, and it went into a table that reads like a
+  constant. Anything a provider does "on a best-effort basis" needs an `n` next to it.
+- **The instrument disagreed with itself and the wrong half was believed.** The same run
+  printed `VERDICT: PREFIX NOT REUSED` and `CACHE: 74.3%`. See the verdict bug below.
 
 #### The cache is rented, and that changes the design
 
@@ -324,6 +360,73 @@ explicit arm warmed the implicit cache and the control arm read 12,263 tokens on
 cold turn 1. The nonce is now rebuilt **per arm**, not per run. The old verdict flagged it
 ("unexpected — the per-run nonce should have made turn 1 cold"), which is the one thing that
 went right.
+
+#### Fault 2 was fixed only where it had been noticed
+
+Re-running on macOS turned up two more defects in the measuring instrument. Neither is in
+shipped code, which is the point: **`livecheck` is the thing that decides whether the central
+economic claim is true, and it was wrong twice about that claim in the same run.**
+
+1. **The verdict's structural blind spot was patched for `explicit` arms only.** The code
+   comment describes the trap exactly — a provider with no cache-creation counter makes
+   `wrote_on_1` permanently `False`, so every branch falls through — and then the guard was
+   wired into the `explicit` branches and nowhere else. The control arm has the identical
+   blind spot, so a run that read 12,264 tokens back printed `PREFIX NOT REUSED — turn 2
+   re-wrote 0 tokens`, with `CACHE: 74.3%` on the very next line. The `else` was also citing
+   `cache_creation_tokens` as its evidence, a field that is structurally 0 on this provider
+   whatever happens; it now cites `cached_tokens`, which is the number actually being claimed.
+   *A fix aimed at a specific symptom does not close the class it came from.*
+
+2. **`max_tokens=256` made the harness unable to complete a turn.** Reasoning tokens are billed
+   against the output budget, so `gemini-3.7-flash` spent 241 thinking and 11 answering, and the
+   §2.8 truncation guard correctly aborted turn 2 — leaving the explicit arm with **no cache
+   measurement at all** and a non-zero exit. The guard did its job; the harness was calibrated
+   against a non-reasoning model and nobody re-checked the budget when the model changed in
+   `5aa8df8`. Now `LIVECHECK_MAX_TOKENS`, default 2048. Note the shape of this one: a correct
+   new guard converted a silently-wrong number into a loud failure, which is the trade the guard
+   was built for.
+
+#### And fixing *that* left the class open a third time — found by dogfooding
+
+The fix for (1) was reviewed by pointing `spike/oracle.py` at the file it had just changed and
+asking it to attack the change. It found the branch **above** the one that had just been fixed:
+
+**`ALREADY WARM` sat above both `explicit` FAIL branches, so a broken explicit cache could exit
+0.** That branch fires on `not wrote_on_1 and c1.cached_tokens > 0` — conditions a *broken*
+adapter satisfies whenever turn 1 happens to catch an implicit hit. The run then printed
+"Inconclusive", never incremented `failed`, and exited 0. Enumerated over the plausible token
+counts:
+
+| scenario | old verdict | exit | new verdict |
+|---|---|---|---|
+| explicit healthy | `REUSED, NO LAG` | 0 | unchanged |
+| **explicit broken, turn 1 implicitly warm** | **`ALREADY WARM`** | **0** | **`FAIL`** |
+| explicit broken, turn 1 cold | `FAIL` | 1 | unchanged |
+| explicit, `LIVECHECK_NONCE` pinned (legitimately warm) | `ALREADY WARM` | 0 | unchanged |
+
+So whether the harness noticed a broken cache depended on whether the provider's opportunistic
+cache warmed turn 1 — the same coin flip measured at 74.3% just above. **The two defects
+compose:** the implicit caching that turned out to be more active than documented is exactly
+what would have hidden a broken explicit adapter. Neither finding is dangerous alone.
+
+Two things worth stating plainly:
+
+- **This is trap #27, committed in the act of writing trap #27.** The blind spot was fixed in
+  the branch where the symptom had appeared, and the identical structure one branch up was not
+  even looked at — while writing the lesson that says to look. Knowing the rule is not applying
+  it; only re-reading the neighbours is.
+- **`claude-cli:` has never been able to produce a result from this harness.** It reads ~50% of
+  input from its own system-prompt cache on every call, so `c1.cached_tokens > 0` is *always*
+  true and that arm lands in `ALREADY WARM` every run, permanently "Inconclusive". §2.7 records
+  the verdict misreading a `claude-cli` run this way once and treats it as a one-off; it is
+  structural. `cached_tokens > 0` is a weak proxy for "our prefix was warm" — those tokens may
+  belong to somebody else's prompt. Not fixed here: telling the two apart needs a live `claude`
+  run to calibrate against, and there is no measurement to write that code from.
+
+The third finding was cosmetic but the same species: the new implicit-reuse branch asserted "it
+is not all of the prefix", which is the Gemini 74.3% hardcoded into a message every non-explicit
+provider reaches, and would be simply false on a provider that serves 100%. It reports the share
+now and characterises nothing.
 
 ### 2.10 Dogfooding: what the oracle found in its own repo
 
@@ -454,10 +557,11 @@ Ordered by how much time each cost.
    every field the adapter is supposed to map — a zero is indistinguishable from "not read".
 9. **`claude --bare` breaks auth** in this sandbox. Unrelated to the design, but it cost a
    debugging cycle.
-10. **"Implicit caching" is not caching you can budget against.** Measured, Gemini's gave 0% on
-    "same repo, different question" and 100% on exact request repeats — the opposite of what an
-    oracle needs (§2.9). If a provider offers an explicit cache, the implicit one is a bonus,
-    never the plan.
+10. **"Implicit caching" is not caching you can budget against.** Measured on Gemini it went
+     from 0% to 74.3%-on-6-runs-of-8 for "same repo, different question", with nothing changed
+     on our side — while the explicit cache sat at 99.9% on every run (§2.9). An optimisation
+     that arrives on most calls is *harder* to plan around than one that never arrives. If a
+     provider offers an explicit cache, the implicit one is a bonus, never the plan.
 11. **A hedge written before the measurement will be used to ignore the measurement.** §5 of
     this file said a Gemini cache miss would be "inconclusive rather than a defect". It was a
     defect, and that sentence is why it sat unexamined. Write down what would falsify a claim,
@@ -498,7 +602,12 @@ Ordered by how much time each cost.
     one command.
 22. **`os.path.normcase` is a no-op on POSIX**, so it does not save you on case-insensitive
     macOS — and applying `.lower()` unconditionally would collide genuinely distinct paths on
-    Linux. Case folding is a per-platform decision, not a portability helper.
+    Linux. Case folding is a per-platform decision, not a portability helper. And it has to
+    reach *every* component derived from the path: the cache key folded its hash but not its
+    human-readable slug, so one directory could still produce two names, `Repo-<h>` and
+    `REPO-<h>`, that agreed on the hash and disagreed on everything else. `Path.resolve()` is
+    no help — it expands symlinks but preserves the caller's casing; only `os.getcwd()`
+    canonicalises, which is exactly why this stayed invisible until a path was passed in.
 23. **A convenience must not be able to prevent startup.** `Path.home()` raises when there is
     no home; an unwritable cache directory raises on `mkdir`. Anything on the "nice to have"
     side of the design should degrade to a warning, never an exception.
@@ -511,6 +620,35 @@ Ordered by how much time each cost.
 26. **A stream swap invalidates code that reconfigures "stdout".** `sys.stdout.reconfigure(...)`
     after the swap fixes the wrong handle and leaves the real one on the platform default. Any
     setup that touches streams by name has to run before the swap, or where the handle is known.
+27. **Fixing the symptom's location is not fixing the class.** `livecheck`'s verdict had a known
+    structural blind spot — described accurately in its own comment — and the guard was added to
+    the two branches where it had been noticed and not to the third. The control arm then
+    printed `PREFIX NOT REUSED` directly above `CACHE: 74.3%`. When you write the comment
+    explaining a trap, grep for the other places you are standing in it. **This trap was then
+    hit again while writing it down**: the fix went into the branch with the symptom, and the
+    branch immediately above it had the same flaw and was never read. Fixing a chain means
+    re-reading the whole chain, in order, including the parts you did not touch.
+30. **In an if/elif chain, ordering is a correctness property, not style.** `ALREADY WARM`
+    preceded the `FAIL` branches, so an inconclusive-looking result shadowed a real failure and
+    the process exited 0. Branch order decides which of several true statements gets to be the
+    answer — put the ones that must never be missed first, and enumerate the chain against
+    concrete inputs rather than reading it.
+31. **A guard whose trigger depends on the provider's mood is not a guard.** Whether the harness
+    caught a broken cache depended on whether an opportunistic third-party cache warmed turn 1.
+    Two separately-tolerable findings composed into one that hides the other: the more active
+    implicit caching of #28 is precisely what would have masked the broken adapter of #30.
+32. **Review the fix by attacking the file you just changed.** Both of the above came from
+    pointing the oracle at the diff with "attack this", not from re-reading it. The run that
+    asked it to confirm a fix returned "none" in every category; the run that asked it to break
+    one returned the defect one branch up. Same model, same minute — the question was the
+    variable.
+28. **An opportunistic provider behaviour measured once is a sample, not a constant.** Gemini's
+    implicit cache read 0% on 7 tries on one machine and 74.3% on 6 of 8 on another, unchanged
+    code. It went into a table that read like a specification. Anything a vendor describes as
+    best-effort needs an `n`, a date, and a re-run before it is quoted.
+29. **When two outputs of one run disagree, find out which is lying before you believe either.**
+    The same `livecheck` run printed a verdict and a cache share that could not both be true.
+    The verdict was the headline, so the verdict was believed — and it was the broken one.
 
 ---
 
@@ -548,7 +686,8 @@ What remains:
 
 **`openai:` has still never seen a real response.** Wire format verified against a mock only.
 Its cached-token accounting (`prompt_tokens_details.cached_tokens`) is unexercised, and by the
-§2.9 lesson we should assume its implicit caching does nothing for us until measured.
+§2.9 lesson we should assume its implicit caching gives us nothing we can plan around until
+measured — and measured more than once, since the Gemini figure moved between two machines.
 
 ```bash
 export OPENAI_API_KEY=...           # shell env; adapters never write keys to session files

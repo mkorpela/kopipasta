@@ -1,12 +1,21 @@
-# Handoff memo — agent-CLI branch, moving from Windows to macOS
+# Handoff memo — agent-CLI branch, Windows → macOS
 
 **Branch:** `claude/kopipasta-agentic-cli-ta26qs`
 **Base commit:** `5aa8df8` ("update gemini-3.7-flash")
-**State:** everything is **staged but not committed** (`git diff --cached --stat` → 22 files,
-+2754/−182). Nothing has been pushed.
-**Green on Windows:** 220 pytest, 54 backend mock checks, `ruff` clean.
-**Not yet run anywhere else.** See "What macOS will exercise for the first time" below — that
-is the first thing to do on the macstudio, before writing any new code.
+**Green on Windows:** 220 pytest, backend mock checks, `ruff` clean.
+**Green on macOS:** 220 pytest, 53 backend mock checks, `ruff` clean, live Gemini arms both
+measured, `reap_orphans()` → 0.
+
+**The macOS pass is done.** §3 below is now a record rather than a plan. It found five defects
+— one in `cache.py`, four in the `livecheck` harness — and two of those four came from
+dogfooding the fixes rather than from re-reading them. §2.9 of `docs/AGENT_CLI_FINDINGS.md`
+changed as a result: the implicit-caching number did not reproduce, and the harness could exit
+0 on a broken explicit cache. Read that before quoting any cache figure.
+
+One structural caveat carried forward: **`claude-cli:` cannot currently produce a verdict from
+`livecheck`** — it always reads ~50% of input from its own system-prompt cache, so it lands in
+`ALREADY WARM` every run. Not fixed, because separating those tokens from ours needs a live
+`claude` run to calibrate against.
 
 ---
 
@@ -85,35 +94,41 @@ is shared with genuine auth failures.
 
 ---
 
-## 3. What macOS will exercise for the first time
+## 3. What macOS exercised for the first time — results
 
-**Do this before anything else.** Several code paths were written on Windows against
-documentation rather than a running machine.
+Several code paths were written on Windows against documentation rather than a running machine.
+All six have now been run on the macstudio. **One was broken.**
 
-1. **`cache._norm_for_key` darwin branch** (`cache.py:52-55`). `os.path.normcase` is a **no-op
-   on POSIX**, so macOS — whose default filesystem is case-*in*sensitive — needs an explicit
-   `.lower()`. Linux must **not** fold, or two genuinely distinct directories collide. The test
-   `test_case_differences_do_not_split_one_repo_into_two_caches` was Windows-only and now runs
-   on darwin too; **it has never actually executed on macOS.**
-2. **`/private/var` symlinking.** macOS `tmp_path` lives under `/var/folders/...`, which is a
-   symlink to `/private/var/...`. `find_project_root()` and `get_project_key()` both call
-   `.resolve()`; if any caller does not, keys will diverge for one directory. Watch for this in
-   the cache tests specifically.
-3. **The editor guard on darwin.** `prompt.py` / `config.py` take the `subprocess.call(("open",
-   path))` branch, not `os.startfile`. The `require_human()` check sits above the branch, so it
-   should hold — but the tests monkeypatch `os.startfile` with `raising=False` and on macOS that
-   patches nothing. Confirm `--edit-template` and `--edit-profile` still exit 8 headlessly.
-4. **`os.replace` retry** (`cache.py:105-118`). The `PermissionError` retry exists for Windows,
-   where a rename fails while another process holds the destination. On macOS it is dead code
-   that should simply never trigger. Harmless, but do not "simplify" it away — the Windows
-   failure was real and reproducible.
-5. **Encoding.** All the cp1252 defensiveness (`encoding="utf-8"` on every write,
-   `errors="replace"` on narration, `chcp 65001`) is Windows-motivated and inert on macOS.
-   Do not remove it; the project is developed on both.
-6. **Terminal behaviour.** `human_attached()` now checks stdin *and the stream it narrates to*.
-   Under the redirect that is stderr, so `kopipasta > prompt.txt` at a terminal keeps the TUI.
-   Worth confirming by hand in a real zsh session — it is the one change with no automated
-   coverage of the genuinely-interactive case.
+1. **`cache._norm_for_key` darwin branch — FOUND A BUG, FIXED.** `os.path.normcase` is a no-op
+   on POSIX, so macOS — default filesystem case-*in*sensitive — needs an explicit `.lower()`;
+   Linux must **not** fold or two distinct directories collide. That much was right. What was
+   wrong: `get_project_key` folded the *hash* and not the *slug*, so one directory produced
+   `repo_a-<h>` and `REPO_A-<h>` — two names, one hash. `test_case_differences_do_not_split_one_
+   repo_into_two_caches` had never executed on macOS and failed on its first run there.
+   Latent in production (the no-argument path goes through `os.getcwd()`, which canonicalises
+   case; `Path.resolve()` does **not**, it only expands symlinks) and it would have surfaced
+   the moment a root was passed in — which is exactly what a `pack` verb taking a path will do.
+2. **`/private/var` symlinking — clean.** Verified directly that one directory yields one key
+   across `/var/...`, `/private/var/...`, mixed case, and cwd-vs-explicit. Both
+   `find_project_root()` and `get_project_key()` resolve, and no caller skips it.
+3. **The editor guard on darwin — holds.** Confirmed by running the real binary, not the test
+   double, since the tests monkeypatch `os.startfile` with `raising=False` and that patches
+   nothing here. `--edit-template` and `--edit-profile` both exit 8 headlessly, and stdout stays
+   empty — the narration is entirely on stderr, so the §11.2b contract holds on this path too.
+4. **`os.replace` retry** (`cache.py`). Windows-only dead code on macOS, never triggered, as
+   expected. Do not "simplify" it away — the Windows failure was real and reproducible.
+5. **Encoding.** All the cp1252 defensiveness is Windows-motivated and inert here. Do not
+   remove it; the project is developed on both.
+6. **Terminal behaviour — holds.** `human_attached()` checks stdin *and the stream it narrates
+   to* (stderr under the redirect). Exercised under a real pty rather than by hand, which is
+   worth keeping since it is repeatable:
+   - stdin+stderr on a tty, stdout to a file → TUI starts and stays up. `kopipasta >
+     prompt.txt` still works from a terminal.
+   - `echo ... | kopipasta` → exit 8 in 0.8s. No spin.
+   - fully redirected → exit 8, **0 bytes on stdout**.
+
+The suite also leaves the real `~/.cache/kopipasta` absent on macOS, checked by deleting it,
+running the suite, and looking (§5) — the `conftest.py` isolation is not Windows-specific.
 
 Command translations from the Windows session:
 
@@ -129,21 +144,26 @@ Command translations from the Windows session:
 ## 4. How to verify the branch
 
 ```sh
-uv run pytest -q                              # 220 on Windows; expect 220 ± the skipped case test
+uv run pytest -q                              # 220, Windows and macOS
 uv run ruff check kopipasta spike tests
-uv run python spike/check_backends.py         # 54 checks, no API key needed, spins a local HTTP mock
+uv run python spike/check_backends.py         # 53 checks, no API key needed, spins a local HTTP mock
 ```
 
 Live checks (needs `GEMINI_API_KEY`, costs a few cents):
 
 ```sh
-uv run python -u spike/livecheck.py gemini gemini-implicit   # expect ~99.9% vs ~0.0%
+uv run python -u spike/livecheck.py gemini gemini-implicit
 uv run python -c "import sys; sys.path.insert(0,'spike'); import backends; print(backends.GeminiBackend.reap_orphans())"
 ```
 
-That last one must print `0`. A non-zero number means cached content was left rented on
+**Expect 99.9% on the explicit arm, every run. Do not expect a fixed number on the implicit
+arm** — it was 0% on Windows and 74.3% on 6 of 8 macOS runs with nothing changed on our side,
+which is the finding, not noise to be averaged away (§2.9 of the findings doc). A single
+implicit run tells you nothing; if you need to quote it, run it five times.
+
+`reap_orphans()` must print `0`. A non-zero number means cached content was left rented on
 Google's side — the caches are billed per token-hour until their TTL expires, so orphans cost
-money silently.
+money silently. Checked after ~12 cache creations across the runs above: `0`.
 
 ### Dogfooding loop (this is how most of the defects above were found)
 
@@ -210,27 +230,23 @@ Also outstanding:
 - **Anthropic `cache_creation_input_tokens`** is counted but the multi-turn economics were
   never measured end-to-end the way Gemini's were.
 
-### Suggested order on the macstudio
+### Suggested order from here
 
-1. Run the suite and the live checks; fix whatever macOS surfaces (§3 above).
+1. ~~Run the suite and the live checks; fix whatever macOS surfaces.~~ **Done** — see §3.
 2. Build `pack` — it is the smallest verb that makes the tool usable headlessly, and it
    validates the output contract against a real consumer.
 3. Only then revisit cache economics at realistic size, since `pack` is what will let you
    generate a 400k-token frontload without driving the TUI by hand.
 
+One addition to that list, from the §3 pass: **the implicit-caching number moved between two
+machines.** Before the 400k re-measurement is worth anything, decide what `n` a cache figure
+needs to be quotable. The explicit arm was stable across every run on both machines; the
+implicit arm was not stable across runs on *one* machine.
+
 ---
 
 ## 7. Committing
 
-Nothing is committed. The staged set is coherent but large; it may be worth splitting along
-the seams it already has:
-
-1. `interaction.py` + headless guards + `tests/test_headless_prompts.py`,
-   `tests/test_dispatch.py`, `tests/test_patcher_headless.py`
-2. `cache.py` + `tests/test_cache_isolation.py` + `tests/conftest.py`
-3. `output.py` + `tests/test_output_contract.py`
-4. `spike/` (Gemini caching, oracle fixes)
-5. `docs/`
-
-Note `git` reports CRLF→LF warnings for the new files; they were written on Windows. Check
-`.gitattributes` before committing on macOS so the line endings do not churn.
+All committed and pushed on `claude/kopipasta-agentic-cli-ta26qs`. Line endings did not churn:
+the Windows work landed as LF, and the only CRLF file in the tree is `LICENSE`, which predates
+this branch. No `.gitattributes` was needed.

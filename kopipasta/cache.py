@@ -67,7 +67,14 @@ def get_project_key(project_root: Optional[str] = None) -> str:
     """
     root = find_project_root(project_root)
     digest = hashlib.sha256(_norm_for_key(str(root)).encode("utf-8")).hexdigest()[:12]
-    slug = re.sub(r"[^A-Za-z0-9_.-]", "_", root.name) or "root"
+    # The slug has to fold exactly as the digest does. It did not, so on a
+    # case-insensitive filesystem one project could produce two different
+    # directory NAMES -- Repo-<h> and REPO-<h> -- that agreed on the hash but
+    # not on the path: the same split the hash exists to prevent. Path.resolve()
+    # is no help; it expands symlinks but preserves whatever case the caller
+    # typed. Only os.getcwd() canonicalises case, which is why this stayed
+    # latent for the no-argument call and appears only when a root is passed in.
+    slug = re.sub(r"[^A-Za-z0-9_.-]", "_", _norm_for_key(root.name)) or "root"
     return f"{slug[:40]}-{digest}"
 
 

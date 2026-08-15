@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from kopipasta.interaction import EXIT_NO_HUMAN
-from kopipasta.main import KopipastaApp, UsageError
+from kopipasta.main import KopipastaApp, UsageError, VerbRequested
 
 
 def _parse(argv):
@@ -116,12 +116,32 @@ def test_tui_still_forwards_its_paths(tmp_path, monkeypatch):
 
 
 def test_specced_but_unimplemented_verbs_say_so(tmp_path, monkeypatch):
-    """`ask` is in the spec and not built. Silently treating it as a filename
-    is exactly the failure this rule exists to prevent."""
+    """A verb that is specced and unbuilt says so. "Not yet" and "no such
+    thing" send the caller to different places, and neither is a filename."""
     monkeypatch.chdir(tmp_path)
-    for verb in ("pack", "ask", "patch", "apply", "map", "session"):
+    for verb in ("pack", "patch", "apply", "map", "session"):
         with pytest.raises(UsageError, match="not implemented yet"):
             _parse([verb])
+
+
+@pytest.mark.parametrize("verb", ["ask", "config"])
+def test_implemented_verbs_are_dispatched_before_the_legacy_parser(verb, tmp_path, monkeypatch):
+    """`ask -e file -q "..."` is not a command line the TUI's parser can be
+    taught. It has to be intercepted before argparse sees it, or every verb
+    becomes a usage error from the wrong parser."""
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(VerbRequested) as e:
+        _parse([verb, "-q", "why", "--json"])
+    assert e.value.verb == verb
+    assert e.value.argv == ["-q", "why", "--json"]
+
+
+def test_a_verb_flag_is_never_read_as_a_path(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "src").mkdir()
+    with pytest.raises(VerbRequested) as e:
+        _parse(["ask", "--all", "-x", "src"])
+    assert e.value.argv == ["--all", "-x", "src"]
 
 
 # -- end to end: the exit codes are the contract ---------------------------

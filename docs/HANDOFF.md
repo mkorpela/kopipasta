@@ -209,13 +209,15 @@ Worth keeping, because each came from something that went wrong:
 
 ## 6. What is not done
 
-**The §3 verbs — `pack`, `ask`, `patch`, `apply`, `map`, `session` — are unbuilt.** They are
-recognised and exit 1 with "not implemented yet" instead of being silently treated as
-filenames (`main.py:_resolve_subcommand`). `pack` is the natural next step and the highest
-value: `_print_and_copy` is currently the only artifact emitter and it is reachable *only*
-through the TUI, so there is no headless way to produce a prompt today. The output contract
-(§11.2b) was built to make `pack` a small change — it should be roughly "select from argv,
-render, `output.emit`".
+**`ask` and `config` are built** (`kopipasta/core/`, see §8 below). **`pack`, `patch`,
+`apply`, `map` and `session` are not.** They are recognised and exit 1 with "not implemented
+yet" instead of being silently treated as filenames (`main.py:_resolve_subcommand`).
+
+`pack` is now a small job: it is `ask` without the model call, over the same
+resolver/budget/context core, and `--backend none` already does exactly that inside `ask`.
+`patch` is `ask --apply` plus `core/patchflow.py`; the pieces it needs — zoned editable /
+read-only rendering, `--mode patch`, the "backend behaved as an agent" diagnosis — are in
+place and exercised.
 
 Also outstanding:
 
@@ -233,10 +235,11 @@ Also outstanding:
 ### Suggested order from here
 
 1. ~~Run the suite and the live checks; fix whatever macOS surfaces.~~ **Done** — see §3.
-2. Build `pack` — it is the smallest verb that makes the tool usable headlessly, and it
-   validates the output contract against a real consumer.
-3. Only then revisit cache economics at realistic size, since `pack` is what will let you
-   generate a 400k-token frontload without driving the TUI by hand.
+2. ~~Build `pack`.~~ Superseded: `ask` was built first because it is the verb the product is
+   for, and `pack` fell out of it as "the same core with `--backend none`".
+3. `pack`, then `patch` — both are now assembly over an exercised core rather than new design.
+4. Revisit cache economics at realistic size. `ask --all --budget 400k --backend none` will
+   generate the frontload without driving the TUI or spending anything.
 
 One addition to that list, from the §3 pass: **the implicit-caching number moved between two
 machines.** Before the 400k re-measurement is worth anything, decide what `n` a cache figure
@@ -250,3 +253,67 @@ implicit arm was not stable across runs on *one* machine.
 All committed and pushed on `claude/kopipasta-agentic-cli-ta26qs`. Line endings did not churn:
 the Windows work landed as LF, and the only CRLF file in the tree is `LICENSE`, which predates
 this branch. No `.gitattributes` was needed.
+
+---
+
+## 8. `ask` — what landed, and what dogfooding it found
+
+```
+kopipasta/core/
+  resolver.py   patterns -> {path: role}, per-pattern match counts   (spec §4)
+  budget.py     the demotion ladder, on a calibrated estimator       (spec §5)
+  modes.py      template + enforced schema, together                 (spec §10)
+  context.py    resolved selection -> (prefix, suffix), zoned         (spec §6/§11.4)
+  session.py    the conversation on disk: turns, dedup, cache lease  (spec §7)
+  backend.py    none / exec / claude-cli / anthropic / gemini / openai
+  ask.py        the verb: orchestration, --json contract, exit codes (spec §8)
+```
+
+Verify: `uv run pytest -q` (362), `uv run ruff check kopipasta spike tests`,
+`uv run python spike/check_backends.py` (53).
+
+Three decisions that are load-bearing and not obvious from the spec:
+
+- **`--backend none` is a first-class backend, not a test double.** It runs selection, the
+  ladder, rendering, the session record and the whole output contract for real, and hands the
+  assembled payload back as the answer. `none:<file>` answers with a canned response instead,
+  which is how the triage-parsing and failure paths are exercised. 42 of the tests are
+  end-to-end runs of the real verb with no key, no network and no bill.
+- **A session's prefix is fixed at turn 1.** It is the cache breakpoint, so it must stay
+  byte-identical; re-rendering "the same" selection would miss on every turn the moment a file
+  changed. New and changed files therefore ride in the *suffix*, marked as superseding.
+  Dedup is the same rule from the other side, and it compares against a manifest of what is in
+  the prefix — never against "everything ever sent", because an earlier turn's suffix is gone.
+- **A Gemini cache is created only for a named session.** It is rented per token-hour until its
+  TTL, so a one-shot question would pay storage for a turn 2 that never comes. Verified live: a
+  one-shot `ask` leaves `cachedContents` empty; a `--session` run hands the lease to
+  `.kopipasta/sessions/<id>/cache.json` and turn 2 — a different process — read 27,029 of
+  37,952 input tokens from it.
+
+### The dogfooding record
+
+Six real defects, all found by pointing `ask` at its own diff with *"attack this"*, none by
+re-reading. The pattern from §4 held exactly: the run that asked it to confirm a fix said
+"none" in every category; the run that asked it to break one returned the defect.
+
+1. `--strict-budget` was honoured by the first ladder pass and silently ignored by the
+   corrective one — so a run under the estimate and over the rendered size demoted anyway and
+   exited 0, which is the one thing the flag exists to prevent.
+2. The ladder's four stages were snapshotted up front, so a `-r` file demoted to a skeleton in
+   stage 1 was missing from the stage-4 list and could never reach path-only.
+3. Dedup compared content hashes and ignored the role, so `-e file.py` on turn 2 was answered
+   with the 50-line snippet turn 1 sent, and reported as `edit: 1`.
+4. Dedup trusted every earlier turn, including files that rode in a *suffix*. Those are not
+   replayed, so turn 3 withheld a file the record said had been sent.
+5. Only full-text roles were rendered into a later turn's suffix, so a `-m` file first selected
+   on turn 2 was counted in `sent["map"]` and never sent at all.
+6. Reusing a cache re-derived `expires_at` as `now + ttl`, renewing a lease only the provider
+   can renew.
+
+And one found by running the finished thing rather than testing it: `ask` establishes the
+output contract for itself, `main` had already established it, and the inner scope saved the
+*redirected* stdout as the artifact stream. `kopipasta ask --json > out.json` wrote an empty
+file and exited 0. `stdout_reserved_for_output` is now re-entrant, and the test for it goes
+through `main` — the tests that called the verb directly could not see it.
+
+Each fix has a test that was checked against the old code with the fix reverted, and fails.

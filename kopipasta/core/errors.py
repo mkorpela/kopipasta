@@ -25,8 +25,11 @@ import difflib
 import os
 from typing import Any, Dict, List, Optional, Sequence
 
-# Spec §8. EXIT_NO_HUMAN (8) lives in kopipasta.interaction, which owns that
-# decision; it is listed here only so the full set is visible in one place.
+from kopipasta.interaction import EXIT_NO_HUMAN
+
+# Spec §8. EXIT_NO_HUMAN (8) is imported rather than redeclared:
+# kopipasta.interaction owns that decision, and two definitions of one exit
+# code is how they drift apart.
 EXIT_OK = 0
 EXIT_USAGE = 1
 EXIT_NO_BACKEND = 2
@@ -103,6 +106,24 @@ class KopipastaError(Exception):
 class UsageError(KopipastaError):
     exit_code = EXIT_USAGE
     slug = "usage"
+
+
+class InteractionRequired(KopipastaError):
+    """`interaction.NoHumanAttached`, in the shape the CLI reports failures in.
+
+    Distinct from a usage error because the fix is different: the caller needs
+    a policy flag or a different invocation, not a corrected command line.
+    """
+
+    exit_code = EXIT_NO_HUMAN
+    slug = "interaction_required"
+    retryable = False
+
+    def __init__(self, summary: str, hint: Optional[str] = None) -> None:
+        super().__init__(
+            summary,
+            hint=hint or "Pass the flag that answers the question, or run it in a terminal.",
+        )
 
 
 class NoBackendConfigured(KopipastaError):
@@ -317,6 +338,30 @@ class BackendTimeout(BackendError):
             hint="Raise timeout_s in the config, or narrow the selection.",
             provider=provider,
             timeout_s=timeout_s,
+        )
+
+
+class DeadlineExceeded(BackendError):
+    """`--deadline` caps the whole invocation, not one call.
+
+    Separate from a backend timeout because nothing failed on the provider's
+    side: we ran out of the caller's clock, possibly during selection or
+    rendering. Retrying is pointless without raising the deadline, so it says
+    so rather than leaving a harness to loop.
+    """
+
+    slug = "deadline_exceeded"
+    retryable = False
+
+    def __init__(self, elapsed_s: float, deadline_s: float, stage: str) -> None:
+        KopipastaError.__init__(
+            self,
+            f"the {deadline_s:g}s deadline elapsed during {stage}.",
+            detail=f"{elapsed_s:.1f}s spent before it did.",
+            hint="Raise --deadline, or narrow the selection so there is less to assemble.",
+            deadline_s=deadline_s,
+            elapsed_s=round(elapsed_s, 1),
+            stage=stage,
         )
 
 

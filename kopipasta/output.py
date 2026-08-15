@@ -11,9 +11,11 @@ For a human nothing changes — both streams land on the same terminal. For
 file that starts with "Generated prompt:" and ends with a coffee emoji.
 """
 
+import argparse
 import contextlib
+import json as _json
 import sys
-from typing import IO, Iterator, Optional
+from typing import IO, Any, Iterator, Optional
 
 _artifact_stream: Optional[IO[str]] = None
 
@@ -39,10 +41,23 @@ def stdout_reserved_for_output() -> Iterator[IO[str]]:
     rich resolves `Console.file` at write time, so consoles built before this
     runs are redirected too — which matters, since the app builds one in its
     constructor.
+
+    Re-entrant: an inner scope yields the stream the outer one already saved.
+    That lets a verb establish the contract for itself, so it holds however it
+    was reached, without a second scope stealing the handle.
     """
     global _artifact_stream
-    saved = sys.stdout
     previous = _artifact_stream
+    if previous is not None:
+        # Already reserved by an outer scope. Re-capturing here would save the
+        # *redirected* stdout — which by now is stderr — as the artifact
+        # stream, and every artifact for the rest of the run would go to
+        # stderr while the exit code said everything was fine. Found by
+        # dogfooding: `kopipasta ask --json > out.json` produced an empty file
+        # and exit 0 once the verb started establishing the contract itself.
+        yield previous
+        return
+    saved = sys.stdout
     _make_narration_safe(sys.stderr)
     # The artifact carries the user's file contents, so it is the stream most
     # likely to meet a character cp1252 cannot encode. main._configure_platform
@@ -55,8 +70,6 @@ def stdout_reserved_for_output() -> Iterator[IO[str]]:
         yield saved
     finally:
         sys.stdout = saved
-        # Restore rather than clear: nesting would otherwise leave the outer
-        # context emitting its artifact to stderr.
         _artifact_stream = previous
 
 
@@ -68,7 +81,44 @@ def artifact_stream() -> IO[str]:
 def emit(text: str) -> None:
     """Write the artifact to the real stdout, wherever narration is pointed."""
     stream = artifact_stream()
-    stream.write(text)
-    if not text.endswith("\n"):
-        stream.write("\n")
-    stream.flush()
+    try:
+        stream.write(text)
+        if not text.endswith("\n"):
+            stream.write("\n")
+        stream.flush()
+    except (BrokenPipeError, ValueError):
+        # `kopipasta ask ... | head` closes the pipe under us. That is the
+        # reader's decision, not a failure of the run, and a traceback here
+        # would bury whatever the caller actually wanted to see.
+        pass
+
+
+def emit_json(payload: Any) -> None:
+    """The artifact as a single JSON object — spec §8.
+
+    Written through `emit`, so library narration on the way (`.gitignore
+    detected.`, patcher progress) lands on stderr and cannot appear mid-object
+    and make it unparseable.
+    """
+    emit(_json.dumps(payload, indent=2, default=str))
+
+
+def narrate(text: str) -> None:
+    """One line of narration. Never the artifact, always stderr."""
+    try:
+        print(text, file=sys.stderr)
+    except (BrokenPipeError, ValueError):
+        pass  # See emit(): a closed reader must not become a failed run.
+
+
+class HelpToStdoutParser(argparse.ArgumentParser):
+    """`kopipasta ask --help | less` must work, so help is output, not narration.
+
+    Pre-scanning argv for `-h` instead would misfire on a task string of "-h"
+    or a file named `--help`, and would disable the redirect for the entire
+    run. Letting argparse decide what is a flag is the only reliable answer.
+    Usage errors are unaffected: argparse passes stderr explicitly for those.
+    """
+
+    def print_help(self, file=None):
+        super().print_help(artifact_stream())

@@ -28,12 +28,17 @@ from kopipasta.core.errors import (
     MissingApiKey,
     NoBackendConfigured,
     UnknownProvider,
+    UsageError,
 )
 
 # provider -> the env var holding its key. `exec` and `claude-cli` are absent
 # deliberately: they borrow whatever the surrounding CLI is authenticated as,
 # which is the whole reason to reach for them.
 PROVIDER_KEY_ENV: Dict[str, Optional[str]] = {
+    # `none` calls no model at all: it hands the assembled payload back as the
+    # answer. It is how the pipeline is exercised without a key, a network or
+    # a bill, and it needs no credential for the same reason.
+    "none": None,
     "exec": None,
     "claude-cli": None,
     "anthropic": "ANTHROPIC_API_KEY",
@@ -61,6 +66,63 @@ SRC_DEFAULT = "built-in default"
 def config_path() -> Path:
     """Beside prompt_template.j2 and ai_profile.md, via the same XDG logic."""
     return get_global_profile_path().parent / "config.toml"
+
+
+DEFAULT_CONFIG = """# Which model answers, and how. Edited once, not argued per call.
+#
+# API keys are NOT here: they stay in the environment (GEMINI_API_KEY,
+# ANTHROPIC_API_KEY, OPENAI_API_KEY), out of a file on disk and out of any
+# session record. Sections are per verb; [ask] is the fallback for the rest.
+
+[ask]
+provider    = "gemini"
+model       = "gemini-3.7-flash"
+cache_ttl_s = 300          # a provider-side prefix cache is rented until this expires
+max_tokens  = 8192         # reasoning tokens spend this budget too
+timeout_s   = 900
+
+# [patch]
+# provider = "anthropic"
+# model    = "claude-opus-5"
+"""
+
+
+def open_config_in_editor() -> None:
+    """`kopipasta --edit-config`, with the interaction guard — spec §6/§12.
+
+    Creating the file first means a headless caller that cannot open an editor
+    is still left with something it can edit directly, which is why the guard
+    is consulted after the write and not before it.
+    """
+    import os as _os
+    import shutil
+    import subprocess
+    import sys
+
+    from kopipasta.interaction import require_human
+
+    path = config_path()
+    if not path.exists():
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(DEFAULT_CONFIG)
+            print(f"Created a starter config at: {path}")
+        except OSError as exc:
+            print(f"Error creating {path}: {exc}")
+            return
+
+    require_human(
+        f"Opening {path} in an editor",
+        "The file exists and can be edited directly.",
+    )
+    editor = _os.environ.get("EDITOR", "code" if shutil.which("code") else "vim")
+    if sys.platform == "win32":
+        _os.startfile(str(path))  # type: ignore[attr-defined]
+    elif sys.platform == "darwin":
+        subprocess.call(("open", str(path)))
+    else:
+        subprocess.call((editor, str(path)))
 
 
 def _load_toml(path: Path) -> Dict[str, Any]:
@@ -155,6 +217,18 @@ def resolve_backend(
     provider = model = None
     source = None
 
+    if flag is not None and not flag.strip():
+        # An explicitly empty --backend is a mistake, not a request to fall
+        # back: `--backend "$MODEL"` with MODEL unset would otherwise silently
+        # use the config file's model and report it as configured. An empty
+        # KOPIPASTA_BACKEND is treated as unset below, because for an
+        # environment variable that idiom is genuinely common.
+        raise UsageError(
+            "--backend was given an empty value.",
+            detail="It takes provider:model, e.g. gemini:gemini-3.7-flash.",
+            hint="Drop the flag entirely to use the configured backend:\n"
+            "  kopipasta config --show",
+        )
     if flag:
         provider, model = _split_spec(flag)
         source = SRC_FLAG

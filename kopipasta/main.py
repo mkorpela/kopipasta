@@ -44,7 +44,12 @@ from kopipasta.cache import (
 )
 from kopipasta.logger import configure_logging, get_logger
 from kopipasta.interaction import EXIT_NO_HUMAN, NoHumanAttached, require_human
-from kopipasta.output import artifact_stream, emit, stdout_reserved_for_output
+from kopipasta.output import (
+    HelpToStdoutParser,
+    emit,
+    emit_json,
+    stdout_reserved_for_output,
+)
 
 
 def get_colored_code(file_path, code):
@@ -80,17 +85,9 @@ def fetch_web_content(
         return None, None, None
 
 
-class _HelpToStdoutParser(argparse.ArgumentParser):
-    """`kopipasta --help | less` must work, so help is output, not narration.
-
-    Pre-scanning argv for `-h` instead would misfire on a task string of "-h"
-    or a file named `--help`, and would disable the redirect for the entire
-    run. Letting argparse decide what is a flag is the only reliable answer.
-    Usage errors are unaffected: argparse passes stderr explicitly for those.
-    """
-
-    def print_help(self, file=None):
-        super().print_help(artifact_stream())
+#: Kept as an alias: the class moved to output.py when the verbs needed it
+#: too, and "--help is output, not narration" is an output-contract rule.
+_HelpToStdoutParser = HelpToStdoutParser
 
 
 class UsageError(Exception):
@@ -99,6 +96,88 @@ class UsageError(Exception):
     Distinct from NoHumanAttached because the fix is different: the caller
     needs a corrected command line, not a policy flag or a terminal.
     """
+
+
+class VerbRequested(Exception):
+    """argv[0] is an implemented verb: this run belongs to `kopipasta.core`.
+
+    Raised before the TUI's own argument parser sees anything, because the
+    verbs have their own grammar — `ask -e file -q "..."` is not something the
+    legacy parser can be taught without breaking the legacy invocation.
+    """
+
+    def __init__(self, verb: str, argv: List[str]) -> None:
+        super().__init__(verb)
+        self.verb = verb
+        self.argv = argv
+
+
+def _dispatch_verb(verb: str, argv: List[str]) -> int:
+    """Run a verb and return its exit code. Imported lazily: the TUI path
+    should not pay for modules it never uses."""
+    if verb == "ask":
+        from kopipasta.core import ask as ask_verb
+
+        return ask_verb.run(argv)
+    if verb == "config":
+        return _config_verb(argv)
+    raise UsageError(f"'{verb}' has no handler.")  # pragma: no cover
+
+
+def _config_verb(argv: List[str]) -> int:
+    """`kopipasta config --show` — what resolved, and where each value from.
+
+    Precedence chains are exactly the thing that silently does the wrong
+    thing, and "which model actually answered?" is the first question when an
+    answer looks off. It never prints a key: presence and length are enough to
+    tell "unset" from "empty" from "the wrong one".
+    """
+    from kopipasta.core.ask import report_failure
+    from kopipasta.core.config import config_path, render_show, resolve_backend
+    from kopipasta.core.errors import KopipastaError
+
+    parser = HelpToStdoutParser(
+        prog="kopipasta config",
+        description="Show the resolved configuration and where each value came from.",
+    )
+    parser.add_argument("--show", action="store_true", help="the default, and the only mode")
+    parser.add_argument("--verb", default="ask", help="which section to resolve (default: ask)")
+    parser.add_argument("--backend", help="resolve as if --backend had been passed")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
+
+    try:
+        cfg = resolve_backend(args.verb, flag=args.backend)
+    except KopipastaError as e:
+        return report_failure(e, json_mode=args.json)
+
+    if args.json:
+        emit_json(
+            {
+                "ok": True,
+                "config_file": str(config_path()),
+                "verb": args.verb,
+                "provider": cfg.provider,
+                "model": cfg.model,
+                "api_key_env": cfg.api_key_env,
+                "api_key_present": bool(
+                    cfg.api_key_env and (os.environ.get(cfg.api_key_env) or "").strip()
+                ),
+                "cache_ttl_s": cfg.cache_ttl_s,
+                "max_tokens": cfg.max_tokens,
+                "timeout_s": cfg.timeout_s,
+                "sources": cfg.sources,
+            }
+        )
+    else:
+        emit(f"{render_show(cfg)}\n\nconfig file  {config_path()}")
+    return 0
+
+
+#: The verbs that exist today, dispatched before the legacy argument parser.
+#: Everything else in SUBCOMMANDS is recognised only so it can say "not yet"
+#: instead of being mistaken for a filename.
+VERBS = ("ask", "config")
 
 
 class KopipastaApp:
@@ -135,14 +214,14 @@ class KopipastaApp:
 
         self.logger.info("app_started", cwd=self.project_root_abs)
 
-    def run(self):
-        """Main lifecycle of the application."""
+    def run(self) -> Optional[int]:
+        """Main lifecycle of the application. Returns an exit code, or None."""
         try:
             self._configure_platform()
             self._parse_args()
 
             if self._handle_utility_commands():
-                return
+                return None
 
             self._load_configuration()
             self._load_session_state()
@@ -157,9 +236,13 @@ class KopipastaApp:
             ):
                 print("No files or web content were selected. Exiting.")
                 self.logger.info("app_exit_no_selection")
-                return
+                return None
 
             self._finalize_and_output()
+            return None
+        except VerbRequested as v:
+            self.logger.info("verb_dispatched", verb=v.verb)
+            return _dispatch_verb(v.verb, v.argv)
         except (UsageError, NoHumanAttached) as e:
             # Expected refusals, not crashes. Logging these as `app_crash`
             # with a stack trace would train everyone to ignore app_crash.
@@ -184,7 +267,15 @@ class KopipastaApp:
                 pass
 
     def _parse_args(self):
-        """Sets up argument parsing."""
+        """Sets up argument parsing.
+
+        The verbs are dispatched *before* argparse runs, not after: they have
+        their own grammar, and `-e`/`-q`/`--json` mean nothing to the legacy
+        parser. Falling through to it would turn every verb into a usage error
+        from the wrong parser.
+        """
+        argv = self._resolve_subcommand(sys.argv[1:] if self.argv is None else list(self.argv))
+
         parser = _HelpToStdoutParser(
             description="Generate a prompt with project structure, file contents, and web content."
         )
@@ -209,6 +300,11 @@ class KopipastaApp:
             action="store_true",
             help="Open the global user profile (AI Identity) in default editor",
         )
+        parser.add_argument(
+            "--edit-config",
+            action="store_true",
+            help="Open config.toml (which model answers `ask`) in default editor",
+        )
         # Spec §12: the non-interactive answer to "full or snippet?". Without
         # these the only headless outcome is a refusal, which is safe but
         # useless — a caller needs a way to say what it wants up front.
@@ -223,19 +319,18 @@ class KopipastaApp:
             action="store_true",
             help="Always use a snippet for large URLs (no prompt)",
         )
-        self.args = parser.parse_args(self.argv)
-        self._resolve_subcommand()
+        self.args = parser.parse_args(argv)
 
         # Default to current dir if no inputs
         if not self.args.inputs:
             self.args.inputs.append(".")
 
-    # Reserved for the verbs in spec §3. They do not exist yet, but the
-    # dispatch rule has to know their names NOW: the failure being prevented
-    # is a typo'd or not-yet-implemented verb being silently treated as a
-    # filename and opening the TUI.
-    SUBCOMMANDS = ("tui", "pack", "ask", "patch", "apply", "map", "session")
-    IMPLEMENTED_SUBCOMMANDS = ("tui",)
+    # Every verb in spec §3, implemented or not. The dispatch rule has to know
+    # all their names: the failure being prevented is a typo'd or not-yet-built
+    # verb being silently treated as a filename and opening the TUI.
+    SUBCOMMANDS = ("tui", "pack", "ask", "patch", "apply", "map", "session", "config")
+    TUI_SUBCOMMAND = "tui"
+    IMPLEMENTED_SUBCOMMANDS = (TUI_SUBCOMMAND,) + tuple(VERBS)
 
     @staticmethod
     def _looks_like_a_path(word: str) -> bool:
@@ -255,32 +350,42 @@ class KopipastaApp:
             or "." in os.path.basename(word)  # has an extension
         )
 
-    def _resolve_subcommand(self):
+    def _resolve_subcommand(self, argv: List[str]) -> List[str]:
         """Spec §3 and §12: a subcommand must never fall through to the TUI.
+
+        Runs on raw argv, *before* the legacy parser. Every verb has flags the
+        legacy parser has never heard of, so leaving this until after argparse
+        answered `kopipasta pack --all` with "unrecognized arguments: --all"
+        and exit 2 — the wrong parser complaining about the wrong thing, and
+        an exit code that means something else.
 
         The §3 dispatch rule — "known verb? dispatch; otherwise treat as a
         path" — is itself an accidental-TUI generator. `kopipasta pak --all`
-        is a typo, but `pak` is not on disk, so today it becomes a skipped
-        path, leaves an empty selection, and the tool exits 0 having done
-        nothing. Worse, with any real path also present it opens the selector.
-        A bare word that is not a path and not a known verb is a mistake, and
-        the honest response is to say so.
+        is a typo, but `pak` is not on disk, so it would become a skipped
+        path, leave an empty selection, and exit 0 having done nothing. Worse,
+        with any real path also present it opens the selector. A bare word
+        that is not a path and not a known verb is a mistake, and the honest
+        response is to say so.
+
+        Returns the argv the legacy parser should see.
         """
         self.subcommand = None
-        first = self.args.inputs[0] if self.args.inputs else None
+        first = argv[0] if argv else None
         if first is None:
-            return
+            return argv
+
+        if first in VERBS:
+            raise VerbRequested(first, argv[1:])
 
         if first in self.SUBCOMMANDS:
-            if first not in self.IMPLEMENTED_SUBCOMMANDS:
+            if first != self.TUI_SUBCOMMAND:
                 raise UsageError(
                     f"'{first}' is specified but not implemented yet "
                     f"(see docs/AGENT_CLI_SPEC.md section 3). Implemented: "
                     f"{', '.join(self.IMPLEMENTED_SUBCOMMANDS)}."
                 )
             self.subcommand = first
-            self.args.inputs = self.args.inputs[1:]
-            return
+            return argv[1:]
 
         if not self._looks_like_a_path(first):
             raise UsageError(
@@ -288,6 +393,7 @@ class KopipastaApp:
                 f"It is not a known subcommand and there is no such file or "
                 f"directory. Known subcommands: {', '.join(self.SUBCOMMANDS)}."
             )
+        return argv
 
     def _handle_utility_commands(self) -> bool:
         """Handles flags that exit immediately (reset/edit). Returns True if handled."""
@@ -301,6 +407,12 @@ class KopipastaApp:
 
         if self.args.edit_profile:
             open_profile_in_editor()
+            return True
+
+        if self.args.edit_config:
+            from kopipasta.core.config import open_config_in_editor
+
+            open_config_in_editor()
             return True
 
         return False
@@ -574,14 +686,29 @@ class KopipastaApp:
 
 
 def main(argv: Optional[List[str]] = None):
-    with stdout_reserved_for_output():
-        _run(argv)
+    try:
+        with stdout_reserved_for_output():
+            _run(argv)
+    except BrokenPipeError:
+        # `kopipasta ask ... | head` closes the pipe mid-run. Without this the
+        # process dies on the next write to a stream nobody is reading, and
+        # the traceback explaining why goes down the same closed pipe — the
+        # observable result is a command that produced nothing, for no visible
+        # reason. Streams are pointed at devnull rather than exiting via
+        # os._exit, so the atexit sweep still hands back any rented cache.
+        try:
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, sys.stdout.fileno())
+            os.dup2(devnull, sys.stderr.fileno())
+        except (OSError, ValueError, AttributeError):
+            pass
+        sys.exit(141)  # the conventional SIGPIPE exit status
 
 
 def _run(argv: Optional[List[str]] = None):
     app = KopipastaApp(argv)
     try:
-        app.run()
+        code = app.run()
     except UsageError as e:
         # A wrong command line. Exit 1, and never by opening the TUI.
         print(f"kopipasta: {e}", file=sys.stderr)
@@ -590,6 +717,8 @@ def _run(argv: Optional[List[str]] = None):
         # Exit fast and loudly rather than blocking a caller who cannot answer.
         print(f"\nkopipasta: {e}", file=sys.stderr)
         sys.exit(EXIT_NO_HUMAN)
+    if code:
+        sys.exit(code)
 
 
 if __name__ == "__main__":

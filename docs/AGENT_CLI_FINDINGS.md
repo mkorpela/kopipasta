@@ -6,8 +6,10 @@ what was actually run, what the numbers were, what broke, and what is still assu
 Read this first if you are picking the work up. The spec reads as if everything is settled;
 this file tells you which parts are load-bearing measurements and which are still guesses.
 
-Everything below was measured in a Linux sandbox with the `claude` CLI available and **no
-provider API keys**. That constraint shapes what could and could not be verified.
+Most of what follows was measured in a Linux sandbox with the `claude` CLI available and **no
+provider API keys** — that constraint shapes what could and could not be verified there. The
+`anthropic:` results in §2.7 came from a real key on the repo owner's machine; nothing else has
+been run against a real provider.
 
 ---
 
@@ -104,6 +106,18 @@ Recalibrate against measured payloads, or count properly via provider `count_tok
 `tiktoken`. If it stays heuristic, bias it pessimistic — under-counting is the dangerous
 direction.
 
+### 2.6 Triage quality (n=1, but encouraging)
+
+Asked which call sites block non-interactive operation, with the repo mapped (12.8k est input
+tokens, 72s). It returned `main.py:292`, `main.py:267`, `patcher.py:914`, `patcher.py:1035` —
+matching a manual read — and found one that manual reading missed: **`.ralph.json` can only be
+produced by the interactive `_action_ralph`, so the already-headless MCP server cannot be
+bootstrapped headlessly.**
+
+One slip worth knowing: it placed `get_task_from_user_interactive` "around line 383". That is
+the `input()` inside `handle_env_variables`; the real location is line 535. Line numbers from
+an oracle are hints, not citations.
+
 ### 2.7 The raw API has no cache write-visibility lag — and this changes the phasing
 
 Run against the real Anthropic API (`anthropic:claude-opus-5`, 56,180-char payload, per-run
@@ -157,18 +171,6 @@ Both bugs are fixed and the re-run confirms the result directly, so nothing in �
 inference any more. The sequence is worth remembering as a pattern: a **null-looking result was
 actually two reporting bugs stacked on a positive one.** `in=19 cached=0 created=0` read as
 "nothing happened"; it was really "everything happened and we logged none of it."
-
-### 2.6 Triage quality (n=1, but encouraging)
-
-Asked which call sites block non-interactive operation, with the repo mapped (12.8k est input
-tokens, 72s). It returned `main.py:292`, `main.py:267`, `patcher.py:914`, `patcher.py:1035` —
-matching a manual read — and found one that manual reading missed: **`.ralph.json` can only be
-produced by the interactive `_action_ralph`, so the already-headless MCP server cannot be
-bootstrapped headlessly.**
-
-One slip worth knowing: it placed `get_task_from_user_interactive` "around line 383". That is
-the `input()` inside `handle_env_variables`; the real location is line 535. Line numbers from
-an oracle are hints, not citations.
 
 ---
 

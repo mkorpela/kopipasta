@@ -98,6 +98,10 @@ kopipasta session {new|ls|show|end}  # manage on-disk conversations
 `patch` is exactly `ask --apply`; it exists as its own verb because agents read `--help` and
 verbs are cheaper to discover than flags.
 
+Note what is **absent** from every line above: the model and the provider. Those are operator
+configuration, not per-call arguments — see §7a. `kopipasta ask -q "..."` is the whole common
+path, and §7b defines what every failure of it has to tell you.
+
 ### Backwards compatibility
 
 Dispatch rule: if `argv[1]` is a known subcommand, dispatch to it; otherwise fall through to
@@ -462,6 +466,194 @@ Also needed regardless of provider: streaming to the response file (a long gener
 tailable, and a crash leaves a partial artifact instead of nothing), retry with backoff on
 429/5xx, and a hard `--timeout`. Keys come from the environment only — never read from, and
 never written to, session files.
+
+---
+
+---
+
+## 7a. Backend Selection Is Configuration
+
+**Which model answers is an operator decision, not a question decision.** A caller asking
+"where does token expiry live?" has no basis for choosing between Gemini and Opus — that choice
+is about cost, context ceiling and which keys you hold, and it does not change between
+questions. So it does not belong in the call.
+
+The whole point is that the verb collapses to this:
+
+```
+kopipasta ask -q "question" [-e/-r/-m/-x selectors]
+```
+
+One required argument and the selectors. No `--backend` in the common path at all.
+
+### Precedence
+
+| Source | When you use it |
+|---|---|
+| `--backend gemini:gemini-3.7-flash` | escape hatch — debugging, A/B, pinning a CI job |
+| `KOPIPASTA_BACKEND` | per-shell or per-job override |
+| `~/.config/kopipasta/config.toml` | **the normal place** — set once |
+| built-in default | first run, before anything is configured |
+
+The flag survives, but as an override you rarely type — not a thing every call site repeats.
+
+### The file
+
+`~/.config/kopipasta/` already holds `prompt_template.j2` and `ai_profile.md`, both hand-edited
+via an `--edit-X` flag. `config.toml` and `--edit-config` follow that precedent, and inherit the
+editor guard from §11.1b: headless `--edit-config` exits 8 rather than blocking on `$EDITOR`.
+
+```toml
+[ask]
+provider    = "gemini"
+model       = "gemini-3.7-flash"
+cache_ttl_s = 300
+max_tokens  = 8192
+timeout_s   = 900
+```
+
+`requires-python` is `>=3.10` and `tomllib` is 3.11+, so this needs
+`tomli; python_version < "3.11"`. Worth the dependency: a file people hand-edit wants comments,
+and JSON does not have them.
+
+**API keys stay in the environment, never in this file.** `GEMINI_API_KEY`,
+`ANTHROPIC_API_KEY`. Config holds provider, model and knobs; the secret stays out of a file on
+disk, which is the rule the adapters already follow.
+
+### The one thing that genuinely varies — per verb, not per call
+
+Triage over a 400k frontload wants Gemini's context ceiling and price. A one-shot coordinated
+patch wants the strongest model available. Same operator, same day, different answer:
+
+```toml
+[ask]
+provider = "gemini"
+model    = "gemini-3.7-flash"
+
+[patch]
+provider = "anthropic"
+model    = "claude-opus-5"
+```
+
+Still configuration, still zero per-call flags — sectioned by verb, with `[ask]` as the fallback
+for any verb lacking its own section. This handles the real case without reintroducing a
+per-call decision.
+
+### `kopipasta config --show`
+
+Prints the **resolved** backend and where each value came from:
+
+```
+provider     gemini              ~/.config/kopipasta/config.toml [ask]
+model        gemini-3.7-flash    KOPIPASTA_BACKEND
+api key      GEMINI_API_KEY      set (39 chars)
+cache_ttl_s  300                 built-in default
+```
+
+Precedence chains are exactly the thing that silently does the wrong thing, and "which model
+actually answered?" is the first question when an answer looks off. Never print the key itself —
+presence and length are enough to diagnose "set but empty" and "set to the wrong one".
+
+Internally `backends.build("gemini:gemini-3.7-flash")` is unchanged; the `kind:model` spec string
+becomes plumbing that config resolves into, rather than user surface.
+
+---
+
+## 7b. Error Messages Are Part of the Interface
+
+Both consumers are bad at guessing. A human types the command once a week and does not remember
+the flags; an agent cannot guess at all and will either retry a permanent failure forever or
+give up on a transient one. Every failure therefore states **what failed, why, and the next
+action** — in that order.
+
+### Rules
+
+1. **Name the exact thing.** `GEMINI_API_KEY`, `~/.config/kopipasta/config.toml`, `--budget` —
+   never "configure your credentials" or "check your settings".
+2. **Quote the provider verbatim.** Paraphrasing an upstream error destroys the detail that
+   identifies it. Include our diagnosis *and* their text.
+3. **Separate "you configured it wrong" from "the world is temporarily broken."** This is what
+   the exit codes are for (§8): 1 and 2 mean *do not retry*, 3 means *retrying may work*. An
+   agent branches on this, and getting it wrong produces either an infinite retry loop or a task
+   abandoned over a blip.
+4. **Report what was resolved, not just what was missing.** Half of all credential bugs are "the
+   wrong config won". `no GEMINI_API_KEY` is much less useful than `provider=gemini (from
+   config.toml [ask]) needs GEMINI_API_KEY`.
+5. **stdout stays empty on failure.** Errors and narration go to stderr (§11.2b). A partial
+   artifact on stdout is worse than none — the caller cannot tell it is partial.
+6. **Suggest the fix, not the concept.** Show the command or the two lines of TOML.
+
+### The failure table
+
+| Condition | Exit | The message must carry |
+|---|---|---|
+| No backend configured anywhere | 2 | The three ways to set one, and the config path — this is a first-run experience, so it doubles as onboarding |
+| Key missing for the resolved provider | 2 | The provider, **where it was resolved from**, and the exact env var |
+| Unknown provider in config | 1 | The invalid value and the valid set |
+| Model rejected by the provider | 3 | That the *model name* was rejected, not the credentials — with the provider's text |
+| Auth rejected (401/403) | 2 | The provider's text; do not retry |
+| Rate limited (429) | 3 | `Retry-After` when present; retrying is expected to work |
+| Timeout | 3 | The timeout that was hit and the config key that raises it |
+| **No files matched the selectors** | 1 | **Which patterns matched nothing.** See below |
+| Response truncated (`MAX_TOKENS`) | 3 | That it was truncated and `max_tokens`; never report a partial answer as success |
+| Schema validation failed | 3 | What was expected vs what arrived, and the response path |
+| Backend behaved as an agent | 3 | The tool-permission diagnosis and the flags that disable tools (§7) |
+
+### Two that deserve their own treatment
+
+**An empty selection is an error, not a warning.** A typo'd glob silently selects nothing, the
+model answers from the project structure alone, and the answer looks plausible. This is the
+worst failure shape in the whole tool: no error, an answer that reads fine, and no signal that
+it was produced from nothing. Report *per pattern*, because with several selectors "0 files" does
+not say which one was wrong:
+
+```
+kopipasta: no files matched.
+  -e kopipasta/pacher.py   0 files   (did you mean kopipasta/patcher.py?)
+  -m kopipasta/*.py       16 files
+Nothing was selected, so there is nothing to ask about.
+```
+
+The "did you mean" is worth the few lines — a single-character typo in a path is the common case,
+and the fix is a nearby-filename search we already have the file list for.
+
+**Truncation must never be success.** Measured (findings §2.9): the finish-reason guard only
+fired when text was *empty*, so a `MAX_TOKENS` stop with partial text passed as `"ok": true`
+with `"triage": null` — under `responseSchema` that is JSON ending mid-string. Reasoning tokens
+also spend `maxOutputTokens`, which is how an 8192 budget produced a 318-token answer. Any
+finish reason other than a normal stop is a failure with its own message.
+
+### Shape
+
+```
+kopipasta: <what failed>
+  <why, including anything the provider said>
+
+  <next action — a command or the config lines>
+```
+
+Example:
+
+```
+kopipasta: no API key for provider 'gemini'.
+  Resolved from ~/.config/kopipasta/config.toml [ask]; GEMINI_API_KEY is unset.
+
+  export GEMINI_API_KEY=...
+  Or switch provider:  kopipasta --edit-config
+  See what resolved:   kopipasta config --show
+```
+
+Under `--json` the same content is structured, so an agent gets the fields rather than the prose:
+
+```json
+{"ok": false, "error": "no_api_key", "exit": 2, "provider": "gemini",
+ "resolved_from": "~/.config/kopipasta/config.toml [ask]",
+ "missing_env": "GEMINI_API_KEY", "retryable": false,
+ "hint": "export GEMINI_API_KEY=..."}
+```
+
+`error` is a stable machine-readable slug and `retryable` is explicit, so an agent never has to
+infer either from prose.
 
 ---
 

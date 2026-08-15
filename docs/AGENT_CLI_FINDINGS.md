@@ -174,6 +174,30 @@ actually two reporting bugs stacked on a positive one.** `in=19 cached=0 created
 
 ---
 
+### 2.8 Shipped kopipasta spins forever when piped into
+
+Not a spec issue — a live bug in `main` today. `kopipasta . -t task < /dev/null`:
+
+| | before | after |
+|---|---|---|
+| exit | 124 (killed at timeout) | **8** |
+| stdout in 10s | **5,551,947 bytes**, 4,481 tree redraws | 394 bytes |
+| wall clock | unbounded | 0.33s |
+
+`click.getchar()` raises `[Errno 6] ... '/dev/tty'`; the broad `except Exception` catches it,
+prints, and calls `click.pause()` — a **no-op without a tty** — so nothing throttles the retry.
+~450 redraws/sec, ~2 GB/hour into the caller's capture buffer, at 100% CPU, and
+`quit_selection` is unreachable because no key can ever be read.
+
+Fixed in `kopipasta/interaction.py` plus the selector loop; see spec §11.1b for the layered
+design and why moving the TUI behind a subcommand was the *weakest* of the available fixes.
+Ten regression tests in `tests/test_interaction.py`, including an end-to-end one that pipes into
+the real entry point and asserts bounded output and a fast non-zero exit.
+
+The generalisable lesson: **`except Exception: ...; continue` around a blocking read is an
+infinite-loop generator.** Fixing the guard alone would have closed this instance; making
+recurring failures terminate is what closes the class.
+
 ## 3. Traps
 
 Ordered by how much time each cost.

@@ -579,6 +579,65 @@ Three call sites block on a human inside otherwise pure logic:
 | `patcher.py:1035` | `click.confirm` on shrink guard | injected `confirm`; agent policy = hard fail unless `--force` |
 | `main.py:267` | `input()` for web full/snippet | `--url-full` / `--url-snippet` flags |
 
+### 11.1b Never stall a caller who cannot answer
+
+The worst failure mode for a tool an agent shells out to is a prompt with nobody there. The
+agent cannot distinguish a stall from slow work, so it waits forever.
+
+**This is not hypothetical, and it is not caused by anything in this spec.** Shipped kopipasta
+today, invoked as `kopipasta . -t task < /dev/null`:
+
+| | before | after |
+|---|---|---|
+| exit | 124 (killed at timeout) | **8** |
+| stdout in 10s | **5,551,947 bytes**, 4,481 tree redraws | 394 bytes |
+| wall clock | unbounded | 0.33s |
+
+`click.getchar()` raised `[Errno 6] ... '/dev/tty'`, the broad `except Exception` caught it,
+printed the error and called `click.pause()` — which is a **documented no-op without a tty**, so
+nothing throttled the retry. The loop redrew the full tree at ~450/sec forever: ~2 GB/hour into
+whatever the caller was capturing, at 100% CPU, with `quit_selection` unreachable because no key
+could ever be read.
+
+#### The fix is layered, and moving the TUI is the weakest layer
+
+One obvious option is to put the TUI behind `kopipasta tui` and make bare `kopipasta` do
+something safe. **Rejected as the primary mechanism**: it breaks every existing invocation, every
+README, and every user's muscle memory of a published tool — and it would not have prevented this
+bug, because a caller that types `kopipasta tui` in a script still hangs. Prevention has to live
+where the blocking happens, not in the argument grammar.
+
+1. **A single guard at the point of interaction** — `kopipasta/interaction.py`. `human_attached()`
+   is false unless *both* stdin and stdout are ttys, and is forced false by
+   `KOPIPASTA_NONINTERACTIVE=1` or `CI`. `require_human(what, hint)` raises `NoHumanAttached`.
+   It lives in one module rather than at each call site so a prompt added later inherits the
+   protection by calling one function. Checked *before* the first render, so nothing is drawn
+   into a pipe.
+2. **Recurring failures must terminate.** `except Exception: …; continue` around a blocking read
+   is an infinite-loop generator. `OSError` (terminal lost) now aborts immediately — retrying
+   cannot recover it — and anything else gets three attempts before a hard stop. This is the
+   layer that makes the *class* of bug non-recurring, not just this instance.
+3. **Subcommands must never fall through to the TUI.** The dispatch rule in §3 is itself an
+   accidental-TUI generator: a typo like `kopipasta pak --all` treats `pak` as a path and opens
+   the selector. If `argv[1]` is a bare word — no path separator, no extension, not present on
+   disk — and is not a known subcommand, exit 1 with "unknown command". Only fall through for
+   things that actually look like paths.
+4. **`kopipasta tui` as an explicit alias.** Additive, breaks nothing, gives scripts an
+   unambiguous way to say "I really do want the UI" — and leaves the door open to flipping the
+   default later without inventing new syntax then.
+
+Exit code **8 = interaction required, no human attached**, distinct from 1 (usage) because the
+fix differs: the caller needs a policy or a different invocation, not a corrected command line.
+The message names the env var that makes the refusal explicit.
+
+Every other prompt in §11.2 routes through the same guard, so the fix generalises: TUI launch,
+env masking, delete confirmation, the shrink guard, the web snippet choice and Ralph setup all
+fail fast with a diagnostic instead of blocking.
+
+Bounded runtime is a separate axis and still worth having: `--timeout` already caps a single
+backend call, and a global `--deadline` capping the whole invocation would let a caller
+guarantee termination regardless of which stage misbehaves.
+
 ### 11.2b Narration currently goes to stdout, which breaks `--json`
 
 Found by the spike the moment it tried to parse its own output: `config.read_gitignore`

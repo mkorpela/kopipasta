@@ -31,6 +31,7 @@ from kopipasta.ops import (
 from kopipasta.selection import SelectionManager, FileState
 from kopipasta.session import Session, SESSION_FILENAME
 from kopipasta.patcher import find_paths_in_text
+from kopipasta.interaction import NoHumanAttached, require_human
 from kopipasta.git_utils import add_to_gitignore, check_session_gitignore_status
 from kopipasta.logger import get_logger
 
@@ -1416,6 +1417,15 @@ q: Quit and finalize"""
         map_files_to_preselect: Optional[List[str]] = None,
     ) -> Tuple[List[FileTuple], int, List[str]]:
         """Run the interactive tree selector"""
+        # Checked before anything is drawn: without this the loop below renders
+        # the full tree into whatever stdout happens to be, then spins.
+        require_human(
+            "Interactive file selection",
+            "kopipasta's selector is a full-screen terminal UI. Set "
+            "KOPIPASTA_NONINTERACTIVE=1 to make this refusal explicit in "
+            "scripts; see docs/AGENT_CLI_SPEC.md for the non-interactive plan.",
+        )
+
         self.root = self.build_tree(initial_paths)
 
         if files_to_preselect:
@@ -1425,6 +1435,7 @@ q: Quit and finalize"""
             self._preselect_map_files(map_files_to_preselect)
 
         # Don't use Live mode, instead manually control the display
+        consecutive_errors = 0
         while not self.quit_selection:
             # Clear and redraw
             self.console.clear()
@@ -1447,13 +1458,33 @@ q: Quit and finalize"""
             try:
                 # Get keyboard input
                 key = click.getchar()
+                consecutive_errors = 0
 
                 if key in self.key_map:
                     self.key_map[key]()
 
+            except (KeyboardInterrupt, NoHumanAttached):
+                raise
+            except OSError as e:
+                # No controlling terminal, closed stdin, etc. Looping cannot
+                # recover from this — it just redraws forever, and click.pause
+                # is a no-op without a tty so nothing throttles it.
+                self.logger.error("tree_loop_terminal_lost", error=str(e))
+                raise NoHumanAttached(f"Lost the terminal: {e}") from e
             except Exception as e:
+                # A recurring failure must not become an infinite loop. Anything
+                # that fails three times running is not going to recover by
+                # being retried a fourth.
+                consecutive_errors += 1
                 self.console.print(f"[red]Error: {e}[/red]")
-                self.logger.error("tree_loop_error", error=str(e))
+                self.logger.error(
+                    "tree_loop_error", error=str(e), consecutive=consecutive_errors
+                )
+                if consecutive_errors >= 3:
+                    raise RuntimeError(
+                        f"Aborting: {consecutive_errors} consecutive failures in the "
+                        f"selector loop, most recently: {e}"
+                    ) from e
                 click.pause("Press any key to continue...")
 
         # Clear screen one more time

@@ -43,6 +43,7 @@ from kopipasta.cache import (
     load_map_from_cache,
 )
 from kopipasta.logger import configure_logging, get_logger
+from kopipasta.interaction import EXIT_NO_HUMAN, NoHumanAttached
 
 
 def get_colored_code(file_path, code):
@@ -450,7 +451,12 @@ class KopipastaApp:
 
 def main():
     app = KopipastaApp()
-    app.run()
+    try:
+        app.run()
+    except NoHumanAttached as e:
+        # Exit fast and loudly rather than blocking a caller who cannot answer.
+        print(f"\nkopipasta: {e}", file=sys.stderr)
+        sys.exit(EXIT_NO_HUMAN)
 
 
 if __name__ == "__main__":

@@ -361,6 +361,38 @@ Read it carefully:
 That tax is the real argument for the raw `anthropic:` adapter, more than any feature gap: same
 model, none of the harness prefix, and the cache breakpoint lands where we put it.
 
+#### Measured: cache reuse is real, but not back-to-back
+
+`spike/livecheck.py` sends the same prefix twice with different suffixes and checks whether turn
+2 had to *write* the prefix into cache again. The naive check — "is `cached_tokens > 0`?" — is
+worthless, because a harness backend caches its own system prompt and reports a nonzero number
+on turn 1 too. The signal is `cache_creation` on turn 2.
+
+Two runs of the same 56k-char payload through `claude-cli:`, the second about a minute after the
+first (prefix pinned via `LIVECHECK_NONCE`):
+
+| | turn 1 created | turn 2 created | cost/turn |
+|---|---|---|---|
+| cold | 24,432 | 24,436 | **$0.176** |
+| ~1 min later | 0 | 0 | **$0.035** |
+
+Two conclusions, and they point in opposite directions:
+
+1. **Prefix caching genuinely works across separate CLI invocations — 5× cheaper.** A stable
+   repo payload is worth real money, and §6's dedup design is sound.
+2. **Back-to-back turns get nothing.** Turn 2, issued seconds after turn 1, re-wrote the entire
+   prefix and cost the same. A cache entry is not readable the moment it is written.
+
+So "turn 1 pays for the repo, turns 2..n pay for a question" is **true across a session's
+lifetime and false within a rapid burst.** An agent firing three follow-ups in ten seconds pays
+full freight three times. Design accordingly: do not promise per-turn savings in the `--json`
+output, and treat rapid multi-turn as a cost the caller should know about.
+
+This was measured on the CLI backend only. Whether raw `anthropic:` with an explicit
+`cache_control` breakpoint has the same write-visibility lag is **unverified** — the sandbox has
+no API key. `uv run python spike/livecheck.py anthropic` answers it in about ten seconds for
+anyone who has one.
+
 #### Choosing
 
 - **Gemini** for use case A. 1M+ context is the only honest way to frontload a large repo, and

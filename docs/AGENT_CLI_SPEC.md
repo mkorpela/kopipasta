@@ -69,9 +69,13 @@ triage output (`p`) auto-detects paths and offers to replace the active selectio
 **3. Coordinated Multi-File Patch — surgical execution across the subsystem.**
 
 ```bash
+# 1. Ask the model for a coordinated patch across the zoned subsystem
 kopipasta ask -e 'kopipasta/patcher.py' -e 'kopipasta/file.py' \
               -r 'tests/test_patcher*.py' -m 'kopipasta/**/*.py' \
-              -q "$(cat task.md)" --apply --verify 'pytest -q' --revert-on-fail --json
+              --mode patch -q "$(cat task.md)" --json
+
+# 2. Apply the returned patch artifact with automated verification & rollback
+kopipasta apply current --verify 'pytest -q' --revert-on-fail --json
 ```
 
 One model call with the whole subsystem in view, zoned editable (`-e`) vs read-only (`-r`),
@@ -103,16 +107,15 @@ diffstat.
 ```
 kopipasta                            # interactive TUI (default, no subcommand)
 kopipasta tui                        # the same, named explicitly
-kopipasta ask     [selectors] -q ... # assemble context + ask model + record turn (--apply to write)
-kopipasta apply   <file|->           # apply an existing model response. No model call.
+kopipasta ask     [selectors] -q ... # assemble context + ask model + record turn
+kopipasta apply   [file|-|current]   # apply patches, check worktree, verify & diffstat
 kopipasta map     [selectors]        # symbol skeleton only (cheap whole-repo map)
 kopipasta session {new|ls|show|end}  # manage on-disk conversations
 kopipasta config  --show             # resolved configuration and where each value came from
 ```
 
 Note what is **absent** from every line: the model and the provider. Those are configuration
-(§6). `kopipasta ask -q "..."` is the whole common path. Adding `--apply` executes the returned
-code patches against the workspace.
+(§6). `kopipasta ask -q "..."` is the whole common path. `kopipasta apply` handles patch execution.
 
 Assembling context without calling a model is handled directly by `kopipasta ask --dry-run`
 (or `--backend none`).
@@ -329,11 +332,19 @@ This is the Base/Delta distinction doing conversation-level dedup. Combined with
 is what makes multi-turn triage affordable **across a session's lifetime**. Rapid bursts are a
 different matter (findings §2.4), so per-turn savings are never promised in the output.
 
-### Concurrency
+### Session Defaults & Resumption
 
-Session directories are unique by construction. The `current` pointer is racy and therefore
-human-only: in `--json` mode, omitting `--session` always starts a fresh session rather than
-resuming.
+`kopipasta ask` **always starts a fresh session by default**. A disposable context oracle
+should be disposable by default; implicit resumption between separate commands risks
+accidental context pollution across distinct tasks.
+
+To continue a conversation:
+- `kopipasta ask --session <id> -q "..."` (resumes a specific session by ID)
+- `kopipasta ask --continue -q "..."` (resumes the session pointed to by `current`)
+
+The `current` pointer is written on every run as a convenient handle for inspection and
+tooling (e.g. `kopipasta apply current`), but `ask` will not resume it unless `--continue`
+or `--session` is explicitly specified.
 
 ---
 
@@ -365,6 +376,7 @@ Default stdout is the artifact or a compact summary; `--json` makes stdout a sin
   "usage": {"input": 412330, "cached": 389100, "output": 1840},
   "sent": {"edit": 2, "ref": 14, "map": 380, "demoted": 22},
   "answer_head": "Token expiry is validated in two places...",
+  "patches": 2,
   "files_cited": ["kopipasta/patcher.py", "kopipasta/file.py"]
 }
 ```
@@ -489,7 +501,10 @@ schema.
 
 ---
 
-## 11. Patch Safety
+## 11. Patch Safety (`kopipasta apply`)
+
+Patch application is a separate, dedicated command (`kopipasta apply [TARGET]`) that accepts
+input from a file path, `-` (stdin), or `current` (the latest session's `response.md`).
 
 A large patch landing unattended needs the guarantees a human review would have given:
 
@@ -497,10 +512,8 @@ A large patch landing unattended needs the guarantees a human review would have 
   possible undo — `git diff` to review, `git checkout .` to revert — and it is what makes a
   400-line one-shot patch safe to try.
 - `--dry-run` renders the diff that would be applied and touches nothing.
-- **Only `-e` files are writable.** `-e` versus `-r` is a machine-checkable contract; a patch
-  targeting a reference-only file is rejected and reported, not applied. This requires the prompt
-  template to zone its file sections so the model knows the difference.
 - Deletes require `--allow-delete`. Never delete on a model's say-so alone.
+ The shrink/hallucination guard declines suspicious overwrites by default; `--force` overrides.
 - The shrink/hallucination guard declines the file by default; `--force` overrides.
 - `--verify 'pytest -q'` runs after applying, with `--revert-on-fail` to restore via git.
 - `--commit [msg]` returns a revertable SHA in the JSON.

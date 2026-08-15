@@ -207,37 +207,33 @@ Worth keeping, because each came from something that went wrong:
 
 ---
 
-## 6. What is not done
+## 6. What is not done & Active TODO
 
-**`ask` and `config` are built** (`kopipasta/core/`, see §8 below). **`apply`,
-`map` and `session` are not.** They are recognised and exit 1 with "not implemented
-yet" instead of being silently treated as filenames (`main.py:_resolve_subcommand`).
+**`ask` and `config` are built** (`kopipasta/core/`, see §8 below). 
+**`apply`, `map`, and `session` CLI verbs are pending.**
 
-`pack` and `patch` were removed as top-level subcommands in favor of `kopipasta ask --dry-run`
-and `kopipasta ask --apply`. The apply pipeline adds zoned editable/read-only enforcement,
-dirty-worktree checks, and `--verify` hooks.
+### Key Design Refinements Agreed:
+1. **Decouple `apply` from `ask`:** `ask` is strictly a context oracle (read-only reasoning) that reports `patches: <count>` and saves the response artifact. `kopipasta apply [file|-|current]` is a standalone verb handling worktree checks, patch application, `--verify`, and `--revert-on-fail`.
+2. **Session Defaults:** `ask` *always* starts a fresh session by default. Implicit resumption via `current` is removed; explicit continuation uses `--session <id>` or `--continue`.
 
-Also outstanding:
+### TODO List:
 
-- **§11.4 template zoning** — split `## File Contents` into editable vs read-only, so `-e` vs
-  `-r` becomes a contract the patcher can enforce (reject patches to `-r` files).
-- **`--json` flag** — trivial on top of `output.emit` now, but no verb needs it yet.
-- **The 300s cache TTL is an uncosted guess.** Caches are rented; nobody has priced the
-  frontload-and-idle case against just re-sending the prompt.
-- **Cache economics are proven only at ~23k tokens**, against a design targeting 400k–1M.
-  The 99.9% reuse figure may not survive the jump — larger caches cost more to hold.
-- **`openai:` backend has never been live-tested.** Mock checks only.
-- **Anthropic `cache_creation_input_tokens`** is counted but the multi-turn economics were
-  never measured end-to-end the way Gemini's were.
-
-### Suggested order from here
-
-1. ~~Run the suite and the live checks; fix whatever macOS surfaces.~~ **Done** — see §3.
-2. ~~Build `pack`.~~ Superseded: `ask` was built first because it is the verb the product is
-   for, and `pack` fell out of it as "the same core with `--backend none`".
-3. `pack`, then `patch` — both are now assembly over an exercised core rather than new design.
-4. Revisit cache economics at realistic size. `ask --all --budget 400k --backend none` will
-   generate the frontload without driving the TUI or spending anything.
+1. **Session Isolation in `ask`:**
+   - Make `Session.open` default to fresh session (`follow_current=False`).
+   - Add `--continue` to `ask` for explicitly resuming `.kopipasta/current`.
+2. **Build `kopipasta apply` (`kopipasta/core/apply.py`):**
+   - Syntax: `kopipasta apply [TARGET]` where TARGET is a file path, `-` (stdin), or `current` (points to latest session's `response.md`).
+   - Worktree cleanliness check via `git status --porcelain` (reject dirty worktree unless `--dirty-ok`).
+   - Safety flags: `--allow-delete`, `--force`, `--dry-run`.
+   - Automated verification: `--verify <cmd>` and `--revert-on-fail`.
+   - Output contract: diffstat summary on stdout; `--json` machine-readable output.
+   - Dispatch integration in `kopipasta/main.py`.
+3. **Build `kopipasta map` (`kopipasta/core/map.py`):**
+   - Fast, symbol-skeleton-only tree generator without invoking an LLM.
+4. **Build `kopipasta session` CLI helpers (`kopipasta/core/session_cmd.py`):**
+   - Subcommands: `ls`, `show [id|current]`, `diff [id]`, `rm [id|--all]`.
+5. **Revisit Cache Economics at Target Scale:**
+   - Re-measure Gemini and Anthropic at 400k+ tokens to cost the default 300s TTL against think-time.
 
 One addition to that list, from the §3 pass: **the implicit-caching number moved between two
 machines.** Before the 400k re-measurement is worth anything, decide what `n` a cache figure

@@ -119,6 +119,10 @@ def _dispatch_verb(verb: str, argv: List[str]) -> int:
         from kopipasta.core import ask as ask_verb
 
         return ask_verb.run(argv)
+    if verb == "apply":
+        from kopipasta.core import apply as apply_verb
+
+        return apply_verb.run(argv)
     if verb == "config":
         return _config_verb(argv)
     raise UsageError(f"'{verb}' has no handler.")  # pragma: no cover
@@ -144,7 +148,12 @@ def _config_verb(argv: List[str]) -> int:
     parser.add_argument("--verb", default="ask", help="which section to resolve (default: ask)")
     parser.add_argument("--backend", help="resolve as if --backend had been passed")
     parser.add_argument("--json", action="store_true")
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(argv)
+    except KopipastaError as e:
+        # See ask._run_parsed: the parser raises rather than exiting 2, and
+        # --json has to be read off argv because `args` does not exist yet.
+        return report_failure(e, json_mode="--json" in argv)
 
     try:
         cfg = resolve_backend(args.verb, flag=args.backend)
@@ -177,7 +186,7 @@ def _config_verb(argv: List[str]) -> int:
 #: The verbs that exist today, dispatched before the legacy argument parser.
 #: Everything else in SUBCOMMANDS is recognised only so it can say "not yet"
 #: instead of being mistaken for a filename.
-VERBS = ("ask", "config")
+VERBS = ("ask", "apply", "config")
 
 
 class KopipastaApp:
@@ -706,6 +715,8 @@ def main(argv: Optional[List[str]] = None):
 
 
 def _run(argv: Optional[List[str]] = None):
+    from kopipasta.core.errors import KopipastaError
+
     app = KopipastaApp(argv)
     try:
         code = app.run()
@@ -713,6 +724,11 @@ def _run(argv: Optional[List[str]] = None):
         # A wrong command line. Exit 1, and never by opening the TUI.
         print(f"kopipasta: {e}", file=sys.stderr)
         sys.exit(1)
+    except KopipastaError as e:
+        # The legacy parser's own usage errors now arrive here, carrying their
+        # exit code and their hint instead of argparse's bare 2.
+        print(e.render(), file=sys.stderr)
+        sys.exit(e.exit_code)
     except NoHumanAttached as e:
         # Exit fast and loudly rather than blocking a caller who cannot answer.
         print(f"\nkopipasta: {e}", file=sys.stderr)

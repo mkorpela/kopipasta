@@ -209,8 +209,8 @@ Worth keeping, because each came from something that went wrong:
 
 ## 6. What is not done & Active TODO
 
-**`ask` and `config` are built** (`kopipasta/core/`, see §8 below). 
-**`apply`, `map`, and `session` CLI verbs are pending.**
+**`ask`, `apply` and `config` are built** (`kopipasta/core/`, see §8 and §9 below).
+**`map` and `session` CLI verbs are pending.**
 
 ### Key Design Refinements Agreed:
 1. **Decouple `apply` from `ask`:** `ask` is strictly a context oracle (read-only reasoning) that reports `patches: <count>` and saves the response artifact. `kopipasta apply [file|-|current]` is a standalone verb handling worktree checks, patch application, `--verify`, and `--revert-on-fail`.
@@ -218,27 +218,31 @@ Worth keeping, because each came from something that went wrong:
 
 ### TODO List:
 
-1. **Session Isolation in `ask`:**
-   - Make `Session.open` default to fresh session (`follow_current=False`).
-   - Add `--continue` to `ask` for explicitly resuming `.kopipasta/current`.
-2. **Build `kopipasta apply` (`kopipasta/core/apply.py`):**
-   - Syntax: `kopipasta apply [TARGET]` where TARGET is a file path, `-` (stdin), or `current` (points to latest session's `response.md`).
-   - Worktree cleanliness check via `git status --porcelain` (reject dirty worktree unless `--dirty-ok`).
-   - Safety flags: `--allow-delete`, `--force`, `--dry-run`.
-   - Automated verification: `--verify <cmd>` and `--revert-on-fail`.
-   - Output contract: diffstat summary on stdout; `--json` machine-readable output.
-   - Dispatch integration in `kopipasta/main.py`.
-3. **Build `kopipasta map` (`kopipasta/core/map.py`):**
+1. **Build `kopipasta map` (`kopipasta/core/map.py`):**
    - Fast, symbol-skeleton-only tree generator without invoking an LLM.
-4. **Build `kopipasta session` CLI helpers (`kopipasta/core/session_cmd.py`):**
+2. **Build `kopipasta session` CLI helpers (`kopipasta/core/session_cmd.py`):**
    - Subcommands: `ls`, `show [id|current]`, `diff [id]`, `rm [id|--all]`.
-5. **Revisit Cache Economics at Target Scale:**
+3. **`--commit` for `apply`.** Deliberately deferred, not forgotten: spec §11 lists it, and it
+   is the one flag that writes history. Everything it needs is in place — `PatchResult` knows
+   exactly which files this run touched, so it can stage those and never `git add -A`.
+4. **The estimator is calibrated to the wrong tokenizer** — see §10. This is the largest
+   remaining correctness gap and it affects every `--budget` run.
+5. **Make the parser tolerate an unfenced patch block** (`patcher.py`). §10 covers why: the
+   template now demands a fence, which fixed the observed failure, but relying on the model to
+   comply is the opposite of the format-tolerance this tool sells.
+6. **Revisit Cache Economics at Target Scale:**
    - Re-measure Gemini and Anthropic at 400k+ tokens to cost the default 300s TTL against think-time.
 
 One addition to that list, from the §3 pass: **the implicit-caching number moved between two
 machines.** Before the 400k re-measurement is worth anything, decide what `n` a cache figure
 needs to be quotable. The explicit arm was stable across every run on both machines; the
 implicit arm was not stable across runs on *one* machine.
+
+**`reap_orphans()` no longer means what §4 says it means.** A named session deliberately leaves
+its cache rented so turn 2 can reuse it, so a non-zero count is now the expected result of any
+`ask --session` run rather than a leak. Worse, running the sweep *deletes live session leases* —
+this was discovered by doing it. Either teach the sweep to skip caches named in a session's
+`cache.json`, or stop describing a non-zero count as a defect.
 
 ---
 
@@ -311,3 +315,124 @@ file and exited 0. `stdout_reserved_for_output` is now re-entrant, and the test 
 through `main` — the tests that called the verb directly could not see it.
 
 Each fix has a test that was checked against the old code with the fix reverted, and fails.
+
+---
+
+## 9. `apply` — what landed
+
+```
+kopipasta/core/apply.py     the verb: target resolution, worktree guard, zone,
+                            verify, revert, the §8 exit codes
+kopipasta/patcher.py        PatchResult / FileOutcome — what the bare list could not say
+```
+
+Verify: `uv run pytest -q` (421), `uv run ruff check kopipasta spike tests`,
+`uv run python spike/check_backends.py` (53).
+
+Three things that are load-bearing and not obvious from the spec:
+
+- **A clean worktree is the undo, and everything else only narrows the window.** `--dry-run`,
+  the editable zone and `--verify` all reduce the chance of needing it; the reason a 400-line
+  one-shot patch is safe to *try* is that `git diff` shows what it did and `git checkout .`
+  puts it back. Hence the refusal by default, and hence `--dry-run` not requiring it — a run
+  that cannot write cannot need an undo.
+- **Exit 4 and exit 5 are the product.** 5 says the worktree is untouched, so a retry is safe;
+  4 says it is dirty and there is cleanup to do. `PatchResult.changed` is what separates them,
+  and it is the reason the patcher had to stop returning a bare list first (§10).
+- **`revert()` only reverts what this run wrote, and only if it was clean beforehand.** A file
+  the caller had already modified is theirs. Reverting it to tidy up after a failed `--verify`
+  would destroy uncommitted work — a far worse outcome than leaving the patch in place — so
+  those are reported in `revert_declined` and left alone.
+
+### Not built, deliberately
+
+`--commit`. Spec §11 lists it, and `PatchResult` already knows exactly which files to stage.
+Left out because it is the only flag that writes history and the verb was new; it should be
+the first thing added once `apply` has some mileage.
+
+---
+
+## 10. Dogfooding round three: what using the tool found
+
+Everything in this section was found by *running* kopipasta at itself, not by reading it. The
+§4 rules held exactly. The first review — "attack the implemented surface", five categories —
+returned `findings: []` and a verdict that the code satisfied its contracts. The runs that
+produced defects were the ones that named a specific claim to break and said "I already found
+these three, find the rest".
+
+**Six defects, all verified in the code before being acted on:**
+
+1. **A partially applied file was reported as a success.** `_apply_diff_patch` returned `False`
+   only when *zero* hunks matched, so 1-of-3 was written to disk and appended to the modified
+   list. The counts were already being printed — "(1/2 hunks applied)" — and thrown away at the
+   `return`. This made spec §8's exit 4 unproducible, so `apply` would have exited 0 on a
+   half-patched file.
+2. **The `current` pointer was written only when `--json` was off.** Spec §1's third workflow is
+   `ask --json` then `apply current`: the only mode that produces a patch artifact was the only
+   mode that left no handle to it. The *reading* rule (an agent must not inherit a racy pointer)
+   was sound and stays; write-always and follow-never are two rules, and they had been one.
+3. **A follow-up turn recorded `files: {}`.** With no selectors the turn inherits the whole
+   prefix, but the record said nothing was in play — so `apply`, which reads the latest turn to
+   enforce the Active Workspace, would either reject every patch or read "empty" as
+   "unrestricted". The record is now the prefix with this turn's selection laid over it.
+4. **Every argparse usage error exited 2**, which spec §8 reserves for "no usable backend — no
+   key, no command". A mistyped flag told the caller its credentials were missing. Now 1, via
+   `HelpToStdoutParser.error()`; `exit()` is left alone so `--help` stays a success.
+5. **`revert()` compared paths raw.** git says `app.py`, a model writes `./app.py`, so
+   "was this file already dirty?" answered no and `git checkout --` went over uncommitted work.
+   One `normalise_path` in `patcher.py` now serves both the zone check and the revert check,
+   because two copies of that rule is how they drift apart.
+6. **`editable_set()` collapsed two opposite answers into `None`.** "No record to enforce
+   against" and "the record says nothing was editable" are not the same; `return editable or
+   None` turned the strictest case — a triage session, all `-r` and `-m` — into the most
+   permissive one.
+
+5 and 6 were found by pointing the oracle at `apply.py` an hour after writing it, which is the
+§4 pattern working exactly as advertised: it beat a careful re-read of code I had just written.
+
+### The one the tests could never have found
+
+`ask --mode patch` against the configured default model failed with
+`backend_not_a_completion`, exit 3, and a hint to disable the backend's file and shell tools.
+Gemini has none — it is a raw HTTP call. It had returned a **correct** search/replace patch,
+unfenced, and `parse_llm_output` skips anything outside a ``` fence.
+
+The cause is that the PATCH template and the parser disagreed: the template said "every code
+block starts with a path comment" and never said to fence it, so a compliant model produced
+output the parser could not see the edges of. Two fixes, and the second matters more than it
+looks:
+
+- The template now demands the fence, and a test asserts it does. This alone made the live run
+  work — `patches: 1`, and `apply current --dry-run` applied 3 of 3 hunks.
+- `unparseable_patch` (exit 5, retryable) is now distinct from `backend_not_a_completion`
+  (exit 3). "It never tried" and "it tried and the format was wrong" are indistinguishable from
+  the patch count and need opposite responses, and sending a caller to reconfigure a backend
+  that behaved correctly costs it the one thing it cannot get back.
+
+**Still open:** the parser should tolerate an unfenced block. Making the template stricter fixed
+the observed failure by asking the model to be careful, which is the opposite of the format
+tolerance §14 calls the asset.
+
+### The estimator is calibrated against the wrong tokenizer
+
+`budget.py` sets `CHARS_PER_TOKEN = 2.5`, citing findings §2.5. That measurement — 46,102 chars
+→ 18,474 tokens — is the `cache_creation` delta from §2.3's table, i.e. **Claude's tokenizer via
+`claude-cli`**. The configured default provider in this repo is Gemini. Measured against
+Gemini's own `countTokens` on four real kopipasta payloads:
+
+| payload | chars | real tokens | chars/token |
+|---|---|---|---|
+| `--all`, skeletons + structure blob | 59,592 | 17,088 | 3.49 |
+| dense code (`core/*.py` + `patcher.py`) | 204,961 | 54,951 | 3.73 |
+| prose (the two design docs) | 86,496 | 22,915 | 3.77 |
+| mixed, 277k | 277,393 | 75,727 | 3.66 |
+
+Stable at ~3.66 across every content mix, so the constant is **47% pessimistic on Gemini**. The
+direction is the safe one — it never overflows the window — but `--budget 400k` ships ~273k real
+tokens, so the ladder demotes about a third of what would have fit, in a tool whose entire
+product is frontloading. Note also that §2.5's "dense code tokenises far worse than prose" is
+directionally right and nearly worthless in magnitude here: 3.49 vs 3.77 is an 8% spread.
+
+The real finding is structural: **one global constant cannot serve two providers that differ by
+~46%.** Spec §5 already names the fix — count with the provider's `count_tokens`. Gemini's
+`countTokens` is a free endpoint and is called nowhere in the tree.

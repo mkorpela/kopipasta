@@ -175,8 +175,18 @@ def test_url_flags_answer_the_question_up_front(
 
 
 def test_url_flags_are_mutually_exclusive():
-    with pytest.raises(SystemExit):
+    """Refused as a usage error — exit 1, not argparse's 2.
+
+    This used to assert only that *something* exited. Spec §8 gives 2 its own
+    meaning ("no usable backend"), so the code is the part worth pinning: an
+    agent told 2 goes looking for an API key it already has.
+    """
+    from kopipasta.core.errors import EXIT_USAGE, UsageError
+
+    with pytest.raises(UsageError) as e:
         _app(["https://example.com/x", "--url-full", "--url-snippet"])
+    assert e.value.exit_code == EXIT_USAGE
+    assert "--url-snippet" in str(e.value)
 
 
 # -- editor launches: a terminal editor on a pipe is the same bug ----------

@@ -407,6 +407,37 @@ class SchemaInvalid(BackendError):
         )
 
 
+class PatchNotParseable(KopipastaError):
+    """It tried to emit a patch and the format was wrong.
+
+    Deliberately not `BackendActedAsAgent`. That one means the backend never
+    attempted a patch at all, and its fix — disable the backend's file and
+    shell tools — is useless here: a raw API call has no tools to disable.
+    Sending a caller to reconfigure a backend that behaved correctly costs it
+    the one thing it cannot get back, which is the next attempt.
+
+    Retryable, because the usual cause is a missing fence and asking again
+    often produces one. Exit 5 rather than 3: spec §6 puts "misconfigured
+    backend" and "bad patch" on different codes, and this is the second.
+    """
+
+    slug = "unparseable_patch"
+    retryable = True
+    exit_code = EXIT_PATCH_FAILED
+
+    def __init__(self, backend: str, excerpt: str) -> None:
+        KopipastaError.__init__(
+            self,
+            "the response looks like a patch, but none of it parsed.",
+            detail=f"It said: {excerpt}",
+            hint="Most often a code block with no ``` fence around it — the "
+            "fence is\nwhat marks where a change ends. Re-run the same "
+            "question, or apply the\nartifact by hand after fixing the "
+            "formatting.",
+            backend=backend,
+        )
+
+
 class BackendActedAsAgent(BackendError):
     """The `claude -p` failure: handed a file and a task, it reached for its
     own edit tool and blocked on a permission prompt instead of emitting a

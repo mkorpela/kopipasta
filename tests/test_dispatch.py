@@ -119,12 +119,12 @@ def test_specced_but_unimplemented_verbs_say_so(tmp_path, monkeypatch):
     """A verb that is specced and unbuilt says so. "Not yet" and "no such
     thing" send the caller to different places, and neither is a filename."""
     monkeypatch.chdir(tmp_path)
-    for verb in ("apply", "map", "session"):
+    for verb in ("map", "session"):
         with pytest.raises(UsageError, match="not implemented yet"):
             _parse([verb])
 
 
-@pytest.mark.parametrize("verb", ["ask", "config"])
+@pytest.mark.parametrize("verb", ["ask", "apply", "config"])
 def test_implemented_verbs_are_dispatched_before_the_legacy_parser(verb, tmp_path, monkeypatch):
     """`ask -e file -q "..."` is not a command line the TUI's parser can be
     taught. It has to be intercepted before argparse sees it, or every verb
@@ -189,3 +189,44 @@ def test_tui_alias_does_not_bypass_the_human_guard(tmp_path):
     assert r.returncode == EXIT_NO_HUMAN
     assert "needs an interactive terminal" in r.stderr
     assert len(r.stdout) < 50_000
+
+
+# -- argparse must not leak its own exit code ------------------------------
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["ask", "--nosuchflag"],
+        ["ask", "-q", "x", "--mode"],  # option missing its argument
+        ["ask", "--budget"],
+        ["config", "--nosuchflag"],
+        ["--nosuchflag"],  # the legacy TUI parser
+    ],
+)
+def test_a_bad_flag_exits_1_not_2(args, tmp_path):
+    """Spec §8 reserves exit 2 for "no usable backend — no key, no command".
+
+    argparse exits 2 on any usage error, so every typo'd flag told the caller
+    its credentials were missing. An agent following the documented table goes
+    hunting for an API key over a mistyped option — the one recovery that
+    cannot work, and the table is the only thing it has to go on.
+    """
+    r = _run(args, tmp_path)
+    assert r.returncode == 1, f"exit {r.returncode}: {r.stderr}"
+    assert r.stdout == "", "spec §9: stdout stays empty on failure"
+
+
+def test_a_bad_flag_still_says_what_was_wrong(tmp_path):
+    """Changing the exit code must not cost the diagnosis with it."""
+    r = _run(["ask", "--nosuchflag"], tmp_path)
+    assert "--nosuchflag" in r.stderr
+    assert "--help" in r.stderr  # where to look next
+
+
+def test_help_is_still_success_on_stdout(tmp_path):
+    """`error()` and `exit()` are different doors; only one of them is a
+    failure. Overriding both would turn --help into a usage error."""
+    r = _run(["ask", "--help"], tmp_path)
+    assert r.returncode == 0
+    assert "--budget" in r.stdout

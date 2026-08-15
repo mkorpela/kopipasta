@@ -323,6 +323,158 @@ def test_json_mode_never_resumes_someone_elses_conversation(project, capsys):
     assert second["turn"] == 1
 
 
+def test_the_current_pointer_is_written_even_under_json(project, capsys):
+    """Write always, follow never — two rules that were one.
+
+    Spec §1's third workflow is `ask --json` followed by `apply current`, and
+    §7 says the pointer is written on every run. Not writing it under --json
+    made the flagship agent workflow impossible: the only mode that produces a
+    patch artifact was the only mode that left no handle to it.
+
+    The refusal to *follow* it is a separate question and stays as it was —
+    the test above pins that half.
+    """
+    data = run_json(capsys, "-e", "src/calc.py", "-q", "x")
+    pointer = project / ".kopipasta" / "current"
+    assert pointer.exists(), "no `current` for `apply current` to resolve"
+    assert pointer.read_text().strip() == data["session"]
+
+
+def test_a_follow_up_turn_records_the_context_it_inherited(project, capsys, canned):
+    """`apply` reads the latest turn to learn the editable set (spec §11).
+
+    A follow-up turn with no selectors inherits the whole prefix, but recorded
+    `files: {}` — which tells `apply` that nothing was editable, so it either
+    rejects every patch or treats "empty" as "unrestricted" and allows any.
+    """
+    run_json(capsys, "-e", "src/calc.py", "-r", "src/main.py",
+             "--session", "s", "-q", "one", backend=canned)
+    run_json(capsys, "--session", "s", "-q", "two", backend=canned)
+
+    record = json.loads((project / ".kopipasta/sessions/s/selection.json").read_text())
+    assert record["2"]["files"], "turn 2 recorded no files at all"
+    assert record["2"]["files"]["src/calc.py"]["role"] == "edit"
+    assert record["2"]["files"]["src/main.py"]["role"] == "ref"
+
+
+def test_a_follow_up_turn_records_the_role_it_changed(project, capsys, canned):
+    """This turn's role wins over the inherited one, or the record describes
+    a context that no longer exists."""
+    run_json(capsys, "-r", "src/calc.py", "--session", "s", "-q", "one", backend=canned)
+    run_json(capsys, "-e", "src/calc.py", "--session", "s", "-q", "two", backend=canned)
+
+    record = json.loads((project / ".kopipasta/sessions/s/selection.json").read_text())
+    assert record["1"]["files"]["src/calc.py"]["role"] == "ref"
+    assert record["2"]["files"]["src/calc.py"]["role"] == "edit"
+
+
+def test_a_second_ask_does_not_silently_continue_the_first(project, capsys, canned):
+    """spec §7: a disposable context oracle is disposable by default.
+
+    Resumption used to be implicit whenever --json was off, so two unrelated
+    questions typed a minute apart shared one context — and the second answer
+    was shaped by the first question's files. That is the context pollution the
+    tool exists to keep out of the caller's window.
+    """
+    run("-e", "src/calc.py", "-q", "one", backend=canned)
+    first = (project / ".kopipasta" / "current").read_text().strip()
+    run("-e", "src/calc.py", "-q", "two", backend=canned)
+    second = (project / ".kopipasta" / "current").read_text().strip()
+
+    assert first != second
+    assert len(list((project / ".kopipasta" / "sessions").iterdir())) == 2
+
+
+def test_continue_resumes_the_pointer(project, capsys, canned):
+    """The replacement for implicit resumption: you have to ask for it."""
+    run("-e", "src/calc.py", "-q", "one", backend=canned)
+    first = (project / ".kopipasta" / "current").read_text().strip()
+    run("--continue", "-q", "two", backend=canned)
+
+    assert (project / ".kopipasta" / "current").read_text().strip() == first
+    record = json.loads(
+        (project / ".kopipasta" / "sessions" / first / "selection.json").read_text()
+    )
+    assert "2" in record, "the follow-up did not land in the same session"
+
+
+def test_continue_is_honoured_under_json_because_it_is_explicit(project, capsys, canned):
+    """--json refuses to *guess* at `current`; it does not refuse to be told.
+
+    The raciness argument is about an agent that omitted --session inheriting
+    someone else's conversation. An agent that passed --continue asked for it.
+    """
+    first = run_json(capsys, "-e", "src/calc.py", "-q", "one", backend=canned)
+    second = run_json(capsys, "--continue", "-q", "two", backend=canned)
+    assert second["session"] == first["session"]
+    assert second["turn"] == 2
+
+
+def test_continue_with_no_previous_session_is_a_usage_error(project, capsys):
+    """Nothing to continue is a wrong command line, not a fresh session:
+    silently starting one would answer a follow-up question with no context
+    and look exactly like success."""
+    data = run_json(capsys, "-e", "src/calc.py", "--continue", "-q", "x",
+                    expect=EXIT_USAGE)
+    assert data["error"] == "usage"
+
+
+def test_continue_and_session_cannot_both_be_given(project, capsys):
+    from kopipasta.core.errors import UsageError
+
+    with pytest.raises(UsageError):
+        askmod.build_parser().parse_args(["--continue", "--session", "s", "-q", "x"])
+
+
+# -- patch mode: two different failures that look alike --------------------
+
+
+def _canned(project, text, name="canned.md"):
+    path = project.parent / name
+    path.write_text(text)
+    return f"none:{path}"
+
+
+def test_a_response_with_no_patch_content_blames_the_backend(project, capsys):
+    """The `claude -p` failure: it reached for its own edit tool instead of
+    emitting a patch. The fix is to disable the backend's tools."""
+    backend = _canned(project, "I have made the change using my editing tool.")
+    data = run_json(capsys, "-e", "src/calc.py", "--mode", "patch", "-q", "x",
+                    backend=backend, expect=3)
+    assert data["error"] == "backend_not_a_completion"
+
+
+def test_an_unfenced_patch_is_a_format_problem_not_a_misconfigured_backend(project, capsys):
+    """Found by dogfooding: gemini returned a perfectly good search/replace
+    patch with no ``` fence, and was told to disable its file and shell tools.
+
+    It has none — it is a raw API call. Following that hint cannot help, and
+    the response was not an agent's refusal but exactly what was asked for in
+    a format the parser could not find the edges of. The two need different
+    slugs because they send the caller to different places.
+    """
+    backend = _canned(
+        project,
+        "# FILE: src/calc.py\n"
+        "<<<<<<< SEARCH\n    return a + b\n=======\n    return a + b + 0\n"
+        ">>>>>>> REPLACE\n",
+    )
+    data = run_json(capsys, "-e", "src/calc.py", "--mode", "patch", "-q", "x",
+                    backend=backend, expect=5)
+    assert data["error"] == "unparseable_patch"
+    assert data["retryable"] is True
+    assert "```" in data["hint"], "the hint must name the thing that was missing"
+
+
+def test_the_patch_template_asks_for_the_fence_the_parser_requires(project):
+    """The template and the parser disagreed: it said "every code block starts
+    with a path comment" and never said to fence it, so a compliant model
+    produced output the parser skipped entirely."""
+    from kopipasta.core import modes
+
+    assert "```" in modes.PATCH.instructions
+
+
 def test_a_session_id_cannot_escape_the_sessions_directory(project, capsys):
     data = run_json(capsys, "-e", "src/calc.py", "--session", "../../etc", "-q", "x",
                     expect=EXIT_USAGE)

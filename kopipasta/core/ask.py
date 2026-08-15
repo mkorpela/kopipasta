@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import time
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -54,6 +55,7 @@ from kopipasta.core.errors import (
     DeadlineExceeded,
     InteractionRequired,
     KopipastaError,
+    PatchNotParseable,
     SchemaInvalid,
     UsageError,
 )
@@ -144,8 +146,10 @@ def build_parser() -> argparse.ArgumentParser:
     which = s.add_mutually_exclusive_group()
     which.add_argument("--session", metavar="ID",
                        help="continue (or start) a named conversation")
+    which.add_argument("--continue", dest="continue_", action="store_true",
+                       help="continue the session in 'current' (ask starts fresh otherwise)")
     which.add_argument("--new", action="store_true",
-                       help="start a fresh session, ignoring the 'current' pointer")
+                       help="start a fresh session — the default, stated explicitly")
     s.add_argument("--no-cache", action="store_true",
                    help="never create a provider-side prefix cache")
     s.add_argument("--cache-ttl", type=int, metavar="SECONDS",
@@ -228,7 +232,17 @@ def run(argv: Sequence[str]) -> int:
 
 
 def _run_parsed(argv: Sequence[str]) -> int:
-    args = build_parser().parse_args(list(argv))
+    argv = list(argv)
+    try:
+        args = build_parser().parse_args(argv)
+    except KopipastaError as exc:
+        # A bad command line, raised by the parser so it can exit 1 rather than
+        # argparse's 2 (spec §8 reserves 2 for "no usable backend"). There is
+        # no `args` yet, so --json has to be read off argv directly. It takes
+        # no value, so the only false positive is a question whose text is
+        # literally "--json" — on a run that has already failed, where the cost
+        # is an error object instead of prose.
+        return report_failure(exc, json_mode="--json" in argv)
     try:
         return _ask(args)
     except KopipastaError as exc:
@@ -252,6 +266,20 @@ def report_failure(exc: KopipastaError, *, json_mode: bool) -> int:
     else:
         narrate(exc.render())
     return exc.exit_code
+
+
+#: Markers that mean a patch was attempted. Matched at the start of a line so
+#: prose *about* patching ("wrap it in a ``` fence") does not qualify — the
+#: point is to tell a formatting slip from a backend that never tried, and a
+#: detector that fires on any mention would collapse them again.
+_PATCH_MARKERS = re.compile(
+    r"^\s*(?:#\s*FILE:|<<<<+\s*SEARCH|<<<<+\s*$|@@\s+-\d|>>>>+\s*REPLACE)",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+
+def _looks_like_a_patch(text: str) -> bool:
+    return bool(_PATCH_MARKERS.search(text or ""))
 
 
 def _ask(args: argparse.Namespace) -> int:
@@ -278,13 +306,15 @@ def _ask(args: argparse.Namespace) -> int:
 
     # 2. Session. Resolved before the selection, because a follow-up turn
     #    legitimately has no selectors at all: the context is already there.
-    follow_current = not args.json and not args.new and not args.session
-    session = Session.open(root, args.session, follow_current=follow_current)
+    #    Resumption is explicit, never inferred (spec §7). It used to key off
+    #    `--json`, so the same command continued a conversation for a human and
+    #    started one for an agent — an output flag deciding which context a
+    #    question landed in. A disposable oracle is disposable by default.
+    session = Session.open(root, args.session, follow_current=args.continue_)
     prefix = session.load_prefix()
     if prefix is not None and not args.json:
         narrate(
-            f"kopipasta: continuing session {session.id}, turn {session.turn} "
-            f"(--new starts a fresh one)"
+            f"kopipasta: continuing session {session.id}, turn {session.turn}"
         )
 
     if not question:
@@ -442,7 +472,14 @@ def _ask(args: argparse.Namespace) -> int:
     )
     payload = Payload(prefix, suffix)
     request_path = session.write_request(prefix, suffix, prefix_reused=prefix_reused)
-    session.record_selection(hashes, [d.as_json() for d in demotions])
+    # What this turn's context actually contains: the prefix it inherited, with
+    # anything selected this turn laid over the top. `hashes` alone is only the
+    # latter, so a follow-up turn with no selectors recorded `{}` — telling
+    # `apply` that nothing was editable in a turn that could see the whole
+    # repo. Spec §11 reads the latest turn to enforce the Active Workspace, so
+    # an incomplete record there is a wrong answer, not a missing one.
+    inherited = {rel: {"role": s.role, "hash": s.hash} for rel, s in in_prefix.items()}
+    session.record_selection({**inherited, **hashes}, [d.as_json() for d in demotions])
 
     sent = _counts(selection)
     sent["deduped"] = len(deduped)
@@ -605,8 +642,12 @@ def _call_and_report(
     session.write_turn_meta(base)
     session.update_meta(backend=cfg.spec, model=completion.model or cfg.model,
                         usage=base.get("usage"))
-    if not args.json:
-        session.set_current()
+    # Written on every run, including --json: `apply current` (spec §1, §11) is
+    # reached from an agent's `ask --json`, so withholding the pointer there
+    # left the flagship workflow with no handle to the artifact it just made.
+    # Writing it is not the same as following it — `Session.open` still refuses
+    # to resume it under --json, because that is where the raciness bites.
+    session.set_current()
 
     _emit(args, base, result, mode, completion.text, session)
     return EXIT_OK
@@ -673,7 +714,12 @@ def _interpret(
         patches = parse_llm_output(text, console=None)
         base["patches"] = len(patches)
         if not patches:
-            raise BackendActedAsAgent(cfg.spec, " ".join(text.split())[:200] or "(nothing)")
+            excerpt = " ".join(text.split())[:200] or "(nothing)"
+            # "It tried and the format was wrong" and "it never tried" look
+            # identical from the patch count and need opposite responses.
+            if _looks_like_a_patch(text):
+                raise PatchNotParseable(cfg.spec, excerpt)
+            raise BackendActedAsAgent(cfg.spec, excerpt)
         return None
 
     if mode.structured:

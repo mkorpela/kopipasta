@@ -117,8 +117,29 @@ class HelpToStdoutParser(argparse.ArgumentParser):
     Pre-scanning argv for `-h` instead would misfire on a task string of "-h"
     or a file named `--help`, and would disable the redirect for the entire
     run. Letting argparse decide what is a flag is the only reliable answer.
-    Usage errors are unaffected: argparse passes stderr explicitly for those.
+
+    It also owns the exit code for a bad command line. argparse's own
+    `error()` exits **2**, and spec §8 reserves 2 for "no usable backend — no
+    key, no command": every mistyped flag was telling the caller its
+    credentials were missing. An agent has only that table to reason from, so
+    it would go looking for an API key over a typo — the one recovery that
+    cannot possibly work. Usage errors are exit 1.
+
+    `exit()` is deliberately left alone. argparse routes `--help` through it
+    with status 0, and overriding both doors would turn a successful `--help`
+    into a failure.
     """
 
     def print_help(self, file=None):
         super().print_help(artifact_stream())
+
+    def error(self, message):
+        # Imported here rather than at module scope: output.py is the one
+        # module everything else is allowed to depend on, and it stays that way
+        # by not depending on kopipasta.core at import time.
+        from kopipasta.core.errors import UsageError
+
+        raise UsageError(
+            f"{self.prog}: {message}",
+            hint=f"{self.prog} --help",
+        )

@@ -1,7 +1,8 @@
 import os
 import re
 import sys
-from typing import List, Union, TypedDict, Tuple, Optional
+from dataclasses import dataclass
+from typing import Iterable, List, Union, TypedDict, Tuple, Optional
 from difflib import SequenceMatcher
 
 import click
@@ -31,6 +32,96 @@ class Patch(TypedDict):
     file_path: str
     type: str  # 'full' or 'diff'
     content: PatchContent
+
+
+# --- What happened when we applied them ---
+
+#: A file whose bytes changed on disk (or would have, under a dry run).
+APPLIED = "applied"
+#: Written, but with hunks left unapplied. The dangerous one: this used to be
+#: indistinguishable from APPLIED, so a half-patched file reported success.
+PARTIAL = "partial"
+#: Nothing was written. Safe to retry.
+FAILED = "failed"
+#: Deliberately not attempted — a declined delete, a failed safety check, a
+#: path outside the editable zone. A decision, not an error.
+SKIPPED = "skipped"
+
+
+@dataclass
+class FileOutcome:
+    """What became of one file's patch.
+
+    `hunks_applied` / `hunks_total` are only meaningful for diff patches, and
+    they are the whole point of this type: `_apply_diff_patch` has always
+    printed "(1/2 hunks applied)" and always thrown the numbers away.
+    """
+
+    path: str
+    status: str
+    action: str = ""  # created | overwritten | diff_applied | deleted
+    hunks_applied: int = 0
+    hunks_total: int = 0
+    reason: str = ""
+
+    @property
+    def wrote(self) -> bool:
+        return self.status in (APPLIED, PARTIAL)
+
+
+class PatchResult(List[str]):
+    """The list of modified paths, plus what the list alone cannot say.
+
+    Subclasses `list` deliberately. `tree_selector._handle_apply_patches` and
+    `spike/oracle` both treat the return value as a list of modified files, and
+    neither should have to change to gain access to the failures. Iteration,
+    equality and `len()` behave exactly as before.
+
+    The list holds every file whose bytes changed — including PARTIAL ones,
+    because a caller about to revert or commit needs to know they are dirty.
+    Under `dry_run` it holds the files that *would* change and nothing has been
+    written; check `.dry_run` before reporting a diffstat as fact.
+    """
+
+    def __init__(self, iterable: Iterable[str] = (), dry_run: bool = False):
+        super().__init__(iterable)
+        self.outcomes: List[FileOutcome] = []
+        self.dry_run = dry_run
+
+    def record(self, outcome: FileOutcome) -> None:
+        self.outcomes.append(outcome)
+        if outcome.wrote:
+            self.append(outcome.path)
+
+    def _paths(self, status: str) -> List[str]:
+        return [o.path for o in self.outcomes if o.status == status]
+
+    @property
+    def applied(self) -> List[str]:
+        """Cleanly applied — every hunk landed."""
+        return self._paths(APPLIED)
+
+    @property
+    def partial(self) -> List[str]:
+        return self._paths(PARTIAL)
+
+    @property
+    def failed(self) -> List[str]:
+        return self._paths(FAILED)
+
+    @property
+    def skipped(self) -> List[str]:
+        return self._paths(SKIPPED)
+
+    @property
+    def changed(self) -> bool:
+        """Did the worktree move? Spec §8's exit 5 says "worktree untouched"."""
+        return any(o.wrote for o in self.outcomes)
+
+    @property
+    def ok(self) -> bool:
+        """Everything the model asked for landed, in full."""
+        return not self.partial and not self.failed and not self.skipped
 
 
 class PatchParser:
@@ -582,10 +673,43 @@ def _find_all_sublist_indices(
     return indices
 
 
+@dataclass
+class _DiffOutcome:
+    """The result of matching hunks against a file, before anything is written.
+
+    Separating "did it match" from "was it written" is what makes `dry_run`
+    honest: the preview has to run the same matching the real thing does, or it
+    is a different answer to a different question.
+    """
+
+    applied: int
+    total: int
+    content: Optional[str] = None  # None when nothing could be applied
+    written: bool = False
+
+    @property
+    def ok(self) -> bool:
+        return self.content is not None
+
+    @property
+    def complete(self) -> bool:
+        return self.ok and self.applied == self.total
+
+
 def _apply_diff_patch(
-    file_path: str, original_content: str, hunks: List[Hunk], console: Console
-) -> bool:
-    """Applies a list of diff hunks to the original file content."""
+    file_path: str,
+    original_content: str,
+    hunks: List[Hunk],
+    console: Console,
+    dry_run: bool = False,
+) -> _DiffOutcome:
+    """Applies a list of diff hunks to the original file content.
+
+    Returns the counts rather than a bare bool. A file where some but not all
+    hunks matched is still written — reverting the ones that landed would be a
+    bigger surprise than reporting the shortfall — but the caller has to be
+    able to see it, because that is spec §8's exit 4.
+    """
     original_lines = original_content.splitlines()
     # If the file ended with a newline, splitlines() drops it.
     # We work with lines and join them later.
@@ -845,7 +969,7 @@ def _apply_diff_patch(
         console.print(
             f"❌ [bold red]Failed to apply patch to {file_path}:[/bold red] No applicable hunks found."
         )
-        return False
+        return _DiffOutcome(applied=0, total=len(hunks))
 
     # --- Application Phase ---
 
@@ -859,13 +983,26 @@ def _apply_diff_patch(
     if original_content.endswith("\n") and not final_content.endswith("\n"):
         final_content += "\n"
 
-    with open(file_path, "w", encoding="utf-8") as f:
-        f.write(final_content)
+    if not dry_run:
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(final_content)
 
-    console.print(
-        f"✅ Patched [green]{file_path}[/green] ({hunks_applied_count}/{len(hunks)} hunks applied)"
+    verb = "Would patch" if dry_run else "Patched"
+    shortfall = (
+        ""
+        if hunks_applied_count == len(hunks)
+        else "  [yellow]— the rest did not match[/yellow]"
     )
-    return True
+    console.print(
+        f"✅ {verb} [green]{file_path}[/green] "
+        f"({hunks_applied_count}/{len(hunks)} hunks applied){shortfall}"
+    )
+    return _DiffOutcome(
+        applied=hunks_applied_count,
+        total=len(hunks),
+        content=final_content,
+        written=not dry_run,
+    )
 
 
 def _confirm_destructive(
@@ -893,16 +1030,46 @@ def _confirm_destructive(
     return False
 
 
+def normalise_path(path: str) -> str:
+    """One spelling for one file.
+
+    A selection record says `kopipasta/patcher.py`, git says the same, and a
+    model writes `./kopipasta/patcher.py` or uses backslashes. Every place that
+    compares a model-supplied path against a path from anywhere else goes
+    through here — `apply.revert()` learned this the hard way, where the raw
+    comparison meant "was this file already dirty?" answered no and
+    `git checkout --` went over the caller's uncommitted work.
+    """
+    return os.path.normpath(path).replace("\\", "/")
+
+
+def _normalise_zone(paths: Optional[Iterable[str]]) -> Optional[set]:
+    """The editable zone, spelled the way the patcher spells paths."""
+    if paths is None:
+        return None
+    return {normalise_path(p) for p in paths}
+
+
 def apply_patches(
     patches: List[Patch],
     logger: Optional[BoundLogger] = None,
     allow_delete: bool = False,
     force: bool = False,
-) -> List[str]:
+    dry_run: bool = False,
+    allowed_files: Optional[Iterable[str]] = None,
+) -> PatchResult:
     """
     Applies a list of patches to the filesystem.
     Dispatches between full-file replacement and diff-based patching.
-    Returns a list of file paths that were successfully modified.
+    Returns a `PatchResult` — a list of the file paths that were modified,
+    carrying the per-file outcomes the bare list could never express.
+
+    `dry_run` runs the whole matching pass and writes nothing, so the preview
+    is the same computation as the real run rather than a second guess at it.
+
+    `allowed_files` is the Active Workspace of spec §11: a patch against
+    anything else is recorded as SKIPPED. `None` means no restriction, which is
+    what the interactive TUI path has always done.
 
     With no human attached, the two confirmation prompts below become policy
     (spec §11/§12) rather than questions: destructive actions are declined
@@ -910,24 +1077,47 @@ def apply_patches(
     default to False and skip on decline, so the headless answer is the answer
     a careful human would have given anyway.
 
-    Note this must NOT raise for the missing human: the per-file body is
-    wrapped in a broad `except Exception` that would swallow the refusal and
-    report it as a mangled patch error. Injecting the decision is the only
-    shape that survives that.
+    Note this must NOT raise for the missing human, and neither must the
+    editable-zone refusal: the per-file body is wrapped in a broad
+    `except Exception` that would swallow either and report it as a mangled
+    patch error. Injecting the decision is the only shape that survives that.
     """
     console = Console()
-    modified_files = []
+    result = PatchResult(dry_run=dry_run)
+    zone = _normalise_zone(allowed_files)
     if not patches:
         console.print(
             "[yellow]No valid file patches found in the pasted content.[/yellow]"
         )
-        return []
+        return result
 
-    console.print(f"\n[bold]Applying {len(patches)} patch(es)...[/bold]")
+    verb = "Previewing" if dry_run else "Applying"
+    console.print(f"\n[bold]{verb} {len(patches)} patch(es)...[/bold]")
     for patch in patches:
         file_path = patch["file_path"]
         patch_type = patch["type"]
         patch_content: PatchContent = patch["content"]
+
+        # --- The Editable Zone (spec §11) ---
+        # Checked before the try, not inside it: this is a policy decision and
+        # the broad `except Exception` below would turn it into "corrupt patch",
+        # sending the caller to debug something that was fine.
+        if zone is not None and normalise_path(file_path) not in zone:
+            console.print(
+                f"   [yellow]Refused {file_path}: not in the editable set.[/yellow]"
+            )
+            result.record(
+                FileOutcome(
+                    path=file_path,
+                    status=SKIPPED,
+                    reason="not in the editable set for this session",
+                )
+            )
+            if logger:
+                logger.info(
+                    "patch_skipped", file_path=file_path, reason="outside_editable_zone"
+                )
+            continue
 
         # --- Logging Original State (Forensics) ---
         original_content_log: Optional[str] = None
@@ -960,9 +1150,17 @@ def apply_patches(
                         default_desc="refusing the delete (pass --allow-delete to permit it)",
                     ):
                         try:
-                            os.remove(file_path)
-                            modified_files.append(file_path)
-                            console.print(f"✅ Deleted [red]{file_path}[/red]")
+                            if not dry_run:
+                                os.remove(file_path)
+                            result.record(
+                                FileOutcome(
+                                    path=file_path, status=APPLIED, action="deleted"
+                                )
+                            )
+                            console.print(
+                                f"✅ {'Would delete' if dry_run else 'Deleted'} "
+                                f"[red]{file_path}[/red]"
+                            )
                             if logger:
                                 logger.info(
                                     "patch_success",
@@ -973,12 +1171,25 @@ def apply_patches(
                             console.print(
                                 f"❌ [bold red]Failed to delete {file_path}: {e}[/bold red]"
                             )
+                            result.record(
+                                FileOutcome(
+                                    path=file_path, status=FAILED, reason=str(e)
+                                )
+                            )
                             if logger:
                                 logger.error(
                                     "patch_failed", file_path=file_path, error=str(e)
                                 )
                     else:
                         console.print(f"   [dim]Skipped deletion of {file_path}[/dim]")
+                        result.record(
+                            FileOutcome(
+                                path=file_path,
+                                status=SKIPPED,
+                                action="deleted",
+                                reason="the delete was declined",
+                            )
+                        )
                         if logger:
                             logger.info(
                                 "patch_skipped",
@@ -988,6 +1199,14 @@ def apply_patches(
                 else:
                     console.print(
                         f"   [yellow]File {file_path} not found, skipping delete.[/yellow]"
+                    )
+                    result.record(
+                        FileOutcome(
+                            path=file_path,
+                            status=SKIPPED,
+                            action="deleted",
+                            reason="file not found",
+                        )
                     )
                     if logger:
                         logger.warning(
@@ -1007,15 +1226,27 @@ def apply_patches(
                 elif isinstance(patch_content, str):
                     full_content = patch_content
                 else:
+                    result.record(
+                        FileOutcome(
+                            path=file_path,
+                            status=FAILED,
+                            reason="patch content was neither a diff nor file content",
+                        )
+                    )
                     continue
 
-                parent_dir = os.path.dirname(file_path)
-                if parent_dir:
-                    os.makedirs(parent_dir, exist_ok=True)
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(full_content)
-                modified_files.append(file_path)
-                console.print(f"✅ Created [green]{file_path}[/green]")
+                if not dry_run:
+                    parent_dir = os.path.dirname(file_path)
+                    if parent_dir:
+                        os.makedirs(parent_dir, exist_ok=True)
+                    with open(file_path, "w", encoding="utf-8") as f:
+                        f.write(full_content)
+                result.record(
+                    FileOutcome(path=file_path, status=APPLIED, action="created")
+                )
+                console.print(
+                    f"✅ {'Would create' if dry_run else 'Created'} [green]{file_path}[/green]"
+                )
                 if logger:
                     logger.info("patch_success", file_path=file_path, action="created")
                 continue
@@ -1025,15 +1256,43 @@ def apply_patches(
                 original_content = f.read()
 
             if patch_type == "diff" and isinstance(patch_content, list):
-                if _apply_diff_patch(
-                    file_path, original_content, patch_content, console
-                ):
-                    modified_files.append(file_path)
+                diff = _apply_diff_patch(
+                    file_path, original_content, patch_content, console, dry_run=dry_run
+                )
+                if diff.ok:
+                    # complete vs partial is the exit-4 distinction. Both wrote,
+                    # so both are in the modified list; only one of them is fine.
+                    result.record(
+                        FileOutcome(
+                            path=file_path,
+                            status=APPLIED if diff.complete else PARTIAL,
+                            action="diff_applied",
+                            hunks_applied=diff.applied,
+                            hunks_total=diff.total,
+                            reason=""
+                            if diff.complete
+                            else f"{diff.total - diff.applied} of {diff.total} hunks did not match",
+                        )
+                    )
                     if logger:
                         logger.info(
-                            "patch_success", file_path=file_path, action="diff_applied"
+                            "patch_success",
+                            file_path=file_path,
+                            action="diff_applied",
+                            hunks_applied=diff.applied,
+                            hunks_total=diff.total,
                         )
                 else:
+                    result.record(
+                        FileOutcome(
+                            path=file_path,
+                            status=FAILED,
+                            action="diff_applied",
+                            hunks_applied=0,
+                            hunks_total=diff.total,
+                            reason="no hunk matched the file",
+                        )
+                    )
                     if logger:
                         logger.error(
                             "patch_failed",
@@ -1086,6 +1345,14 @@ def apply_patches(
                         default_desc="skipping the file (pass --force to overwrite anyway)",
                     ):
                         console.print(f"   [red]Skipped {file_path}[/red]")
+                        result.record(
+                            FileOutcome(
+                                path=file_path,
+                                status=SKIPPED,
+                                action="overwritten",
+                                reason="declined by the safety check",
+                            )
+                        )
                         if logger:
                             logger.info(
                                 "patch_skipped",
@@ -1094,11 +1361,19 @@ def apply_patches(
                             )
                         continue
 
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(final_content)
+                if not dry_run:
+                    with open(file_path, "w", encoding="utf-8") as f:
+                        f.write(final_content)
 
-                modified_files.append(file_path)
-                console.print(f"✅ Overwrote [green]{file_path}[/green] (Full Content)")
+                result.record(
+                    FileOutcome(
+                        path=file_path, status=APPLIED, action="overwritten"
+                    )
+                )
+                console.print(
+                    f"✅ {'Would overwrite' if dry_run else 'Overwrote'} "
+                    f"[green]{file_path}[/green] (Full Content)"
+                )
                 if logger:
                     logger.info(
                         "patch_success", file_path=file_path, action="overwritten"
@@ -1106,7 +1381,10 @@ def apply_patches(
 
         except Exception as e:
             console.print(f"❌ [bold red]Error processing {file_path}: {e}[/bold red]")
+            result.record(
+                FileOutcome(path=file_path, status=FAILED, reason=str(e))
+            )
             if logger:
                 logger.error("patch_failed", file_path=file_path, error=str(e))
 
-    return modified_files
+    return result

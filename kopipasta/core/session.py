@@ -140,9 +140,14 @@ class Session:
     ) -> "Session":
         """Resume `session_id`, follow the `current` pointer, or start fresh.
 
-        `follow_current` is only ever true on the human path (see the module
-        docstring): a racy pointer must not decide which conversation an
-        agent's question lands in.
+        `follow_current` means `--continue` was passed. It is never inferred:
+        a racy pointer must not decide which conversation a question lands in,
+        and two unrelated questions typed a minute apart used to share one
+        context because resumption was implicit whenever --json was off.
+
+        With nothing to continue, this raises rather than quietly starting a
+        fresh session — a follow-up question answered with no context reads
+        exactly like a successful answer.
 
         Nothing is written here. A run that fails while resolving its
         selection should not leave an empty conversation behind, so the
@@ -153,6 +158,12 @@ class Session:
         else:
             if follow_current:
                 session_id = cls.read_current(root)
+                if not session_id:
+                    raise UsageError(
+                        "--continue: there is no session to continue.",
+                        detail=f"No conversation is recorded in {STATE_DIR}/.",
+                        hint="Drop --continue to start one, or name it with --session <id>.",
+                    )
             session_id = session_id or new_session_id()
         directory = os.path.join(root, SESSIONS_DIR, session_id)
         return cls(root, session_id, created=not os.path.isdir(directory))

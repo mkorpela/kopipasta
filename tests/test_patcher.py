@@ -113,7 +113,7 @@ def test_explicit_deletion(patch_test_dir: Path, capsys, monkeypatch):
 
     # This test is about the HUMAN path: a person was asked and said yes.
     # pytest's stdin is not a tty, so without this the interaction guard
-    # declines before click.confirm is ever reached (spec §9) and the mock
+    # declines before click.confirm is ever reached (spec §11) and the mock
     # below would never be consulted. See test_patcher_headless.py for the
     # no-human policy.
     monkeypatch.setattr("kopipasta.patcher.human_attached", lambda: True)

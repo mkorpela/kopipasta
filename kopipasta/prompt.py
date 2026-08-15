@@ -391,7 +391,7 @@ def handle_env_variables(
         # No human: mask, don't ask and don't fail. Leaking a secret to a
         # third-party API is worse than a masked value, and refusing to run at
         # all would make kopipasta useless in CI for no safety gain (spec
-        # §11.2). This is the one prompt where the conservative answer is
+        # §12). This is the one prompt where the conservative answer is
         # unambiguous, so it is the one prompt that gets defaulted.
         headless = use_default_without_human(
             f"Handling {len(undecided_vars)} detected environment variable(s)",

@@ -260,7 +260,7 @@ def run_backend(spec, prefix, suffix, timeout, base_url, schema,
     finally:
         # A backend may hold a cache that bills per token-hour until its TTL.
         # This is a single-shot CLI: nothing here will reuse it, so holding it
-        # open would be pure rent. A real session (spec §6) is where keeping it
+        # open would be pure rent. A real session (spec §7) is where keeping it
         # alive starts to pay, and that is also where an owner has to exist.
         if b is not None:
             close = getattr(b, "close", None)
@@ -400,7 +400,7 @@ def cmd_ask(args) -> int:
     patches = [p for p in patches if os.path.normpath(p["file_path"]) in editable]
     base["rejected_not_editable"] = illegal
 
-    # §11.2: policy replaces the human. Deletes denied, shrink guard hard-fails.
+    # §12: policy replaces the human. Deletes denied, shrink guard hard-fails.
     click.confirm = lambda *a, **k: bool(args.allow_delete)  # type: ignore[assignment]
 
     modified = apply_patches(patches, logger=None) if patches else []

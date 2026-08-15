@@ -146,7 +146,7 @@ difference is nonce length between runs).
 Consequence for the plan: the cheap-follow-up-turn economics **hold on the raw API and do not
 hold through the CLI**. That promotes `anthropic:` from a Phase 2 optimisation to something
 worth building early — it is the difference between multi-turn triage being nearly free and
-costing full freight every turn. Spec §7 and the phasing in §12 updated accordingly.
+costing full freight every turn. Spec §6 updated accordingly; the phase ordering lives in `HANDOFF.md`.
 
 Side-by-side on the same 56k payload, turn 2 of a back-to-back pair:
 
@@ -195,7 +195,7 @@ prints, and calls `click.pause()` — a **no-op without a tty** — so nothing t
 ~450 redraws/sec, ~2 GB/hour into the caller's capture buffer, at 100% CPU, and
 `quit_selection` is unreachable because no key can ever be read.
 
-Fixed in `kopipasta/interaction.py` plus the selector loop; see spec §11.1b for the layered
+Fixed in `kopipasta/interaction.py` plus the selector loop; see spec §12 for the layered
 design and why moving the TUI behind a subcommand was the *weakest* of the available fixes.
 Ten regression tests in `tests/test_interaction.py`, including an end-to-end one that pipes into
 the real entry point and asserts bounded output and a fast non-zero exit.

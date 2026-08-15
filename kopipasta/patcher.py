@@ -905,7 +905,7 @@ def apply_patches(
     Returns a list of file paths that were successfully modified.
 
     With no human attached, the two confirmation prompts below become policy
-    (spec §9/§11.2) rather than questions: destructive actions are declined
+    (spec §11/§12) rather than questions: destructive actions are declined
     unless the caller opted in via `allow_delete` / `force`. Both already
     default to False and skip on decline, so the headless answer is the answer
     a careful human would have given anyway.

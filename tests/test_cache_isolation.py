@@ -25,7 +25,7 @@ def home(tmp_path, monkeypatch):
 
 
 def make_repo(tmp_path, name):
-    """Two repos with an IDENTICAL relative layout â€” the dangerous case."""
+    """Two repos with an IDENTICAL relative layout — the dangerous case."""
     repo = tmp_path / name
     (repo / "src").mkdir(parents=True)
     (repo / "src" / "main.py").write_text(f"# {name}\n", encoding="utf-8")
@@ -139,7 +139,7 @@ def test_case_differences_do_not_split_one_repo_into_two_caches(tmp_path):
     """C:\\Foo and c:\\foo are the same directory on Windows, and so are
     /Users/me/Repo and /Users/me/repo on a default macOS filesystem. Hashing
     the raw string would hand one project two caches depending on how it was
-    typed. os.path.normcase covers Windows only â€” it is a no-op on POSIX â€”
+    typed. os.path.normcase covers Windows only — it is a no-op on POSIX —
     which is why cache.py folds explicitly on darwin."""
     a = make_repo(tmp_path, "repo_a")
     assert cache.get_project_key(str(a)) == cache.get_project_key(str(a).upper())

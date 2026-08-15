@@ -26,9 +26,9 @@ only by a human at a TUI:
 
 1. **Never stall a caller who cannot answer.** A blocking prompt with nobody on the other end
    is an unbounded hang inside someone else's subprocess, and a harness cannot tell a hang from
-   slow work. Spec §11.1b / §11.2.
+   slow work. Spec §12.
 2. **Make the Gemini backend's prompt caching real**, because multi-turn against a large
-   frontloaded context is the whole economic case for the oracle. Spec §7.
+   frontloaded context is the whole economic case for the oracle. Spec §6.
 
 Design docs: `docs/AGENT_CLI_SPEC.md` (what we intend) and `docs/AGENT_CLI_FINDINGS.md`
 (what we measured, plus 26 numbered traps). The findings doc is the more useful of the two —
@@ -38,14 +38,14 @@ it is the record of things that were not true when assumed.
 
 ## 2. What is done
 
-### Phase 0 (spec §12) is complete
+### Phase 0 is complete
 
 | Item | Where | Notes |
 | --- | --- | --- |
 | Injectable interaction policy | `kopipasta/interaction.py` | `human_attached()`, `require_human()` (exit 8), `use_default_without_human()` |
 | Exit codes | `kopipasta/main.py` | 1 = usage, 8 = no human. `UsageError` never opens the TUI |
-| Per-project cache | `kopipasta/cache.py` | spec §11.3 |
-| Output contract | `kopipasta/output.py` | spec §11.2b — stdout is the artifact, everything else stderr |
+| Per-project cache | `kopipasta/cache.py` | spec §13 |
+| Output contract | `kopipasta/output.py` | spec §8 — stdout is the artifact, everything else stderr |
 
 ### The interaction policy is deliberately not uniform
 

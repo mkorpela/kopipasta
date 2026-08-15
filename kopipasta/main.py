@@ -209,9 +209,9 @@ class KopipastaApp:
             action="store_true",
             help="Open the global user profile (AI Identity) in default editor",
         )
-        # Spec Â§11.2: the non-interactive answer to "full or snippet?". Without
+        # Spec §12: the non-interactive answer to "full or snippet?". Without
         # these the only headless outcome is a refusal, which is safe but
-        # useless â€” a caller needs a way to say what it wants up front.
+        # useless — a caller needs a way to say what it wants up front.
         url_mode = parser.add_mutually_exclusive_group()
         url_mode.add_argument(
             "--url-full",
@@ -230,7 +230,7 @@ class KopipastaApp:
         if not self.args.inputs:
             self.args.inputs.append(".")
 
-    # Reserved for the verbs in spec Â§3. They do not exist yet, but the
+    # Reserved for the verbs in spec §3. They do not exist yet, but the
     # dispatch rule has to know their names NOW: the failure being prevented
     # is a typo'd or not-yet-implemented verb being silently treated as a
     # filename and opening the TUI.
@@ -256,10 +256,10 @@ class KopipastaApp:
         )
 
     def _resolve_subcommand(self):
-        """Spec Â§11.1b(3): a subcommand must never fall through to the TUI.
+        """Spec §3 and §12: a subcommand must never fall through to the TUI.
 
-        The Â§3 dispatch rule â€” "known verb? dispatch; otherwise treat as a
-        path" â€” is itself an accidental-TUI generator. `kopipasta pak --all`
+        The §3 dispatch rule — "known verb? dispatch; otherwise treat as a
+        path" — is itself an accidental-TUI generator. `kopipasta pak --all`
         is a typo, but `pak` is not on disk, so today it becomes a skipped
         path, leaves an empty selection, and the tool exits 0 having done
         nothing. Worse, with any real path also present it opens the selector.

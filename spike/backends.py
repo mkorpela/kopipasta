@@ -65,7 +65,7 @@ class BackendError(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
-# exec: — an agent CLI, driven as a completion (tools MUST be off; see spec §7)
+# exec: — an agent CLI, driven as a completion (tools MUST be off; see spec §6)
 # ---------------------------------------------------------------------------
 class ExecBackend:
     def __init__(self, command: str, timeout: int = 900):

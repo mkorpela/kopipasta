@@ -52,6 +52,8 @@ EX_OK, EX_USAGE, EX_NOBACKEND, EX_BACKEND, EX_PARTIAL, EX_FAILED, EX_BUDGET, EX_
 
 EDIT, REF, MAP = "edit", "ref", "map"
 
+_REAL_STDOUT = sys.stdout
+
 
 # --------------------------------------------------------------------------
 # selection
@@ -337,9 +339,14 @@ def cmd_ask(args) -> int:
         "payload_chars": len(payload), "est_input_tokens": estimate_tokens(len(payload)),
         "response_chars": len(stdout), "latency_s": dt,
     }
-    if comp is not None and (comp.input_tokens or comp.cached_tokens):
+    if comp is not None and (comp.input_tokens or comp.cached_tokens or comp.cost_usd or comp.cache_creation_tokens):
         base["usage"] = {"input": comp.input_tokens, "cached": comp.cached_tokens,
                          "output": comp.output_tokens, "model": comp.model}
+        if comp.cache_creation_tokens:
+            # NB: includes the harness system prompt, not just our payload.
+            base["usage"]["cache_creation"] = comp.cache_creation_tokens
+        if comp.cost_usd:
+            base["usage"]["cost_usd"] = round(comp.cost_usd, 4)
     if code != EX_OK:
         base["error"] = err
         emit(args, base)
@@ -428,7 +435,10 @@ def extract_json(text: str):
 
 def emit(args, obj) -> None:
     if args.json:
-        print(json.dumps(obj, indent=2))
+        # _REAL_STDOUT, not print(): stdout is redirected to stderr for the
+        # whole run so library narration (read_gitignore's ".gitignore
+        # detected.", patcher progress) cannot corrupt the JSON contract.
+        print(json.dumps(obj, indent=2), file=_REAL_STDOUT)
     else:
         for k, v in obj.items():
             print(f"{k:>22}: {v}")
@@ -461,6 +471,10 @@ def main() -> int:
             p.add_argument("--allow-delete", action="store_true")
     args = ap.parse_args()
     args.apply = args.cmd == "patch"
+    if args.json:
+        # Spec §8: stdout is data, stderr is narration. Enforce it rather than
+        # trusting every library on the path to have got the memo.
+        sys.stdout = sys.stderr
     if args.cmd == "pack":
         return cmd_pack(args)
     if args.apply and not args.edit:

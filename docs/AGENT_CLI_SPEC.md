@@ -167,6 +167,23 @@ confidently wrong.
 `kopipasta pack --budget 400k --json` with no model call is the cheap way to see the shape and
 cost of a payload before paying for it.
 
+### The estimator must be recalibrated first
+
+`ops.estimate_tokens` assumes **3.6 chars/token**. Measured against a real payload from this
+repo (46,102 chars, differenced across two `claude -p --output-format json` runs to isolate the
+payload from the harness prefix): **~18,474 actual tokens, i.e. 2.50 chars/token.** The
+estimator reported 12,806 — **44% low**.
+
+That is not a rounding error, it is the budget feature silently failing: `--budget 400k` would
+ship roughly 576k tokens and blow the window it exists to protect. Dense code and the minified
+JSON structure blob tokenize far worse than prose, and this payload is mostly both.
+
+Before shipping the ladder, either recalibrate the constant against measured payloads (a repo
+of Python plus a JSON tree lands near 2.5), or — better — count properly: the provider
+`count_tokens` endpoints are cheap and exact, and a local `tiktoken`/`tokenizers` pass is exact
+for the OpenAI-family case. Under-counting is the dangerous direction; if the estimate stays
+heuristic, bias it pessimistic.
+
 ---
 
 ## 6. Sessions on Disk
@@ -310,6 +327,39 @@ is exactly equivalent and enforced the same way.
 One trap, found in the spike: **the schema and the prompt template must describe the same
 shape.** Where the provider enforces the schema, the schema wins — a flatter schema than the
 template silently drops fields (we lost `why` and `confidence` off every cited file that way).
+
+#### `claude-cli:` — the middle rung, and what a CLI oracle really costs
+
+Two of the things §7 gives up under `exec:` are not inherent to CLI-backed oracles, they were
+just flags we had not read. `claude -p` supports:
+
+- `--output-format json` → real `usage` (input / cache_creation / cache_read / output) **and
+  `total_cost_usd`**.
+- `--json-schema '<schema>'` → server-enforced structured output, returned parsed under
+  `structured_output`. Triage mode works properly here, no prompt-begging.
+
+So `claude-cli:<model>` is a legitimate third rung: zero key custody, real accounting, enforced
+schema. What it still cannot do is place the cache breakpoint — and it carries a fixed tax.
+
+**Measured in this sandbox**, differencing a tiny prompt against a 46k-char payload:
+
+| | input | cache_creation | cache_read | cost |
+|---|---|---|---|---|
+| `"hi"` | 2 | 5,099 | 29,280 | **$0.0396** |
+| 46k-char repo payload | 2 | 23,573 | 29,280 | $0.1648 |
+
+Read it carefully:
+
+- **~29.3k tokens of harness system prompt on every single call**, plus ~5.1k created — a
+  ~34k-token floor before your payload exists. "hi" costs four cents.
+- `input_tokens` is **2 in both runs** and is useless as a measure of payload size — the CLI
+  routes everything through cache blocks. Do not report it as "our input"; the payload only
+  shows up in the `cache_creation` delta.
+- For a 400k-token frontload the ~34k floor is ~8% overhead. For the cheap follow-up turns that
+  make multi-turn sessions attractive, it is *most of the cost*.
+
+That tax is the real argument for the raw `anthropic:` adapter, more than any feature gap: same
+model, none of the harness prefix, and the cache breakpoint lands where we put it.
 
 #### Choosing
 
@@ -468,6 +518,18 @@ Three call sites block on a human inside otherwise pure logic:
 | `patcher.py:914` | `click.confirm` on delete | injected `confirm` callable; agent policy = `--allow-delete` |
 | `patcher.py:1035` | `click.confirm` on shrink guard | injected `confirm`; agent policy = hard fail unless `--force` |
 | `main.py:267` | `input()` for web full/snippet | `--url-full` / `--url-snippet` flags |
+
+### 11.2b Narration currently goes to stdout, which breaks `--json`
+
+Found by the spike the moment it tried to parse its own output: `config.read_gitignore`
+(`config.py:68`) prints `".gitignore detected."` to **stdout**, and `apply_patches` prints its
+progress there too. Both land in the middle of the JSON object and make it unparseable —
+exactly the §8 contract they violate.
+
+Auditing every `print()` in the codebase is necessary but not sufficient, because third-party
+libraries on the path have no such contract. Belt and braces: **redirect `sys.stdout` to
+`sys.stderr` for the whole run in `--json` mode** and write the result object to the saved real
+stdout handle. Narration then cannot corrupt the contract no matter who emits it.
 
 ### 11.3 Fix the global cache (pre-existing bug)
 

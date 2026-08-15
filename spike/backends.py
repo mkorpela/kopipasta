@@ -5,6 +5,7 @@ Zero new dependencies: `requests` is already a kopipasta dependency, and every
 one of these APIs is a single JSON POST for the non-streaming case.
 
     exec:<command>                 any CLI: stdin -> stdout (an agent, tools off)
+    claude-cli:<model|->           claude -p, with real usage + enforced schema
     anthropic:<model>              native /v1/messages    — explicit cache breakpoints
     gemini:<model>                 native :generateContent — responseSchema, 1M+ ctx
     openai:<model>                 /v1/chat/completions   — OpenAI, OpenRouter, vLLM,
@@ -39,6 +40,12 @@ class Completion:
     output_tokens: int = 0
     cached_tokens: int = 0
     model: str = ""
+    cost_usd: float = 0.0
+    # Tokens written into the cache on this call. For CLI backends this lumps
+    # the harness system prompt together with our payload and does NOT
+    # separate them — do not report it as "our" input. Measure the harness
+    # floor by running an empty prompt and subtracting.
+    cache_creation_tokens: int = 0
     raw: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -65,6 +72,66 @@ class ExecBackend:
             raise BackendError((p.stderr or "non-zero exit")[-800:])
         # No usage accounting available — that is the price of this backend.
         return Completion(text=p.stdout, model=self.command)
+
+
+# ---------------------------------------------------------------------------
+# claude-cli: — exec:, but using what the CLI actually exposes.
+#
+# `claude -p --output-format json` returns real usage and cost, and
+# `--json-schema` enforces structured output server-side. So the two things
+# plain exec: gives up are NOT inherent to CLI-backed oracles — they were
+# just flags we had not read. Still zero key custody.
+#
+# What it does NOT give you: control over the cache breakpoint, freedom from
+# the harness's own ~34k-token system prompt, or clean attribution — the CLI
+# reports our payload and its own prompt together under cache_creation, with
+# input_tokens counting only the uncached delta.
+# ---------------------------------------------------------------------------
+class ClaudeCliBackend:
+    TOOLS_OFF = "Edit,Write,Read,Bash,Glob,Grep,Task,WebFetch,WebSearch,NotebookEdit,TodoWrite"
+
+    def __init__(self, model: str = "", timeout: int = 900, binary: str = "claude"):
+        self.model, self.timeout, self.binary = model, timeout, binary
+
+    def complete(self, prefix: str, suffix: str, *, schema=None, max_tokens=8192) -> Completion:
+        cmd = [self.binary, "-p", "--output-format", "json",
+               "--disallowedTools", self.TOOLS_OFF]
+        if self.model:
+            cmd += ["--model", self.model]
+        if schema:
+            cmd += ["--json-schema", json.dumps(schema)]
+        try:
+            p = subprocess.run(cmd, input=prefix + "\n\n" + suffix,
+                               capture_output=True, text=True, timeout=self.timeout)
+        except subprocess.TimeoutExpired:
+            raise BackendError(f"timed out after {self.timeout}s")
+        if p.returncode != 0:
+            raise BackendError((p.stderr or "non-zero exit")[-800:])
+        try:
+            d = json.loads(p.stdout)
+        except ValueError:
+            raise BackendError(f"expected --output-format json, got: {p.stdout[:300]}")
+        if d.get("is_error"):
+            raise BackendError(str(d.get("result"))[:600])
+
+        if schema:
+            so = d.get("structured_output")
+            text = json.dumps(so) if so is not None else str(d.get("result", ""))
+        else:
+            text = str(d.get("result", ""))
+
+        u = d.get("usage") or {}
+        models = list((d.get("modelUsage") or {}).keys())
+        return Completion(
+            text=text,
+            input_tokens=u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0),
+            output_tokens=u.get("output_tokens", 0),
+            cached_tokens=u.get("cache_read_input_tokens", 0),
+            cache_creation_tokens=u.get("cache_creation_input_tokens", 0),
+            cost_usd=d.get("total_cost_usd", 0.0) or 0.0,
+            model=",".join(models) or self.model,
+            raw=d,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +299,8 @@ def build(spec: str, *, base_url: Optional[str] = None, timeout: int = 900):
         raise BackendError(f"backend needs a target: '{spec}' (e.g. gemini:gemini-3-pro)")
     if kind == "exec":
         return ExecBackend(rest, timeout)
+    if kind == "claude-cli":
+        return ClaudeCliBackend("" if rest == "-" else rest, timeout)
     if kind == "anthropic":
         return AnthropicBackend(rest, base_url, timeout)
     if kind == "gemini":

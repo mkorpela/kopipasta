@@ -42,28 +42,41 @@ adds here is a **non-interactive surface** and **its own context window**.
 The caller spends ~200 tokens to ask a question whose answer required 500k tokens of reading.
 That is the entire product.
 
-### The two target invocations
+### The three core workflows
 
-**Triage — frontload the codebase, get back a short answer.**
+**1. Triage — frontload the codebase, get back a short answer and candidate files.**
 
 ```bash
 kopipasta ask --all -q "Auth tokens are accepted after expiry. Which files implement
                         validation and expiry, and where is the bug likely?" --json
 ```
 
-The caller receives a few hundred tokens: a ranked file list, a hypothesis, and a path to the
-full answer.
+The caller receives a few hundred tokens: a hypothesis, missing context warnings, and a
+ranked file list (`relevant_files` + `suggested_selection`).
 
-**One-shot large patch.**
+**2. Distill — pivot focus to the minimal working set.**
 
 ```bash
-kopipasta patch -e 'kopipasta/patcher.py' -e 'kopipasta/file.py' \
-                -r 'tests/test_patcher*.py' -m 'kopipasta/**/*.py' \
-                -q "$(cat task.md)" --verify 'pytest -q' --json
+# Headless: feed the triage selection directly back in as active focus
+kopipasta ask --from-file selection.txt -m 'kopipasta/**/*.py' \
+              -q "Trace the execution path between token validation and session refresh." --json
 ```
 
-One model call with the whole subsystem in view, one coherent multi-file patch, applied
-deterministically, verified, reported as a diffstat.
+Pivots from whole-repo scanning (500k–1M tokens) to a tight, high-signal focus window
+(20k–50k tokens) without re-reading irrelevant files. In the interactive TUI, pasting
+triage output (`p`) auto-detects paths and offers to replace the active selection (`[R]eplace`).
+
+**3. Coordinated Multi-File Patch — surgical execution across the subsystem.**
+
+```bash
+kopipasta ask -e 'kopipasta/patcher.py' -e 'kopipasta/file.py' \
+              -r 'tests/test_patcher*.py' -m 'kopipasta/**/*.py' \
+              -q "$(cat task.md)" --apply --verify 'pytest -q' --revert-on-fail --json
+```
+
+One model call with the whole subsystem in view, zoned editable (`-e`) vs read-only (`-r`),
+applied deterministically to disk, verified with an automated test command, and reported as a
+diffstat.
 
 ---
 

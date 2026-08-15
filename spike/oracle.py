@@ -232,9 +232,15 @@ def parse_budget(s: Optional[str]) -> Optional[int]:
     if not s:
         return None
     s = s.strip().lower()
-    mult = 1000 if s.endswith("k") else (1000000 if s.endswith("m") else 1)
-    n = float(s.rstrip("km"))
-    return int(n * mult * (1 if s.endswith("c") else 4))  # tokens -> chars, ~4:1
+    as_chars = s.endswith("c")  # bare number = tokens; 'c' suffix = literal chars
+    if as_chars:
+        s = s[:-1]
+    mult = 1
+    if s.endswith("k"):
+        mult, s = 1_000, s[:-1]
+    elif s.endswith("m"):
+        mult, s = 1_000_000, s[:-1]
+    return int(float(s) * mult * (1 if as_chars else 4))  # tokens -> chars, ~4:1
 
 
 def cmd_pack(args) -> int:
@@ -327,8 +333,8 @@ def cmd_ask(args) -> int:
     click.confirm = lambda *a, **k: bool(args.allow_delete)  # type: ignore[assignment]
 
     modified = apply_patches(patches, logger=None) if patches else []
-    base["applied"] = modified
-    base["failed"] = [p["file_path"] for p in patches if p["file_path"] not in modified]
+    base["applied"] = sorted(set(modified))  # one patch per hunk -> dedupe by file
+    base["failed"] = sorted({p["file_path"] for p in patches if p["file_path"] not in modified})
     base["diffstat"] = diffstat()
 
     if not modified:

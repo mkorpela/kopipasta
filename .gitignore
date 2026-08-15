@@ -7,3 +7,4 @@ build/
 .venv
 AI_SESSION.md
 .ralph.json
+.kopipasta/

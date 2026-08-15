@@ -39,10 +39,14 @@ class Handler(BaseHTTPRequestHandler):
             tool = body.get("tool_choice")
             content = ([{"type": "tool_use", "name": "emit", "input": json.loads(ANSWER)}]
                        if tool else [{"type": "text", "text": ANSWER}])
+            # Real numbers from a live cold cached call. Anthropic reports
+            # input_tokens=19 for a ~20k-token prefix because the prefix is
+            # accounted under cache_creation. An adapter that reports
+            # input_tokens alone claims we sent 19 tokens. Regression test.
             out = {"model": "claude-opus-5", "content": content,
-                   "usage": {"input_tokens": 412330, "output_tokens": 1840,
-                             "cache_read_input_tokens": 389100,
-                             "cache_creation_input_tokens": 0}}
+                   "usage": {"input_tokens": 19, "output_tokens": 153,
+                             "cache_read_input_tokens": 0,
+                             "cache_creation_input_tokens": 20343}}
         elif re.fullmatch(r"/v1beta/models/[^:/]+:generateContent", path):
             SEEN["gemini"] = (body, dict(self.headers))
             out = {"candidates": [{"finishReason": "STOP",
@@ -100,9 +104,12 @@ def main() -> int:
           body.get("tool_choice", {}).get("name") == "emit" and body["tools"][0]["input_schema"] == SCHEMA)
     check("anthropic-version header sent", hdrs.get("anthropic-version") == "2023-06-01")
     check("tool_use input parsed as the answer", json.loads(c.text)["relevant_files"] == ["kopipasta/patcher.py"])
-    check("usage: 412330 in / 389100 cached / 1840 out",
-          (c.input_tokens, c.cached_tokens, c.output_tokens) == (412330, 389100, 1840),
-          f"{c.input_tokens}/{c.cached_tokens}/{c.output_tokens}")
+    check("cache_creation is reported, not dropped",
+          c.cache_creation_tokens == 20343, str(c.cache_creation_tokens))
+    check("input_tokens sums raw+read+creation (19+0+20343), not raw alone",
+          c.input_tokens == 20362, f"{c.input_tokens} (raw input_tokens was 19)")
+    check("cached/output parsed", (c.cached_tokens, c.output_tokens) == (0, 153),
+          f"{c.cached_tokens}/{c.output_tokens}")
 
     print("\ngemini: — native :generateContent")
     b = backends.build("gemini:gemini-3-pro", base_url=base + "/v1beta")

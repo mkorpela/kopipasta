@@ -124,7 +124,10 @@ class ClaudeCliBackend:
         models = list((d.get("modelUsage") or {}).keys())
         return Completion(
             text=text,
-            input_tokens=u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0),
+            # Same summation rule as AnthropicBackend — see the note there.
+            input_tokens=(u.get("input_tokens", 0)
+                          + u.get("cache_read_input_tokens", 0)
+                          + u.get("cache_creation_input_tokens", 0)),
             output_tokens=u.get("output_tokens", 0),
             cached_tokens=u.get("cache_read_input_tokens", 0),
             cache_creation_tokens=u.get("cache_creation_input_tokens", 0),
@@ -179,12 +182,19 @@ class AnthropicBackend:
             text = "".join(b.get("text", "") for b in d.get("content", []) if b.get("type") == "text")
 
         u = d.get("usage", {})
+        # Anthropic's `input_tokens` counts ONLY tokens that were neither read
+        # from nor written to the cache. A 20k-token cached prefix shows up as
+        # input_tokens=19. Summing all three is the only way to get "how big
+        # was my input" — reporting input_tokens alone makes a cached call look
+        # like it sent nothing.
         return Completion(
             text=text,
-            input_tokens=u.get("input_tokens", 0),
+            input_tokens=(u.get("input_tokens", 0)
+                          + u.get("cache_read_input_tokens", 0)
+                          + u.get("cache_creation_input_tokens", 0)),
             output_tokens=u.get("output_tokens", 0),
-            # creation is what you paid to write the cache; read is what you saved.
             cached_tokens=u.get("cache_read_input_tokens", 0),
+            cache_creation_tokens=u.get("cache_creation_input_tokens", 0),
             model=d.get("model", self.model),
             raw=d,
         )

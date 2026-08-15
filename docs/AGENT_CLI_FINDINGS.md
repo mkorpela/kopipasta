@@ -22,15 +22,14 @@ provider API keys**. That constraint shapes what could and could not be verified
 | `claude-cli:` backend | **live-verified** | real `claude -p --output-format json` |
 | Triage mode (use case A) | **live-verified** | found the right call sites, plus one we missed |
 | One-shot patch (use case B) | **live-verified** | 4 hunks, +32/−17, 119 tests green |
-| `anthropic:` backend | **wire format only** | mock; never saw a real response |
+| `anthropic:` backend | **live-verified** | real API, by the repo owner — see §2.7 |
+| Raw-API cache behaviour | **ANSWERED: no lag** | §2.7 |
 | `gemini:` backend | **wire format only** | mock; never saw a real response |
 | `openai:` backend | **wire format only** | mock; never saw a real response |
-| Raw-API cache behaviour | **UNVERIFIED** | no key — see §5 |
 | Gemini 1M context for a real repo | **UNVERIFIED** | no key; §5 of the spec assumes it |
 
-**The single most valuable next action** is `uv run python spike/livecheck.py anthropic` with a
-real key. It takes ten seconds and settles the one question the whole multi-turn design rests
-on. See §5.
+The question this document was originally built around — does the raw API share the CLI's cache
+write-visibility lag? — **is answered. It does not.** See §2.7; it changes the phasing.
 
 ---
 
@@ -105,6 +104,55 @@ Recalibrate against measured payloads, or count properly via provider `count_tok
 `tiktoken`. If it stays heuristic, bias it pessimistic — under-counting is the dangerous
 direction.
 
+### 2.7 The raw API has no cache write-visibility lag — and this changes the phasing
+
+Run against the real Anthropic API (`anthropic:claude-opus-5`, 56,180-char payload, per-run
+nonce so turn 1 was cold):
+
+| | raw `input_tokens` | cache_read | cache_creation |
+|---|---|---|---|
+| turn 1 (cold) | 19 | 0 | ~20,343 |
+| turn 2 (~4s later) | 23 | **20,343** | 0 |
+
+**Turn 2 read the entire prefix back from cache about four seconds after turn 1 wrote it.**
+Contrast §2.4, where the CLI re-wrote the whole prefix on a back-to-back turn and saved nothing.
+
+Consequence for the plan: the cheap-follow-up-turn economics **hold on the raw API and do not
+hold through the CLI**. That promotes `anthropic:` from a Phase 2 optimisation to something
+worth building early — it is the difference between multi-turn triage being nearly free and
+costing full freight every turn. Spec §7 and the phasing in §12 updated accordingly.
+
+Side-by-side on the same 56k payload, turn 2 of a back-to-back pair:
+
+| backend | cache share of input | cost delta |
+|---|---|---|
+| `claude-cli:` | 50.0% (its own system prompt only) | none |
+| `anthropic:` | ~99.9% (the whole prefix) | not reported by the API |
+
+#### The bug this exposed, and the test hole that hid it
+
+The first run reported `turn 1: in=19 cached=0 created=0` and the verdict misread it as
+"ALREADY WARM". Both were wrong, for two separate reasons:
+
+1. **`AnthropicBackend` never populated `cache_creation_tokens`.** The field existed on
+   `Completion` and was set by `ClaudeCliBackend`, but the Anthropic adapter dropped it — so
+   turn 1's cache write was invisible and the verdict logic had nothing to key on.
+2. **Anthropic's `input_tokens` counts only tokens neither read from nor written to cache.** A
+   20k-token cached prefix reports `input_tokens=19`. Reporting that field alone claims we sent
+   19 tokens. The fix sums raw + read + creation; `ClaudeCliBackend` had the same flaw and got
+   the same fix.
+
+The mock in `check_backends.py` returned `cache_creation_input_tokens: 0`, so the missing field
+was invisible to the test suite: **the assertions had a hole in exactly the place the adapter
+had a bug.** The mock now returns the real observed numbers (19 / 0 / 20,343) and asserts both
+that `cache_creation` survives and that `input_tokens` sums to 20,362 rather than 19.
+
+Caveat worth keeping: turn 1's `cache_creation` of ~20,343 is **inferred** from what turn 2 read
+back, because the buggy adapter discarded it. The fix makes it directly observable; a re-run
+turns the inference into an observation. Nothing else in the conclusion depends on it — turn 2's
+20,343-token cache read was reported directly, and the nonce guarantees only turn 1 could have
+written it.
+
 ### 2.6 Triage quality (n=1, but encouraging)
 
 Asked which call sites block non-interactive operation, with the repo mapped (12.8k est input
@@ -147,7 +195,15 @@ Ordered by how much time each cost.
    drops — explicit cache control and cached-token accounting — are precisely the two the
    oracle is built on. Gemini's compat endpoint is
    `https://generativelanguage.googleapis.com/v1beta/openai/`; the trailing slash matters.
-7. **`claude --bare` breaks auth** in this sandbox. Unrelated to the design, but it cost a
+7. **A provider's `input_tokens` may exclude cache traffic.** Anthropic's counts only tokens
+   neither read from nor written to cache, so a 20k cached prefix reports `input_tokens=19`.
+   Report the sum of raw + read + creation, or a cached call looks like it sent nothing. See
+   §2.7.
+8. **A mock that returns zeros cannot catch a dropped field.** `check_backends.py` asserted on
+   `cache_creation` never, and the mock returned `0` for it, so an adapter that silently
+   discarded the field passed 21/21. Mocks should return *distinctive non-zero* values for
+   every field the adapter is supposed to map — a zero is indistinguishable from "not read".
+9. **`claude --bare` breaks auth** in this sandbox. Unrelated to the design, but it cost a
    debugging cycle.
 
 ---
@@ -179,40 +235,39 @@ The spike reuses the real modules for everything that matters — `file.is_ignor
 
 ---
 
-## 5. The open question
+## 5. Open questions
 
-**Does the raw Anthropic API share the CLI's cache write-visibility lag?**
+The original open question is closed — see §2.7. What remains:
 
-It matters more than it sounds. If raw does *not* have the lag, then rapid multi-turn is cheap
-on `anthropic:` and expensive through `claude-cli:` — which promotes the native adapter from a
-Phase 2 optimisation to something worth building early. If it does have the lag, then §6's
-multi-turn dedup needs rethinking rather than tuning, because bursts cost full freight
-everywhere.
+**Gemini has never been exercised against a real payload.** Its caching is implicit, so a cache
+miss there is inconclusive rather than a defect, but the **1M-context claim underpinning use
+case A is still an assumption**. Spec §7 recommends Gemini for triage on the strength of that
+context window; nothing here has tested it.
 
 ```bash
-export ANTHROPIC_API_KEY=...        # shell env; the adapters never write keys to session files
-uv run python spike/livecheck.py anthropic
+export GEMINI_API_KEY=...           # shell env; adapters never write keys to session files
+uv run python spike/livecheck.py gemini openai
 ```
 
-Three outcomes:
+**Whether the no-lag result survives a realistic payload.** §2.7 used 56k chars (~20k tokens).
+The design targets 400k–1M. Cache behaviour, TTL and minimum-cacheable-prefix rules may differ
+at that scale, and a 5-minute ephemeral TTL is short relative to how long an agent might sit
+between turns. Worth one run at full size before betting the phasing on it.
 
-- **PREFIX REUSED on turn 2** — no lag on raw. Build `anthropic:` early.
-- **FAIL** — the adapter is wrong. We place the breakpoint ourselves, so a miss is our code,
-  not the provider's.
-- **Same lag as the CLI** — the lag is a property of the cache itself. Revisit §6.
-
-Worth running `gemini` in the same pass: its caching is implicit, so a miss there is
-inconclusive rather than a defect, but the **1M-context claim underpinning use case A has never
-been exercised against a real payload**.
+**Whether `claude-cli:`'s lag is a lag at all.** §2.4 showed a stable prefix reused across runs
+a minute apart but not back-to-back. That is consistent with write-visibility delay, but also
+with the CLI varying something in its own prefix between rapid invocations. Not worth chasing
+unless `claude-cli:` stays in the design.
 
 ---
 
 ## 6. Next actions, in order
 
-1. Run §5. Ten seconds, settles the multi-turn design.
-2. Fix `estimate_tokens` (§2.5) — the budget ladder is blocked on it.
-3. Phase 0 from the spec: injectable policies, `--json` plumbing and the stdout/stderr
+1. Fix `estimate_tokens` (§2.5) — the budget ladder is blocked on it.
+2. Phase 0 from the spec: injectable policies, `--json` plumbing and the stdout/stderr
    contract, `.kopipasta/` layout, per-project cache fix.
-4. Phase 1: `pack` / `apply` / selection grammar / budget ladder / sessions / `exec:` and
-   `claude-cli:` backends. This alone delivers both use cases.
-5. Only then decide whether the raw adapters graduate from the spike, using the §5 answer.
+3. Phase 1: `pack` / `apply` / selection grammar / budget ladder / sessions — **and
+   `anthropic:` alongside `exec:`**, not after it. §2.7 moved that adapter forward: it is the
+   only backend measured to make follow-up turns actually cheap.
+4. Run §5's Gemini check before committing to Gemini-for-triage in the docs.
+5. Re-run `livecheck anthropic` at 400k+ to confirm the no-lag result holds at target scale.

@@ -393,10 +393,33 @@ lifetime and false within a rapid burst.** An agent firing three follow-ups in t
 full freight three times. Design accordingly: do not promise per-turn savings in the `--json`
 output, and treat rapid multi-turn as a cost the caller should know about.
 
-This was measured on the CLI backend only. Whether raw `anthropic:` with an explicit
-`cache_control` breakpoint has the same write-visibility lag is **unverified** — the sandbox has
-no API key. `uv run python spike/livecheck.py anthropic` answers it in about ten seconds for
-anyone who has one.
+#### Measured: the raw API has no such lag
+
+The same experiment against the real Anthropic API, 56k-char payload, cold turn 1:
+
+| | raw `input_tokens` | cache_read | cache_creation |
+|---|---|---|---|
+| turn 1 (cold) | 19 | 0 | ~20,343 |
+| turn 2 (~4s later) | 23 | **20,343** | 0 |
+
+Turn 2 read the whole prefix back **four seconds** after turn 1 wrote it. Side by side on the
+same payload, turn 2 of a back-to-back pair:
+
+| backend | cache share of input | cost delta |
+|---|---|---|
+| `claude-cli:` | 50.0% — its own system prompt only | none |
+| `anthropic:` | ~99.9% — the whole prefix | (API reports tokens, not cost) |
+
+**This changes the phasing.** Cheap-follow-up-turn economics hold on the raw API and do not hold
+through the CLI, so `anthropic:` moves out of "Phase 2 optimisation" and into Phase 1 alongside
+`exec:`. It is the only backend measured to make multi-turn actually cheap, and multi-turn
+triage is half the point of the design.
+
+Two cautions. Anthropic's `input_tokens` counts only tokens neither read from nor written to
+cache — a 20k cached prefix reports `input_tokens=19`, so report the sum of raw + read +
+creation or a cached call looks like it sent nothing. And this was measured at ~20k tokens; the
+design targets 400k–1M, where TTL and minimum-prefix rules may differ. See
+`AGENT_CLI_FINDINGS.md` §2.7 and §5.
 
 #### Choosing
 
@@ -590,12 +613,14 @@ contract the patcher can enforce (reject patches to files that were only `-r`).
 `.kopipasta/` layout + auto-gitignore, per-project cache fix. No user-visible features; every
 later phase depends on it.
 
-**Phase 1 — The loop, no new dependencies.** `pack`, `apply`, the selection grammar (§4), the
-budget ladder (§5), sessions on disk (§6), and `ask --backend exec:...`. **This phase alone
+**Phase 1 — The loop.** `pack`, `apply`, the selection grammar (§4), the budget ladder (§5),
+sessions on disk (§6), `ask --backend exec:...` — **and `anthropic:`**, which is ~40 lines over
+the existing `requests` dependency and is what makes multi-turn affordable. **This phase alone
 delivers both target use cases.** Ship it, use it for a week, then decide the rest.
 
-**Phase 2 — Native backend.** Anthropic SDK, prompt caching, streaming, usage accounting.
-`patch` = `ask --apply` with the safety rails of §9 and `--verify`.
+**Phase 2 — Remaining backends and safety rails.** `gemini:` and `openai:`, streaming,
+retry/backoff. `patch` = `ask --apply` with the safety rails of §9 and `--verify`. (`anthropic:`
+moved up to Phase 1 — see §7: it is the only backend measured to make follow-up turns cheap.)
 
 **Phase 3 — Agent ergonomics.** `--mode triage` and the schema (§10), `files_cited`,
 `--dry-run` diffs, multi-turn dedup via content hashes, `map` as a standalone verb.

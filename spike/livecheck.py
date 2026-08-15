@@ -129,22 +129,22 @@ def main(argv: List[str]) -> int:
         # turn 1 too. The real question is whether turn 2 had to WRITE the
         # prefix into the cache again. If cache_creation stays flat, we paid
         # for the repo twice and the multi-turn economics do not hold.
-        rewrote = c2.cache_creation_tokens > c1.cache_creation_tokens * 0.5
-        cost_drop = ((1 - c2.cost_usd / c1.cost_usd) * 100
-                     if c1.cost_usd and c2.cost_usd else None)
+        wrote_on_1 = c1.cache_creation_tokens > 0
+        read_on_2 = c2.cached_tokens > 0
+        rewrote_2 = c2.cache_creation_tokens > c1.cache_creation_tokens * 0.5
 
-        if c1.cache_creation_tokens == 0 and c2.cache_creation_tokens == 0:
+        if wrote_on_1 and read_on_2 and not rewrote_2:
+            print(f"   VERDICT: PREFIX REUSED, NO LAG — turn 1 wrote "
+                  f"{c1.cache_creation_tokens:,} tokens; turn 2 read "
+                  f"{c2.cached_tokens:,} back and wrote "
+                  f"{c2.cache_creation_tokens:,}, seconds later.")
+        elif not wrote_on_1 and c1.cached_tokens > 0:
             warm = ("expected — LIVECHECK_NONCE pins the prefix across runs"
                     if os.environ.get("LIVECHECK_NONCE")
                     else "unexpected — the per-run nonce should have made turn 1 cold")
-            print(f"   VERDICT: ALREADY WARM — nothing written on either turn; the prefix "
-                  f"was cached before this run started ({warm}). Compare the cost "
-                  f"against a cold run to see what caching is actually worth.")
-        elif not rewrote and c2.cached_tokens > 0:
-            print(f"   VERDICT: PREFIX REUSED — turn 2 wrote only "
-                  f"{c2.cache_creation_tokens:,} new tokens vs "
-                  f"{c1.cache_creation_tokens:,} on turn 1.")
-        elif explicit:
+            print(f"   VERDICT: ALREADY WARM — turn 1 read {c1.cached_tokens:,} from cache "
+                  f"and wrote nothing ({warm}). Inconclusive; compare against a cold run.")
+        elif explicit and rewrote_2:
             print(f"   VERDICT: FAIL — we set an explicit cache breakpoint, yet turn 2 "
                   f"re-wrote {c2.cache_creation_tokens:,} tokens. The adapter, not the "
                   f"provider, is the suspect.")
@@ -152,11 +152,18 @@ def main(argv: List[str]) -> int:
         else:
             print(f"   VERDICT: PREFIX NOT REUSED — turn 2 re-wrote "
                   f"{c2.cache_creation_tokens:,} tokens (turn 1: "
-                  f"{c1.cache_creation_tokens:,}). Each call is an independent "
-                  f"session here, so a stable prefix buys nothing.")
-        if cost_drop is not None:
-            verdict = "no saving" if abs(cost_drop) < 10 else f"{cost_drop:+.0f}%"
-            print(f"   COST:    ${c1.cost_usd:.4f} -> ${c2.cost_usd:.4f}  ({verdict})")
+                  f"{c1.cache_creation_tokens:,}). Back-to-back calls get no "
+                  f"benefit from a stable prefix here.")
+
+        # Cost is the headline where the provider reports it; where it does not
+        # (raw APIs return tokens only), cache share is the honest proxy.
+        if c1.cost_usd and c2.cost_usd:
+            drop = (1 - c2.cost_usd / c1.cost_usd) * 100
+            label = "no saving" if abs(drop) < 10 else f"{drop:+.0f}%"
+            print(f"   COST:    ${c1.cost_usd:.4f} -> ${c2.cost_usd:.4f}  ({label})")
+        share = (c2.cached_tokens / c2.input_tokens * 100) if c2.input_tokens else 0.0
+        print(f"   CACHE:   turn 2 served {c2.cached_tokens:,}/{c2.input_tokens:,} "
+              f"input tokens from cache ({share:.1f}%)")
         print()
 
     if not ran:

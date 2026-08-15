@@ -262,21 +262,70 @@ patch: a `patch`-mode response containing no code blocks, especially one mention
 or tool approval, is a backend misconfiguration — exit `3` with that diagnosis, not exit `5`
 ("model produced a bad patch"). The two failures have completely different fixes.
 
-### Phase 2: native API backend
+### Phase 2: raw model APIs — the layer below agent CLIs
 
-`--backend anthropic` (or `KOPIPASTA_BACKEND`), key from `ANTHROPIC_API_KEY` **only** —
-never read from, and never written to, session files. Adds:
+`exec:` borrows an *agent*. For the oracle role we actually want the layer beneath: a single
+completion, no tool loop, no permission negotiation, real token accounting, and direct control
+over the two features that make this whole design economical.
 
-- **Prompt caching**, which is the reason to bother. The repo payload is a stable prefix; mark
-  a cache breakpoint at the end of the file-contents block and multi-turn sessions get ~10x
-  cheaper. This is the difference between "a fun demo" and "a thing you run 40 times a day."
-- **Streaming to the response file**, so a long generation is tailable and a crashed run leaves
-  a partial artifact instead of nothing.
-- Real usage accounting (input / cached / output) in `NNN-meta.json` and `--json`.
-- Retry with backoff on 429/5xx; hard `--timeout`.
+**Zero new dependencies.** `requests` is already a kopipasta dependency, and every one of these
+APIs is a single JSON POST in the non-streaming case. Each adapter is ~40 lines. Do not pull in
+three vendor SDKs to send three JSON bodies.
 
-An OpenAI-compatible backend (`--backend openai-compat --base-url ...`) covers Gemini, local
-models, and OpenRouter behind the same interface. Do not build a provider registry beyond that.
+```
+--backend anthropic:claude-opus-5       ANTHROPIC_API_KEY   POST /v1/messages
+--backend gemini:gemini-3-pro           GEMINI_API_KEY      POST /v1beta/models/{m}:generateContent
+--backend openai:gpt-5                  OPENAI_API_KEY      POST /v1/chat/completions
+--backend openai:<model> --base-url ... any OpenAI-compatible server
+```
+
+`openai:` is the wide net — OpenRouter, Groq, Together, Fireworks, vLLM, llama.cpp, LM Studio,
+and Gemini itself, which exposes an OpenAI-compatible endpoint at
+`https://generativelanguage.googleapis.com/v1beta/openai/` (the trailing slash matters; without
+it you get a 404).
+
+#### Why native adapters exist at all, given the compat layer
+
+Because OpenAI-compatibility is a *request-shape* convenience, not feature parity — and the two
+features it drops are precisely the two the oracle is built on.
+
+| | Anthropic native | Gemini native | OpenAI-compatible |
+|---|---|---|---|
+| Explicit cache breakpoint | `cache_control: ephemeral` on a content block | `cachedContents` resource | **none** — implicit, no control |
+| Server-enforced schema | forced single tool + `input_schema` | `responseSchema` + `responseMimeType` | `response_format: json_schema` |
+| Cached-token accounting | `usage.cache_read_input_tokens` | `usageMetadata.cachedContentTokenCount` | `usage.prompt_tokens_details.cached_tokens` |
+| Context ceiling | large | **1M+ — the reason this adapter exists** | varies |
+
+**Caching is the whole economics of multi-turn.** The repo payload is a stable prefix reused
+verbatim across turns; the question is the only thing that varies. So the payload must be
+rendered as **`(prefix, suffix)`, not one string** — the split *is* the cache breakpoint, and a
+renderer that interpolates the task into the middle of the payload destroys cache reuse on every
+turn. This is a constraint on §6's dedup design, not an afterthought.
+
+**Server-enforced schema is what makes triage mode real.** With `exec:`, §10's schema is a
+polite request in a prompt. With Gemini `responseSchema` or OpenAI `json_schema`, it is a
+guarantee. Anthropic has no `response_format`, but a single forced tool with an `input_schema`
+is exactly equivalent and enforced the same way.
+
+One trap, found in the spike: **the schema and the prompt template must describe the same
+shape.** Where the provider enforces the schema, the schema wins — a flatter schema than the
+template silently drops fields (we lost `why` and `confidence` off every cited file that way).
+
+#### Choosing
+
+- **Gemini** for use case A. 1M+ context is the only honest way to frontload a large repo, and
+  `responseSchema` makes the triage answer machine-consumable without parsing prose.
+- **Anthropic** for use case B and any multi-turn session. Explicit cache breakpoints are the
+  best available control for the stable-prefix pattern, which is what a session *is*.
+- **`openai:` + `--base-url`** for everything else, including local models — accepting that you
+  lose cache control and get whatever implicit caching the server does.
+- **`exec:`** when you want zero key custody, or specifically want the model your harness is
+  already authenticated against.
+
+Also needed regardless of provider: streaming to the response file (a long generation stays
+tailable, and a crash leaves a partial artifact instead of nothing), retry with backoff on
+429/5xx, and a hard `--timeout`. Keys come from the environment only — never read from, and
+never written to, session files.
 
 ---
 

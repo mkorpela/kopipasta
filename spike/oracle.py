@@ -26,6 +26,7 @@ import uuid
 from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import click  # noqa: E402
 
@@ -40,6 +41,8 @@ from kopipasta.git_utils import add_to_gitignore  # noqa: E402
 from kopipasta.ops import estimate_tokens  # noqa: E402
 from kopipasta.prompt import get_language_for_file, get_project_structure  # noqa: E402
 from kopipasta.patcher import apply_patches, find_paths_in_text, parse_llm_output  # noqa: E402
+
+import backends  # noqa: E402
 
 ROOT = os.path.abspath(os.getcwd())
 SESSIONS = os.path.join(ROOT, ".kopipasta", "sessions")
@@ -142,7 +145,13 @@ def apply_budget(sel: Dict[str, str], budget_chars: Optional[int]) -> Tuple[Dict
 # --------------------------------------------------------------------------
 # payload
 # --------------------------------------------------------------------------
-def render(sel: Dict[str, str], ignore: List[str], question: str, mode: str) -> str:
+def render(sel: Dict[str, str], ignore: List[str], question: str, mode: str) -> Tuple[str, str]:
+    """Returns (prefix, suffix).
+
+    prefix = the stable repo payload, reused verbatim across turns of a session.
+    suffix = the varying task. The split IS the cache breakpoint — providers that
+    support explicit caching key on the prefix, so it must not contain the task.
+    """
     edits = sorted(p for p, r in sel.items() if r == EDIT)
     refs = sorted(p for p, r in sel.items() if r == REF)
     maps = sorted(p for p, r in sel.items() if r == MAP)
@@ -169,7 +178,8 @@ def render(sel: Dict[str, str], ignore: List[str], question: str, mode: str) -> 
                 out += [f"    {s}" for s in syms]
         out += ["```", ""]
 
-    out += ["## Task Instructions", "", question, ""]
+    prefix = "\n".join(out)
+    out = ["## Task Instructions", "", question, ""]
 
     if mode == "triage":
         out += [
@@ -194,7 +204,7 @@ def render(sel: Dict[str, str], ignore: List[str], question: str, mode: str) -> 
             "- Only files under '## Active Workspace (Editable)' may be modified.",
             "- Output the code blocks and nothing else. Do not ask questions.",
         ]
-    return "\n".join(out)
+    return prefix, "\n".join(out)
 
 
 # --------------------------------------------------------------------------
@@ -209,20 +219,40 @@ def open_session(sid: Optional[str]) -> Tuple[str, str, int]:
     return sid, d, turn
 
 
-def run_backend(spec: str, request: str, timeout: int) -> Tuple[int, str, str]:
-    """`exec:<command>` — request on stdin, response on stdout. That is the whole contract."""
-    if not spec.startswith("exec:"):
-        return EX_NOBACKEND, "", f"unsupported backend: {spec}"
-    cmd = spec[len("exec:"):]
+TRIAGE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        # Must mirror the prompt template's shape exactly. Where the provider
+        # enforces the schema, the schema wins — a flatter one here would
+        # silently drop the `why`/`confidence` that makes triage worth reading.
+        "relevant_files": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "why": {"type": "string"},
+                    "confidence": {"type": "number"},
+                },
+                "required": ["path", "why", "confidence"],
+            },
+        },
+        "hypothesis": {"type": "string"},
+        "missing_context": {"type": "array", "items": {"type": "string"}},
+        "suggested_selection": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["relevant_files", "hypothesis", "missing_context", "suggested_selection"],
+}
+
+
+def run_backend(spec, prefix, suffix, timeout, base_url, schema):
     try:
-        p = subprocess.run(
-            cmd, shell=True, input=request, capture_output=True, text=True, timeout=timeout
-        )
-    except subprocess.TimeoutExpired:
-        return EX_BACKEND, "", f"backend timed out after {timeout}s"
-    if p.returncode != 0:
-        return EX_BACKEND, p.stdout, (p.stderr or "")[-2000:]
-    return EX_OK, p.stdout, ""
+        b = backends.build(spec, base_url=base_url, timeout=timeout)
+        c = b.complete(prefix, suffix, schema=schema)
+    except backends.BackendError as e:
+        kind = EX_NOBACKEND if "unknown backend" in str(e) else EX_BACKEND
+        return kind, "", str(e), None
+    return EX_OK, c.text, "", c
 
 
 # --------------------------------------------------------------------------
@@ -253,7 +283,8 @@ def cmd_pack(args) -> int:
     if demoted and args.strict_budget:
         emit(args, {"ok": False, "error": "budget exceeded", "demoted": demoted})
         return EX_BUDGET
-    payload = render(sel, ignore, args.question or "(no task)", args.mode)
+    prefix, suffix = render(sel, ignore, args.question or "(no task)", args.mode)
+    payload = prefix + "\n" + suffix
     out = args.out or os.path.join(SESSIONS, "pack.md")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w") as f:
@@ -282,14 +313,17 @@ def cmd_ask(args) -> int:
         return EX_BUDGET
 
     mode = args.mode or ("patch" if args.apply else "default")
-    payload = render(sel, ignore, args.question, mode)
+    prefix, suffix = render(sel, ignore, args.question, mode)
+    payload = prefix + "\n" + suffix
     sid, sdir, turn = open_session(args.session)
     req = os.path.join(sdir, f"{turn:03d}-request.md")
     with open(req, "w") as f:
         f.write(payload)
 
     t0 = time.time()
-    code, stdout, err = run_backend(args.backend, payload, args.timeout)
+    schema = TRIAGE_SCHEMA if mode == "triage" else None
+    code, stdout, err, comp = run_backend(
+        args.backend, prefix, suffix, args.timeout, args.base_url, schema)
     dt = round(time.time() - t0, 1)
 
     resp = os.path.join(sdir, f"{turn:03d}-response.md")
@@ -303,6 +337,9 @@ def cmd_ask(args) -> int:
         "payload_chars": len(payload), "est_input_tokens": estimate_tokens(len(payload)),
         "response_chars": len(stdout), "latency_s": dt,
     }
+    if comp is not None and (comp.input_tokens or comp.cached_tokens):
+        base["usage"] = {"input": comp.input_tokens, "cached": comp.cached_tokens,
+                         "output": comp.output_tokens, "model": comp.model}
     if code != EX_OK:
         base["error"] = err
         emit(args, base)
@@ -418,6 +455,7 @@ def main() -> int:
             p.add_argument("--backend", default=os.environ.get("KOPIPASTA_BACKEND", "exec:claude -p"))
             p.add_argument("--session")
             p.add_argument("--timeout", type=int, default=900)
+            p.add_argument("--base-url")
             p.add_argument("--verify")
             p.add_argument("--revert-on-fail", action="store_true")
             p.add_argument("--allow-delete", action="store_true")

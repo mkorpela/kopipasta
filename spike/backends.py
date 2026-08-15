@@ -17,16 +17,27 @@ advice loses, and which is why the two native adapters exist:
 
   1. CACHE CONTROL. The repo payload is a stable prefix reused across turns.
      Anthropic lets you place the breakpoint explicitly (cache_control);
-     Gemini has explicit cachedContents; the compat layer exposes neither.
+     Gemini needs the cachedContents resource; the compat layer exposes
+     neither. On BOTH providers the reuse has to be asked for: measured,
+     Gemini's implicit caching gave 0% on "same repo, different question"
+     (findings §2.9) and explicit cachedContents gave 99.9%. Note the
+     asymmetry in what that costs — Anthropic's ephemeral breakpoint is a
+     flag on a request, Gemini's cache is a RENTED resource billed per
+     token-hour until its TTL expires. GeminiBackend therefore owns a
+     lifecycle: always an explicit short TTL, close() to hand it back, and
+     an atexit sweep so a crash cannot leave the meter running.
   2. SERVER-ENFORCED SCHEMA. Triage mode wants guaranteed JSON, not begging.
      Gemini responseSchema and OpenAI json_schema are enforced by the API.
 """
 
 from __future__ import annotations
 
+import atexit
+import hashlib
 import json
 import os
 import subprocess
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
@@ -202,17 +213,203 @@ class AnthropicBackend:
 
 # ---------------------------------------------------------------------------
 # gemini: — native. The 1M+ context is the reason this adapter exists.
+#
+# MEASURED (findings §2.9): implicit caching does not serve this access
+# pattern. A stable prefix with a *varying question* missed 7/7; only an exact
+# repeat of a whole earlier request hit (5/5, always the same block-aligned
+# 12,263 tokens). An exact repeat is worthless to an oracle — you already have
+# that answer. So the prefix economics need the explicit `cachedContents`
+# resource, which measured 99.9% reuse across three different suffixes with no
+# warm-up turn.
+#
+# That resource is RENTED, not free: Google bills storage per token-hour for
+# the whole TTL, whether or not turn 2 ever arrives. A leaked cache is a meter
+# running with nobody watching, so every cache this adapter creates carries an
+# explicit, short, clamped TTL, is deleted in `close()`, and is registered for
+# an atexit sweep in case we die before that. Never rely on the server default.
 # ---------------------------------------------------------------------------
+
+# Caches alive right now, so an unexpected exit can still hand back the rental.
+# atexit is the last line of defence, not the intended path — close() is.
+_LIVE_GEMINI_CACHES: "set[tuple[str, str, str]]" = set()  # (base, key, name)
+
+
+def _delete_gemini_cache(base: str, key: str, name: str) -> None:
+    try:
+        requests.delete(f"{base}/{name}", timeout=30,
+                        headers={"x-goog-api-key": key})
+    except requests.RequestException:
+        pass  # Best effort; the TTL is the backstop that makes this safe to swallow.
+    _LIVE_GEMINI_CACHES.discard((base, key, name))
+
+
+@atexit.register
+def _sweep_gemini_caches() -> None:
+    for base, key, name in list(_LIVE_GEMINI_CACHES):
+        _delete_gemini_cache(base, key, name)
+
+
 class GeminiBackend:
     BASE = "https://generativelanguage.googleapis.com/v1beta"
 
-    def __init__(self, model: str, base_url: Optional[str] = None, timeout: int = 900):
+    # Short by default and hard-capped. The cache exists to make the *next few
+    # turns* of one session cheap; it is not storage. If a session outlives the
+    # TTL the next turn re-creates it — paying twice for compute beats paying
+    # rent on a cache nobody came back for.
+    #
+    # That re-creation is NOT automatic, and assuming it was is a bug this
+    # adapter shipped with: an expired name kept being sent, and the provider
+    # answers `403 CachedContent not found`. Verified against the live API with
+    # a 15s TTL. A short TTL bounds the cost leak and creates a correctness
+    # cliff; both have to be handled, so expiry is tracked below.
+    DEFAULT_TTL_S = 300
+    MAX_TTL_S = 3600
+
+    def __init__(self, model: str, base_url: Optional[str] = None, timeout: int = 900,
+                 cache: bool = True, cache_ttl_s: int = DEFAULT_TTL_S):
         self.model = model
         self.base = (base_url or os.environ.get("GEMINI_BASE_URL") or self.BASE).rstrip("/")
         self.key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY", "")
         self.timeout = timeout
+        self.cache_enabled = cache
+        # Clamped at both ends: 0/negative would mean "server decides" (unbounded
+        # rent), and an hour is already far longer than any oracle session.
+        self.cache_ttl_s = max(1, min(int(cache_ttl_s), self.MAX_TTL_S))
+        self._cache_name: Optional[str] = None
+        self._cache_key: Optional[str] = None      # hash of the prefix it holds
+        self._cache_tokens = 0
+        self._cache_deadline = 0.0                 # monotonic; 0 == nothing held
+        self._created_on_last_call = False
+        self.cache_disabled_reason = ""
 
-    def complete(self, prefix: str, suffix: str, *, schema=None, max_tokens=8192) -> Completion:
+    # Stop trusting a cache slightly before it expires: the request still has
+    # to travel. Proportional so that a deliberately tiny TTL does not end up
+    # entirely inside the margin.
+    @property
+    def _expiry_margin_s(self) -> float:
+        return min(10.0, self.cache_ttl_s * 0.2)
+
+    def _forget_cache(self) -> None:
+        """Drop the handle WITHOUT deleting. For a cache already gone."""
+        if self._cache_name:
+            _LIVE_GEMINI_CACHES.discard((self.base, self.key, self._cache_name))
+        self._cache_name = self._cache_key = None
+        self._cache_tokens = 0
+        self._cache_deadline = 0.0
+
+    # -- explicit cache lifecycle -------------------------------------------
+    @property
+    def headers(self) -> Dict[str, str]:
+        # Header, not ?key= — query params leak into proxy and access logs.
+        return {"x-goog-api-key": self.key, "content-type": "application/json"}
+
+    def _ensure_cache(self, prefix: str) -> Optional[str]:
+        """Return a cachedContents name holding `prefix`, creating it if needed.
+
+        Returns None when caching is off, unavailable, or the payload is below
+        the provider's minimum — all of which are *fallbacks, not errors*: the
+        call still works, it just pays full price.
+        """
+        if not self.cache_enabled:
+            return None
+        digest = hashlib.sha256(prefix.encode("utf-8")).hexdigest()[:32]
+
+        self._created_on_last_call = False
+        still_valid = (self._cache_name is not None
+                       and time.monotonic() < self._cache_deadline - self._expiry_margin_s)
+        if still_valid and self._cache_key == digest:
+            return self._cache_name
+        if self._cache_name:
+            if still_valid:
+                # Prefix changed — the old rental is dead weight, hand it back
+                # now rather than letting it run out its TTL unused.
+                self.close()
+            else:
+                # Already expired server-side. There is nothing to hand back,
+                # and DELETEing it would just be a wasted 403.
+                self._forget_cache()
+
+        body = {
+            "model": f"models/{self.model}",
+            "contents": [{"role": "user", "parts": [{"text": prefix}]}],
+            # ALWAYS set, never defaulted. This is the leak stop.
+            "ttl": f"{self.cache_ttl_s}s",
+            # Makes an orphan identifiable as ours in cachedContents.list.
+            "displayName": f"kopipasta-{digest[:16]}",
+        }
+        try:
+            d = _post(f"{self.base}/cachedContents", body,
+                      timeout=self.timeout, headers=self.headers)
+        except BackendError as e:
+            # The dominant cause is "payload below the model's minimum
+            # cacheable size" (4,096 tokens on Gemini 3.x, 2,048 on 2.5).
+            # Detecting that by trying costs one round trip and needs no
+            # per-model table that would rot. Degrade, do not fail.
+            self.cache_enabled = False
+            self.cache_disabled_reason = str(e)[:200]
+            return None
+
+        self._cache_name = d.get("name")
+        self._cache_key = digest
+        self._cache_tokens = (d.get("usageMetadata") or {}).get("totalTokenCount", 0)
+        # Local clock only. The server's `expireTime` is authoritative but
+        # needs RFC3339 parsing and a trustworthy local clock to compare
+        # against; this deadline exists purely to avoid a wasted round trip.
+        # Correctness is guaranteed by the 403 retry in complete(), not here.
+        self._cache_deadline = time.monotonic() + self.cache_ttl_s
+        self._created_on_last_call = True
+        if self._cache_name:
+            _LIVE_GEMINI_CACHES.add((self.base, self.key, self._cache_name))
+        return self._cache_name
+
+    def close(self) -> None:
+        """Hand back the rental. Safe to call repeatedly, and idempotent."""
+        if self._cache_name:
+            _delete_gemini_cache(self.base, self.key, self._cache_name)
+        self._forget_cache()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+    @classmethod
+    def reap_orphans(cls, base_url: Optional[str] = None) -> int:
+        """Delete every cache this tool left behind. For cleanup after a crash.
+
+        TTLs mean orphans expire on their own; this makes the wait optional.
+        """
+        base = (base_url or os.environ.get("GEMINI_BASE_URL") or cls.BASE).rstrip("/")
+        key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY", "")
+        try:
+            r = requests.get(f"{base}/cachedContents", timeout=60,
+                             headers={"x-goog-api-key": key})
+            r.raise_for_status()
+            items = r.json().get("cachedContents") or []
+        except (requests.RequestException, ValueError):
+            return 0
+        n = 0
+        for it in items:
+            if str(it.get("displayName", "")).startswith("kopipasta-"):
+                _delete_gemini_cache(base, key, it.get("name", ""))
+                n += 1
+        return n
+
+    # -- completion ----------------------------------------------------------
+    @staticmethod
+    def _cache_is_gone(err: str) -> bool:
+        """Did this call fail *because* the cached prefix vanished?
+
+        403 rather than 404, and the phrasing is shared with real permission
+        errors, so both parts are required — retrying a genuine auth failure
+        would just double the latency before the same error.
+        """
+        return "CachedContent not found" in err
+
+    def complete(self, prefix: str, suffix: str, *, schema=None, max_tokens=8192,
+                 _retry: bool = True) -> Completion:
         gen: Dict[str, Any] = {"temperature": 0, "maxOutputTokens": max_tokens}
         if schema:
             # Enforced by the API. This is what upgrades triage mode from
@@ -220,29 +417,91 @@ class GeminiBackend:
             gen["responseMimeType"] = "application/json"
             gen["responseSchema"] = schema
 
-        body = {
-            "contents": [{"role": "user", "parts": [{"text": prefix}, {"text": suffix}]}],
-            "generationConfig": gen,
-        }
-        # Header, not ?key= — query params leak into proxy and access logs.
-        d = _post(f"{self.base}/models/{self.model}:generateContent", body,
-                  timeout=self.timeout,
-                  headers={"x-goog-api-key": self.key, "content-type": "application/json"})
+        name = self._ensure_cache(prefix)
+        # Tokens billed as a cache *write* on this call — nonzero only on a
+        # turn that actually created an entry. Anthropic reports this natively;
+        # Gemini reports it on the cachedContents resource, so we carry it
+        # across by hand. Without it, `cache_creation_tokens` is structurally
+        # always 0 for Gemini and no cache experiment can tell success from
+        # failure.
+        #
+        # This asks _ensure_cache what it DID rather than inferring it from
+        # whether a handle existed before and after. Inferring gets the TTL
+        # re-create wrong — a turn that silently paid for a second write looked
+        # free — which is the §2.7 mistake (a real cost hidden by a reporting
+        # bug) repeated one layer down.
+        created = self._cache_tokens if self._created_on_last_call else 0
+
+        if name:
+            # The prefix now lives in the cache resource; sending it again
+            # would defeat the entire point.
+            body: Dict[str, Any] = {
+                "contents": [{"role": "user", "parts": [{"text": suffix}]}],
+                "cachedContent": name,
+                "generationConfig": gen,
+            }
+        else:
+            body = {
+                "contents": [{"role": "user", "parts": [{"text": prefix}, {"text": suffix}]}],
+                "generationConfig": gen,
+            }
+
+        try:
+            d = _post(f"{self.base}/models/{self.model}:generateContent", body,
+                      timeout=self.timeout, headers=self.headers)
+        except BackendError as e:
+            # The cache expired between our deadline check and the request —
+            # clock skew, a paused process, a server-side eviction. This is the
+            # branch that makes correctness independent of the local clock:
+            # forget the dead handle and go again from scratch, exactly once.
+            if name and _retry and self._cache_is_gone(str(e)):
+                self._forget_cache()
+                return self.complete(prefix, suffix, schema=schema,
+                                     max_tokens=max_tokens, _retry=False)
+            raise
 
         cands = d.get("candidates") or []
         text = ""
         if cands:
             text = "".join(p.get("text", "") for p in cands[0].get("content", {}).get("parts", []))
-        if not text and cands and cands[0].get("finishReason") not in (None, "STOP"):
-            raise BackendError(f"gemini stopped early: {cands[0].get('finishReason')}")
 
         u = d.get("usageMetadata", {})
+        reason = cands[0].get("finishReason") if cands else None
+        if reason not in (None, "STOP"):
+            # Checked regardless of whether text came back. Guarding only the
+            # empty case — which is what this did — lets a TRUNCATED answer
+            # through as a success, and truncation is the dangerous one: under
+            # `responseSchema` the caller gets JSON that stops mid-string,
+            # fails to parse, and reads as "no answer" rather than "the answer
+            # was cut off". Found by dogfooding: a triage run reported ok=true
+            # with a null result.
+            detail = f"gemini stopped early: {reason}"
+            if reason == "MAX_TOKENS":
+                # Thinking tokens are billed against maxOutputTokens, so the
+                # budget left for the actual answer is whatever reasoning did
+                # not consume. Naming both numbers turns a confusing failure
+                # ("I asked for 8192 and got 318") into an obvious one.
+                detail += (
+                    f" — max_tokens={max_tokens} covers reasoning AND answer;"
+                    f" this call spent {u.get('thoughtsTokenCount', 0)} on"
+                    f" reasoning and {u.get('candidatesTokenCount', 0)} on the"
+                    f" answer. Raise max_tokens."
+                )
+            raise BackendError(detail)
+
         return Completion(
             text=text,
-            # NB: cachedContentTokenCount is *included* in promptTokenCount.
+            # NB: cachedContentTokenCount is *included* in promptTokenCount, so
+            # unlike Anthropic these must NOT be summed.
             input_tokens=u.get("promptTokenCount", 0),
-            output_tokens=u.get("candidatesTokenCount", 0),
+            # Reasoning tokens are billed as output and consume the same
+            # budget, so a caller that reports only candidatesTokenCount
+            # understates what the turn cost — the same class of mistake as
+            # Anthropic's input_tokens in §2.7.
+            output_tokens=(u.get("candidatesTokenCount", 0)
+                           + u.get("thoughtsTokenCount", 0)),
             cached_tokens=u.get("cachedContentTokenCount", 0),
+            cache_creation_tokens=created,
             model=self.model,
             raw=d,
         )
@@ -302,8 +561,13 @@ def _post(url: str, body: Dict[str, Any], *, headers: Dict[str, str], timeout: i
         raise BackendError(f"non-JSON response: {r.text[:300]}") from e
 
 
-def build(spec: str, *, base_url: Optional[str] = None, timeout: int = 900):
-    """`exec:cmd` | `anthropic:model` | `gemini:model` | `openai:model`"""
+def build(spec: str, *, base_url: Optional[str] = None, timeout: int = 900,
+          cache: bool = True, cache_ttl_s: int = GeminiBackend.DEFAULT_TTL_S):
+    """`exec:cmd` | `anthropic:model` | `gemini:model` | `openai:model`
+
+    `cache` / `cache_ttl_s` only affect `gemini:`, the one backend where the
+    cache is a rented resource with a lifetime we own.
+    """
     kind, _, rest = spec.partition(":")
     if not rest:
         raise BackendError(f"backend needs a target: '{spec}' (e.g. gemini:gemini-3-pro)")
@@ -314,7 +578,7 @@ def build(spec: str, *, base_url: Optional[str] = None, timeout: int = 900):
     if kind == "anthropic":
         return AnthropicBackend(rest, base_url, timeout)
     if kind == "gemini":
-        return GeminiBackend(rest, base_url, timeout)
+        return GeminiBackend(rest, base_url, timeout, cache=cache, cache_ttl_s=cache_ttl_s)
     if kind in ("openai", "openai-compat"):
         return OpenAICompatBackend(rest, base_url, timeout)
     if kind == "gemini-compat":

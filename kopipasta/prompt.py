@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Tuple, Optional
 from jinja2 import Template
 
 from kopipasta.file import FileTuple, extract_symbols, read_file_contents, is_ignored
+from kopipasta.interaction import require_human, use_default_without_human
 from prompt_toolkit import prompt as prompt_toolkit_prompt
 from prompt_toolkit.styles import Style
 from rich.console import Console
@@ -141,6 +142,15 @@ def open_template_in_editor():
     """Opens the template file in the system default editor."""
     ensure_template_exists()
     template_path = get_template_path()
+
+    # `$EDITOR` defaults to vim here, and a terminal editor launched onto a
+    # pipe is the original bug in a different costume: it blocks forever with
+    # nobody able to type `:q`. The file is created first and named in the
+    # error, so a headless caller can still edit it by other means.
+    require_human(
+        f"Opening {template_path} in an editor",
+        "The file exists and can be edited directly.",
+    )
 
     editor = os.environ.get("EDITOR", "code" if shutil.which("code") else "vim")
 
@@ -378,11 +388,29 @@ def handle_env_variables(
         for key, value in undecided_vars:
             print(f"- {key}={value}")
 
+        # No human: mask, don't ask and don't fail. Leaking a secret to a
+        # third-party API is worse than a masked value, and refusing to run at
+        # all would make kopipasta useless in CI for no safety gain (spec
+        # §11.2). This is the one prompt where the conservative answer is
+        # unambiguous, so it is the one prompt that gets defaulted.
+        headless = use_default_without_human(
+            f"Handling {len(undecided_vars)} detected environment variable(s)",
+            "masking every detected value",
+        )
+
         for key, value in undecided_vars:
+            if headless:
+                decisions_cache[key] = "m"
+                continue
             while True:
-                choice = input(
-                    f"How would you like to handle {key}? (m)ask / (s)kip / (k)eep: "
-                ).lower()
+                try:
+                    choice = input(
+                        f"How would you like to handle {key}? (m)ask / (s)kip / (k)eep: "
+                    ).lower()
+                except EOFError:
+                    # stdin died mid-run. Fall back to the safe answer rather
+                    # than spinning on a stream that will never yield again.
+                    choice = "m"
                 if choice in ["m", "s", "k"]:
                     break
                 print("Invalid choice. Please enter 'm', 's', or 'k'.")
@@ -537,6 +565,14 @@ def get_task_from_user_interactive(console: Console, default_text: str = "") -> 
     Prompts the user for a multiline task description using an interactive
     terminal prompt instead of an external editor.
     """
+    # Checked before the first console.print, so nothing is drawn into a pipe.
+    # No safe default exists here: an empty task silently produces a useless
+    # prompt, and guessing one is worse than refusing.
+    require_human(
+        "Entering a task description",
+        "Pass -t/--task instead, or set KOPIPASTA_NONINTERACTIVE=1 to make this explicit.",
+    )
+
     console.print("\n[bold cyan]📝 Please enter your task instructions.[/bold cyan]")
     if default_text:
         console.print(

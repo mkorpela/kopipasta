@@ -33,6 +33,12 @@ def human_attached() -> bool:
     if os.environ.get("CI", "").strip():
         return False
     try:
+        # sys.stdout here means "the stream we narrate to". During a run it is
+        # pointed at stderr (output.stdout_reserved_for_output), so
+        # `kopipasta > prompt.txt` from a terminal correctly keeps the TUI:
+        # the keyboard and the display are both still there, only the artifact
+        # was redirected. Before that split, redirecting the prompt to a file
+        # disabled the interface you needed to produce it.
         return bool(sys.stdin.isatty() and sys.stdout.isatty())
     except (AttributeError, ValueError):
         # Streams replaced with non-file objects, or already closed.
@@ -40,10 +46,34 @@ def human_attached() -> bool:
 
 
 def require_human(what: str, hint: str = "") -> None:
-    """Raise NoHumanAttached unless a human could actually answer."""
+    """Raise NoHumanAttached unless a human could actually answer.
+
+    Use this where the question has NO safe default — "which files do you
+    want?" cannot be guessed. Where a safe default does exist, prefer
+    `use_default_without_human`: refusing to run is a worse answer than the
+    obviously-correct one.
+    """
     if human_attached():
         return
     msg = f"{what} needs an interactive terminal, and none is attached."
     if hint:
         msg = f"{msg} {hint}"
     raise NoHumanAttached(msg)
+
+
+def use_default_without_human(what: str, default_desc: str) -> bool:
+    """True when nobody can answer and the caller should apply its safe default.
+
+    The counterpart to `require_human`, for questions that *do* have a
+    conservative answer — mask the secret, don't delete the file, don't apply
+    the suspicious patch. Failing fast there would make kopipasta unusable
+    headlessly for no safety gain.
+
+    The substitution is narrated on stderr (never stdout, which is data under
+    the §8 output contract) so a headless run is auditable after the fact: a
+    silent policy decision about a secret is its own kind of bug.
+    """
+    if human_attached():
+        return False
+    print(f"kopipasta: {what} needs a human; {default_desc} instead.", file=sys.stderr)
+    return True

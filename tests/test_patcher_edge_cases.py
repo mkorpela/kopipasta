@@ -158,6 +158,10 @@ def test_safety_check_confirmed(edge_case_dir, capsys, monkeypatch):
     file_path.write_text("a" * 1000)
     llm_output = "```python\n# FILE: large_confirmed.py\nb\n```"
 
+    # A human is present and says yes. Without this, pytest's non-tty stdin
+    # makes the guard decline before click.confirm is reached — which is the
+    # correct headless behaviour, covered in test_patcher_headless.py.
+    monkeypatch.setattr("kopipasta.patcher.human_attached", lambda: True)
     monkeypatch.setattr(click, "confirm", lambda *args, **kwargs: True)
 
     cwd = os.getcwd()

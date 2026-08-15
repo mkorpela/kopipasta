@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 import os
 import argparse
 import sys
@@ -43,7 +43,8 @@ from kopipasta.cache import (
     load_map_from_cache,
 )
 from kopipasta.logger import configure_logging, get_logger
-from kopipasta.interaction import EXIT_NO_HUMAN, NoHumanAttached
+from kopipasta.interaction import EXIT_NO_HUMAN, NoHumanAttached, require_human
+from kopipasta.output import artifact_stream, emit, stdout_reserved_for_output
 
 
 def get_colored_code(file_path, code):
@@ -79,12 +80,36 @@ def fetch_web_content(
         return None, None, None
 
 
+class _HelpToStdoutParser(argparse.ArgumentParser):
+    """`kopipasta --help | less` must work, so help is output, not narration.
+
+    Pre-scanning argv for `-h` instead would misfire on a task string of "-h"
+    or a file named `--help`, and would disable the redirect for the entire
+    run. Letting argparse decide what is a flag is the only reliable answer.
+    Usage errors are unaffected: argparse passes stderr explicitly for those.
+    """
+
+    def print_help(self, file=None):
+        super().print_help(artifact_stream())
+
+
+class UsageError(Exception):
+    """A command line that cannot be honoured. Exits 1, not 8.
+
+    Distinct from NoHumanAttached because the fix is different: the caller
+    needs a corrected command line, not a policy flag or a terminal.
+    """
+
+
 class KopipastaApp:
-    def __init__(self):
+    def __init__(self, argv: Optional[List[str]] = None):
         # Initialize logging as early as possible
         configure_logging()
         self.logger = get_logger()
         self.console = Console()
+        # Injectable so tests can drive the real dispatch without patching
+        # sys.argv globally. None means "use the process arguments".
+        self.argv = argv
         self.args: argparse.Namespace = argparse.Namespace()
 
         # Core State
@@ -135,6 +160,11 @@ class KopipastaApp:
                 return
 
             self._finalize_and_output()
+        except (UsageError, NoHumanAttached) as e:
+            # Expected refusals, not crashes. Logging these as `app_crash`
+            # with a stack trace would train everyone to ignore app_crash.
+            self.logger.info("app_refused", reason=type(e).__name__, error=str(e))
+            raise
         except Exception as e:
             self.logger.exception("app_crash", error=str(e))
             raise
@@ -155,7 +185,7 @@ class KopipastaApp:
 
     def _parse_args(self):
         """Sets up argument parsing."""
-        parser = argparse.ArgumentParser(
+        parser = _HelpToStdoutParser(
             description="Generate a prompt with project structure, file contents, and web content."
         )
         parser.add_argument(
@@ -179,11 +209,85 @@ class KopipastaApp:
             action="store_true",
             help="Open the global user profile (AI Identity) in default editor",
         )
-        self.args = parser.parse_args()
+        # Spec Â§11.2: the non-interactive answer to "full or snippet?". Without
+        # these the only headless outcome is a refusal, which is safe but
+        # useless â€” a caller needs a way to say what it wants up front.
+        url_mode = parser.add_mutually_exclusive_group()
+        url_mode.add_argument(
+            "--url-full",
+            action="store_true",
+            help="Always use full content for large URLs (no prompt)",
+        )
+        url_mode.add_argument(
+            "--url-snippet",
+            action="store_true",
+            help="Always use a snippet for large URLs (no prompt)",
+        )
+        self.args = parser.parse_args(self.argv)
+        self._resolve_subcommand()
 
         # Default to current dir if no inputs
         if not self.args.inputs:
             self.args.inputs.append(".")
+
+    # Reserved for the verbs in spec Â§3. They do not exist yet, but the
+    # dispatch rule has to know their names NOW: the failure being prevented
+    # is a typo'd or not-yet-implemented verb being silently treated as a
+    # filename and opening the TUI.
+    SUBCOMMANDS = ("tui", "pack", "ask", "patch", "apply", "map", "session")
+    IMPLEMENTED_SUBCOMMANDS = ("tui",)
+
+    @staticmethod
+    def _looks_like_a_path(word: str) -> bool:
+        """True for anything a user could plausibly have meant as a file.
+
+        Deliberately generous. Refusing a real path is a regression for a
+        published tool; accepting a bare word that is not a path only costs us
+        the chance to catch a typo.
+        """
+        return (
+            os.path.exists(word)
+            or word.startswith(("http://", "https://", "-", ".", "~", "/", "\\"))
+            or "/" in word
+            or "\\" in word
+            or "*" in word
+            or "?" in word
+            or "." in os.path.basename(word)  # has an extension
+        )
+
+    def _resolve_subcommand(self):
+        """Spec Â§11.1b(3): a subcommand must never fall through to the TUI.
+
+        The Â§3 dispatch rule â€” "known verb? dispatch; otherwise treat as a
+        path" â€” is itself an accidental-TUI generator. `kopipasta pak --all`
+        is a typo, but `pak` is not on disk, so today it becomes a skipped
+        path, leaves an empty selection, and the tool exits 0 having done
+        nothing. Worse, with any real path also present it opens the selector.
+        A bare word that is not a path and not a known verb is a mistake, and
+        the honest response is to say so.
+        """
+        self.subcommand = None
+        first = self.args.inputs[0] if self.args.inputs else None
+        if first is None:
+            return
+
+        if first in self.SUBCOMMANDS:
+            if first not in self.IMPLEMENTED_SUBCOMMANDS:
+                raise UsageError(
+                    f"'{first}' is specified but not implemented yet "
+                    f"(see docs/AGENT_CLI_SPEC.md section 3). Implemented: "
+                    f"{', '.join(self.IMPLEMENTED_SUBCOMMANDS)}."
+                )
+            self.subcommand = first
+            self.args.inputs = self.args.inputs[1:]
+            return
+
+        if not self._looks_like_a_path(first):
+            raise UsageError(
+                f"unknown command '{first}'. "
+                f"It is not a known subcommand and there is no such file or "
+                f"directory. Known subcommands: {', '.join(self.SUBCOMMANDS)}."
+            )
 
     def _handle_utility_commands(self) -> bool:
         """Handles flags that exit immediately (reset/edit). Returns True if handled."""
@@ -260,15 +364,32 @@ class KopipastaApp:
         is_snippet = False
 
         if is_large:
-            print(f"\nContent from {url} is large. Here's a snippet:\n")
-            print(get_colored_code(url, snippet))
-            print("\n" + "-" * 40 + "\n")
+            if self.args.url_full or self.args.url_snippet:
+                choice = "s" if self.args.url_snippet else "f"
+            else:
+                # No flag and nobody to ask. Refuse rather than guess: full vs
+                # snippet changes what the model actually sees, so a wrong
+                # default produces a plausible-looking wrong answer instead of
+                # an obvious failure.
+                require_human(
+                    f"Choosing full content or a snippet for {url}",
+                    "Pass --url-full or --url-snippet to decide up front.",
+                )
+                print(f"\nContent from {url} is large. Here's a snippet:\n")
+                print(get_colored_code(url, snippet))
+                print("\n" + "-" * 40 + "\n")
 
-            while True:
-                choice = input("Use (f)ull content or (s)nippet? ").lower()
-                if choice in ["f", "s"]:
-                    break
-                print("Invalid choice. Please enter 'f' or 's'.")
+                while True:
+                    try:
+                        choice = input("Use (f)ull content or (s)nippet? ").lower()
+                    except EOFError:
+                        raise NoHumanAttached(
+                            f"stdin closed while choosing content for {url}. "
+                            "Pass --url-full or --url-snippet."
+                        )
+                    if choice in ["f", "s"]:
+                        break
+                    print("Invalid choice. Please enter 'f' or 's'.")
 
             if choice == "s":
                 content = snippet
@@ -405,9 +526,12 @@ class KopipastaApp:
         return task
 
     def _print_and_copy(self, final_prompt: str):
+        # The banner and rules are narration and stay on stderr; only the
+        # prompt itself is the artifact, so `kopipasta > prompt.txt` yields a
+        # file that can be used as-is.
         print("\n\nGenerated prompt:")
         print("-" * 80)
-        print(final_prompt)
+        emit(final_prompt)
         print("-" * 80)
 
         try:
@@ -433,7 +557,7 @@ class KopipastaApp:
             separator = (
                 "\n"
                 + "=" * 40
-                + "\n☕🍝       Kopipasta Complete!       🍝☕\n"
+                + "\nâ˜•ðŸ       Kopipasta Complete!       ðŸâ˜•\n"
                 + "=" * 40
                 + "\n"
             )
@@ -449,10 +573,19 @@ class KopipastaApp:
             print("You can manually copy the prompt above.")
 
 
-def main():
-    app = KopipastaApp()
+def main(argv: Optional[List[str]] = None):
+    with stdout_reserved_for_output():
+        _run(argv)
+
+
+def _run(argv: Optional[List[str]] = None):
+    app = KopipastaApp(argv)
     try:
         app.run()
+    except UsageError as e:
+        # A wrong command line. Exit 1, and never by opening the TUI.
+        print(f"kopipasta: {e}", file=sys.stderr)
+        sys.exit(1)
     except NoHumanAttached as e:
         # Exit fast and loudly rather than blocking a caller who cannot answer.
         print(f"\nkopipasta: {e}", file=sys.stderr)

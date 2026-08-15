@@ -1,11 +1,14 @@
 import os
 import re
+import sys
 from typing import List, Union, TypedDict, Tuple, Optional
 from difflib import SequenceMatcher
 
 import click
 from rich.console import Console
 from structlog.stdlib import BoundLogger
+
+from kopipasta.interaction import human_attached, use_default_without_human
 
 
 # --- Data Structures for Parsed Patches ---
@@ -865,13 +868,52 @@ def _apply_diff_patch(
     return True
 
 
+def _confirm_destructive(
+    prompt: str, *, opted_in: bool, what: str, default_desc: str
+) -> bool:
+    """Ask a human to confirm something destructive, or apply policy instead.
+
+    Three cases, and the middle one is the one worth being careful about:
+
+      - human attached      -> ask, exactly as before. No behaviour change.
+      - no human, opted in  -> proceed WITHOUT asking. The caller already
+        answered on the command line; re-prompting would be the stall.
+      - no human, not opted -> decline, and say so on stderr.
+
+    `opted_in` deliberately does not suppress the prompt when a human IS
+    present: --allow-delete says "this run may delete", not "delete without
+    telling me".
+    """
+    if human_attached():
+        return click.confirm(prompt, default=False)
+    if opted_in:
+        print(f"kopipasta: {what} — permitted by flag, no human to ask.", file=sys.stderr)
+        return True
+    use_default_without_human(what, default_desc)
+    return False
+
+
 def apply_patches(
-    patches: List[Patch], logger: Optional[BoundLogger] = None
+    patches: List[Patch],
+    logger: Optional[BoundLogger] = None,
+    allow_delete: bool = False,
+    force: bool = False,
 ) -> List[str]:
     """
     Applies a list of patches to the filesystem.
     Dispatches between full-file replacement and diff-based patching.
     Returns a list of file paths that were successfully modified.
+
+    With no human attached, the two confirmation prompts below become policy
+    (spec §9/§11.2) rather than questions: destructive actions are declined
+    unless the caller opted in via `allow_delete` / `force`. Both already
+    default to False and skip on decline, so the headless answer is the answer
+    a careful human would have given anyway.
+
+    Note this must NOT raise for the missing human: the per-file body is
+    wrapped in a broad `except Exception` that would swallow the refusal and
+    report it as a mangled patch error. Injecting the decision is the only
+    shape that survives that.
     """
     console = Console()
     modified_files = []
@@ -911,7 +953,12 @@ def apply_patches(
             # --- Deletion Handling ---
             if patch_type == "delete":
                 if os.path.exists(file_path):
-                    if click.confirm(f"🗑️  Delete {file_path}?", default=False):
+                    if _confirm_destructive(
+                        f"🗑️  Delete {file_path}?",
+                        opted_in=allow_delete,
+                        what=f"Deleting {file_path}",
+                        default_desc="refusing the delete (pass --allow-delete to permit it)",
+                    ):
                         try:
                             os.remove(file_path)
                             modified_files.append(file_path)
@@ -1032,9 +1079,11 @@ def apply_patches(
                         )
                     )
 
-                    if not click.confirm(
+                    if not _confirm_destructive(
                         f"   Are you sure you want to overwrite {file_path}?",
-                        default=False,
+                        opted_in=force,
+                        what=f"Overwriting {file_path} despite the safety check",
+                        default_desc="skipping the file (pass --force to overwrite anyway)",
                     ):
                         console.print(f"   [red]Skipped {file_path}[/red]")
                         if logger:

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from kopipasta.file import read_file_contents
+from kopipasta.interaction import require_human
 
 
 def read_env_file() -> Dict[str, str]:
@@ -152,6 +153,14 @@ def open_profile_in_editor():
         except IOError as e:
             print(f"Error creating profile: {e}")
             return
+
+    # Same hazard as open_template_in_editor: a terminal editor on a pipe
+    # blocks forever. Checked after the file is created, so the headless
+    # caller is left with something it can edit directly.
+    require_human(
+        f"Opening {config_path} in an editor",
+        "The file exists and can be edited directly.",
+    )
 
     editor = os.environ.get("EDITOR", "code" if shutil.which("code") else "vim")
 

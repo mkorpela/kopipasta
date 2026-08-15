@@ -1390,6 +1390,14 @@ q: Quit and finalize"""
         except KeyboardInterrupt:
             self.search_mode = False
             return
+        except OSError as e:
+            # The same terminal-lost failure the main loop guards, on the
+            # second blocking read nobody noticed. This branch is dispatched
+            # OUTSIDE the main loop's try, so an OSError here would escape as
+            # a raw traceback instead of a clean exit 8 — and any caller that
+            # retried would rebuild the original spin.
+            self.logger.info("search_loop_terminal_lost", error=str(e))
+            raise NoHumanAttached(f"Lost the terminal during search: {e}")
 
         if key in ("\x1b", "\x1b\x1b"):
             self.search_mode = False

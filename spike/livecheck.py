@@ -64,19 +64,44 @@ def build_prefix() -> str:
     return "\n".join(parts)
 
 
-# (label, backend spec, credential present?, caching is explicit-and-ours?)
-def discover() -> List[Tuple[str, str, bool, bool, str]]:
+def _have_gemini() -> bool:
+    return bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
+
+
+def discover() -> List[dict]:
+    """Each entry is one arm of the experiment.
+
+    `explicit` means "we asked this provider to cache, and it gave us a
+    mechanism to ask with". It drives the verdict: where we placed a
+    breakpoint ourselves, a miss is OUR bug and must be reported as a
+    failure; where caching is the provider's opportunistic business, a miss
+    is a finding about the provider.
+    """
+    have_claude = shutil.which("claude") is not None
+    gem = os.environ.get("GEMINI_MODEL", "gemini-3.7-flash")
     return [
-        ("claude-cli", f"claude-cli:{os.environ.get('CLAUDE_MODEL', '-')}",
-         shutil.which("claude") is not None, False,
-         "claude on PATH" if shutil.which("claude") else "claude not on PATH"),
-        ("anthropic", f"anthropic:{os.environ.get('ANTHROPIC_MODEL', 'claude-opus-5')}",
-         bool(os.environ.get("ANTHROPIC_API_KEY")), True, "ANTHROPIC_API_KEY"),
-        ("gemini", f"gemini:{os.environ.get('GEMINI_MODEL', 'gemini-3.7-flash')}",
-         bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")), False,
-         "GEMINI_API_KEY or GOOGLE_API_KEY"),
-        ("openai", f"openai:{os.environ.get('OPENAI_MODEL', 'gpt-5')}",
-         bool(os.environ.get("OPENAI_API_KEY")), False, "OPENAI_API_KEY"),
+        {"label": "claude-cli", "spec": f"claude-cli:{os.environ.get('CLAUDE_MODEL', '-')}",
+         "have": have_claude, "explicit": False,
+         "cred": "claude on PATH" if have_claude else "claude not on PATH"},
+        {"label": "anthropic",
+         "spec": f"anthropic:{os.environ.get('ANTHROPIC_MODEL', 'claude-opus-5')}",
+         "have": bool(os.environ.get("ANTHROPIC_API_KEY")), "explicit": True,
+         "cred": "ANTHROPIC_API_KEY"},
+        # Two arms, and the pair is the point. The delta between them is the
+        # whole §2.9 finding; either number alone is uninterpretable.
+        {"label": "gemini", "spec": f"gemini:{gem}",
+         "have": _have_gemini(), "explicit": True,
+         "cred": "GEMINI_API_KEY or GOOGLE_API_KEY",
+         "kwargs": {"cache": True},
+         "note": "explicit cachedContents, TTL-bounded"},
+        {"label": "gemini-implicit", "spec": f"gemini:{gem}",
+         "have": _have_gemini(), "explicit": False,
+         "cred": "GEMINI_API_KEY or GOOGLE_API_KEY",
+         "kwargs": {"cache": False},
+         "note": "control arm: no cachedContents, implicit caching only"},
+        {"label": "openai", "spec": f"openai:{os.environ.get('OPENAI_MODEL', 'gpt-5')}",
+         "have": bool(os.environ.get("OPENAI_API_KEY")), "explicit": False,
+         "cred": "OPENAI_API_KEY"},
     ]
 
 
@@ -91,32 +116,52 @@ def turn(b, prefix: str, suffix: str) -> Tuple[Optional[backends.Completion], fl
 
 def main(argv: List[str]) -> int:
     only = {a.lower() for a in argv[1:]}
-    prefix = build_prefix()
-    print(f"\npayload: {len(prefix):,} chars (~{len(prefix)//4:,}-{len(prefix)//2:,} tokens "
-          f"depending on tokenizer)\n")
+    print(f"\npayload: {len(build_prefix()):,} chars (~{len(build_prefix())//4:,}-"
+          f"{len(build_prefix())//2:,} tokens depending on tokenizer)\n")
 
     ran = failed = 0
-    for label, spec, have, explicit, credname in discover():
+    for arm in discover():
+        label, spec, explicit = arm["label"], arm["spec"], arm["explicit"]
         if only and label not in only:
             continue
-        if not have:
-            print(f"── {label:<11} SKIPPED — no credential ({credname})")
+        if not arm["have"]:
+            print(f"── {label:<15} SKIPPED — no credential ({arm['cred']})")
             continue
 
-        print(f"── {label:<11} {spec}")
-        b = backends.build(spec)
+        note = f"   [{arm['note']}]" if arm.get("note") else ""
+        print(f"── {label:<15} {spec}{note}")
 
-        c1, dt1, err = turn(b, prefix, SUFFIX_A)
-        if err:
-            print(f"   turn 1 ERROR: {err}\n")
-            failed += 1
-            continue
-        c2, dt2, err = turn(b, prefix, SUFFIX_B)
-        if err:
-            print(f"   turn 2 ERROR: {err}\n")
-            failed += 1
-            continue
+        # A FRESH prefix per arm, not one shared across the run. Arms hit the
+        # same provider, so an earlier arm's traffic warms the implicit cache
+        # and the next arm's "cold" turn 1 is anything but — that silently
+        # destroyed the control arm the first time this ran. When
+        # LIVECHECK_NONCE is set the prefix is pinned on purpose and every arm
+        # shares it, which is the whole point of pinning.
+        prefix = build_prefix()
+        b = backends.build(spec, **arm.get("kwargs", {}))
+
+        # A backend may have rented a cache that bills until its TTL expires.
+        # Hand it back even if the experiment blows up halfway.
+        try:
+            c1, dt1, err = turn(b, prefix, SUFFIX_A)
+            if err:
+                print(f"   turn 1 ERROR: {err}\n")
+                failed += 1
+                continue
+            c2, dt2, err = turn(b, prefix, SUFFIX_B)
+            if err:
+                print(f"   turn 2 ERROR: {err}\n")
+                failed += 1
+                continue
+        finally:
+            close = getattr(b, "close", None)
+            if callable(close):
+                close()
         ran += 1
+
+        why_off = getattr(b, "cache_disabled_reason", "")
+        if why_off:
+            print(f"   NOTE: explicit cache unavailable, fell back to inline — {why_off}")
 
         for n, c, dt in ((1, c1, dt1), (2, c2, dt2)):
             cost = f"  ${c.cost_usd:.4f}" if c.cost_usd else ""
@@ -149,11 +194,29 @@ def main(argv: List[str]) -> int:
                   f"re-wrote {c2.cache_creation_tokens:,} tokens. The adapter, not the "
                   f"provider, is the suspect.")
             failed += 1
+        elif explicit and not read_on_2:
+            # The trap this branch exists for: a provider that reports no
+            # cache-creation counter at all makes `wrote_on_1` structurally
+            # False, so every earlier branch falls through to "not reused" —
+            # and a perfectly working cache is indistinguishable from a broken
+            # one. If we asked for caching and turn 2 read nothing back, that
+            # is a failure we own, not a fact about the provider.
+            print(f"   VERDICT: FAIL — we asked this provider to cache the prefix and "
+                  f"turn 2 read {c2.cached_tokens:,} tokens back. Explicit caching is "
+                  f"not working; suspect the adapter.")
+            failed += 1
+        elif explicit and read_on_2:
+            print(f"   VERDICT: PREFIX REUSED — turn 2 served {c2.cached_tokens:,} tokens "
+                  f"from the cache we created explicitly. (This provider reports no "
+                  f"cache-creation counter on the completion, so turn 1's write shows up "
+                  f"only as the cache resource's own size.)")
         else:
             print(f"   VERDICT: PREFIX NOT REUSED — turn 2 re-wrote "
                   f"{c2.cache_creation_tokens:,} tokens (turn 1: "
                   f"{c1.cache_creation_tokens:,}). Back-to-back calls get no "
-                  f"benefit from a stable prefix here.")
+                  f"benefit from a stable prefix here. NB: implicit/opportunistic "
+                  f"caching is not a promise — if this provider offers an explicit "
+                  f"cache, this is an argument for using it.")
 
         # Cost is the headline where the provider reports it; where it does not
         # (raw APIs return tokens only), cache share is the honest proxy.

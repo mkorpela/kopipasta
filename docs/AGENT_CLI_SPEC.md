@@ -313,7 +313,8 @@ features it drops are precisely the two the oracle is built on.
 
 | | Anthropic native | Gemini native | OpenAI-compatible |
 |---|---|---|---|
-| Explicit cache breakpoint | `cache_control: ephemeral` on a content block | `cachedContents` resource | **none** — implicit, no control |
+| Explicit cache breakpoint | `cache_control: ephemeral` on a content block | `cachedContents` resource — **required; implicit caching measured 0%** | **none** — implicit, no control |
+| Cache lifetime cost | free to abandon | **rented: per token-hour until TTL** | n/a |
 | Server-enforced schema | forced single tool + `input_schema` | `responseSchema` + `responseMimeType` | `response_format: json_schema` |
 | Cached-token accounting | `usage.cache_read_input_tokens` | `usageMetadata.cachedContentTokenCount` | `usage.prompt_tokens_details.cached_tokens` |
 | Context ceiling | large | **1M+ — the reason this adapter exists** | varies |
@@ -393,6 +394,29 @@ lifetime and false within a rapid burst.** An agent firing three follow-ups in t
 full freight three times. Design accordingly: do not promise per-turn savings in the `--json`
 output, and treat rapid multi-turn as a cost the caller should know about.
 
+#### Measured: Gemini's implicit caching does not serve this pattern
+
+The same experiment against Gemini, and the result is a warning about assuming caching happens
+by itself. `gemini-3.7-flash`, 58k chars (~16.3k tokens, four times the documented 4,096-token
+minimum), two arms seconds apart on the same model:
+
+| arm | turn 2 cache share |
+|---|---|
+| explicit `cachedContents` | **99.9%** (16,277 / 16,293) |
+| implicit only (control) | **0.0%** (0 / 16,290) |
+
+Implicit caching missed on **7/7** requests that shared a byte-identical prefix but asked a
+different question, and hit on **5/5** exact repeats of a whole earlier request. That is the
+inverse of what an oracle needs: "same repo, different question" is the entire access pattern,
+and an exact-repeat hit hands back an answer you already had. It is not a lag — a new suffix
+missed 98 seconds in, while a repeat hit 2 seconds after its own miss.
+
+**Consequence for §11.2 and §6:** Gemini's cache is a *resource*, not a request flag, and it is
+billed per token-hour for the whole TTL whether or not turn 2 arrives. A session that opens one
+must own its lifetime: explicit clamped TTL, delete on session end, and a sweep for orphans. A
+crashed run that leaks one produces a bill, not an error — the failure mode nobody notices.
+See `AGENT_CLI_FINDINGS.md` §2.9.
+
 #### Measured: the raw API has no such lag
 
 The same experiment against the real Anthropic API, 56k-char payload, cold turn 1:
@@ -423,8 +447,10 @@ design targets 400k–1M, where TTL and minimum-prefix rules may differ. See
 
 #### Choosing
 
-- **Gemini** for use case A. 1M+ context is the only honest way to frontload a large repo, and
-  `responseSchema` makes the triage answer machine-consumable without parsing prose.
+- **Gemini** for use case A. 1M+ context is the only honest way to frontload a large repo
+  (`inputTokenLimit: 1048576`, confirmed), and `responseSchema` makes the triage answer
+  machine-consumable without parsing prose. **Always create an explicit `cachedContents` entry**
+  — measured, the implicit path gives 0% on multi-turn — and always own its TTL.
 - **Anthropic** for use case B and any multi-turn session. Explicit cache breakpoints are the
   best available control for the stable-prefix pattern, which is what a session *is*.
 - **`openai:` + `--base-url`** for everything else, including local models — accepting that you
@@ -572,12 +598,34 @@ Both the TUI and the CLI become thin views over this. The TUI gets simpler as a 
 
 Three call sites block on a human inside otherwise pure logic:
 
-| Location | Current | Fix |
-|---|---|---|
-| `prompt.py:383` | `input()` per env var during render | `policy` param; non-interactive default **mask** (leaking a secret to an API is worse than a broken value) and report what was masked in `--json` |
-| `patcher.py:914` | `click.confirm` on delete | injected `confirm` callable; agent policy = `--allow-delete` |
-| `patcher.py:1035` | `click.confirm` on shrink guard | injected `confirm`; agent policy = hard fail unless `--force` |
-| `main.py:267` | `input()` for web full/snippet | `--url-full` / `--url-snippet` flags |
+The policy is **not** uniform, and that is the point. Two kinds of question:
+
+- **No safe default → refuse** (exit 8) and name the flag that avoids the question. "Which
+  files?", "What is the task?", "Full page or snippet?" cannot be guessed; a wrong guess yields
+  a plausible-looking wrong answer, which is worse than an obvious failure.
+- **Safe default exists → apply it**, narrate on stderr, keep running. Failing fast on
+  everything would make kopipasta unusable in CI the moment a `.env` existed, and buy no safety
+  at all — masking already leaks nothing.
+
+`interaction.require_human` is the first; `interaction.use_default_without_human` is the second.
+
+| Location | Current | Fix | Status |
+|---|---|---|---|
+| `prompt.py:383` | `input()` per env var during render | non-interactive default **mask** (leaking a secret to an API is worse than a broken value); announce on stderr, and report what was masked in `--json` | **done** |
+| `prompt.py:553` | `prompt_toolkit` task editor | `require_human`, hint names `-t/--task` | **done** |
+| `main.py:267` | `input()` for web full/snippet | `--url-full` / `--url-snippet` flags; `require_human` when neither is given | **done** |
+| `patcher.py:914` | `click.confirm` on delete | policy `allow_delete`; declines by default | **done** |
+| `patcher.py:1035` | `click.confirm` on shrink guard | policy `force`; skips the file by default | **done** |
+
+Two constraints the patcher work exposed, both worth carrying into the headless `apply` verb:
+
+- **The refusal must not raise.** The per-file body of `apply_patches` is wrapped in a broad
+  `except Exception`, so a `NoHumanAttached` would be swallowed and resurface as
+  "Error processing …" — sending the caller to debug a patch that was fine. Injecting the
+  decision is the only shape that survives an exception handler you do not control.
+- **An opt-in flag must not suppress the prompt for a human who IS present.** `--allow-delete`
+  means "this run may delete", not "delete without telling me". The flag answers the question
+  only when there is nobody to ask.
 
 ### 11.1b Never stall a caller who cannot answer
 
@@ -622,23 +670,33 @@ where the blocking happens, not in the argument grammar.
    the selector. If `argv[1]` is a bare word — no path separator, no extension, not present on
    disk — and is not a known subcommand, exit 1 with "unknown command". Only fall through for
    things that actually look like paths.
+
+   Implemented in `KopipastaApp._resolve_subcommand`. Two details worth keeping: the
+   path-detection is deliberately **generous** (an existing `Makefile` is a path, not a typo)
+   because breaking a real invocation of a published tool is worse than the bug being fixed; and
+   verbs that are *specced but unbuilt* (`pack`, `ask`, …) get their own message rather than
+   "unknown command", because "not yet" and "no such thing" send the caller to different places.
 4. **`kopipasta tui` as an explicit alias.** Additive, breaks nothing, gives scripts an
    unambiguous way to say "I really do want the UI" — and leaves the door open to flipping the
-   default later without inventing new syntax then.
+   default later without inventing new syntax then. Note that it does **not** bypass layer 1:
+   naming the TUI explicitly is not consent to hang, which is the same reason moving the TUI
+   behind a subcommand was rejected as the primary fix.
 
 Exit code **8 = interaction required, no human attached**, distinct from 1 (usage) because the
 fix differs: the caller needs a policy or a different invocation, not a corrected command line.
 The message names the env var that makes the refusal explicit.
 
-Every other prompt in §11.2 routes through the same guard, so the fix generalises: TUI launch,
-env masking, delete confirmation, the shrink guard, the web snippet choice and Ralph setup all
-fail fast with a diagnostic instead of blocking.
+Every other prompt in §11.2 now routes through the same module, so the fix generalises — but
+see that section for why "fail fast" is the right answer for only *some* of them. The task
+prompt and the web snippet choice refuse (exit 8); env masking applies the safe default and
+carries on. A guard that refuses uniformly would be simpler and would make the tool useless in
+CI.
 
 Bounded runtime is a separate axis and still worth having: `--timeout` already caps a single
 backend call, and a global `--deadline` capping the whole invocation would let a caller
 guarantee termination regardless of which stage misbehaves.
 
-### 11.2b Narration currently goes to stdout, which breaks `--json`
+### 11.2b Narration currently goes to stdout, which breaks `--json` — **done**
 
 Found by the spike the moment it tried to parse its own output: `config.read_gitignore`
 (`config.py:68`) prints `".gitignore detected."` to **stdout**, and `apply_patches` prints its
@@ -650,12 +708,56 @@ libraries on the path have no such contract. Belt and braces: **redirect `sys.st
 `sys.stderr` for the whole run in `--json` mode** and write the result object to the saved real
 stdout handle. Narration then cannot corrupt the contract no matter who emits it.
 
-### 11.3 Fix the global cache (pre-existing bug)
+Implemented in `output.py` and applied **unconditionally**, not only in `--json` mode. The
+audit would have been large (127 `print()` and 92 `console.print()` calls) and would not have
+held: `rich`, `click`, and anything else on the path write to stdout too. One redirect converts
+every call site at once, including third-party ones, and `rich` resolves `Console.file` at
+write time so consoles built before the swap follow it.
 
-`cache.py:12` stores selection, map, and task in a **single global** `~/.cache/kopipasta/`
+Three consequences worth stating, all of them tested:
+
+1. **`kopipasta > prompt.txt` now yields the prompt.** Previously the file began
+   `Generated prompt:`, contained 80 dashes, the included-file list and a `☕🍝` banner.
+2. **Redirecting the artifact no longer disables the TUI.** `human_attached()` checks the
+   stream it narrates to, which is now stderr; the keyboard and display are still present when
+   only stdout is redirected. This is a behaviour change and a deliberate one.
+3. **`--help` is output, not narration.** It is written to the artifact stream by a parser
+   subclass. Pre-scanning `argv` for `-h` was the first attempt and is wrong: `kopipasta -- -h`
+   names a *file*, and the scan would silently disable the redirect for the whole run.
+
+The one thing the redirect cannot fix is itself: `main._configure_platform` calls
+`sys.stdout.reconfigure(encoding="utf-8")`, which by then is stderr, leaving the real artifact
+handle on cp1252 — the stream most likely to carry non-ASCII, since it carries the user's file
+contents. `output.py` reconfigures the saved handle where it still has a reference to it.
+
+### 11.3 Fix the global cache (pre-existing bug) — **done**
+
+`cache.py:12` stored selection, map, and task in a **single global** `~/.cache/kopipasta/`
 directory. Two kopipasta processes in two repos already clobber each other's state today; with
 agents running things in parallel this goes from latent to routine. Key the cache by project
 root hash, and treat per-session state as belonging to `.kopipasta/sessions/<id>/` instead.
+
+**It was worse than "clobber", because the files hold *relative* paths.** Opening repo B did
+not fail to load repo A's selection — it loaded it and the `os.path.exists()` filter kept every
+path that happened to exist in B too, so `src/main.py` and `README.md` were silently
+pre-selected from another project's session. The same applied to the task description, which is
+prose and frequently confidential. `clear_cache()` wiped the shared files, so ending a session
+in one repo destroyed every other repo's saved state. None of it warned.
+
+Implemented as:
+
+| Concern | Decision |
+| --- | --- |
+| Location | `~/.cache/kopipasta/projects/<slug>-<sha256[:12]>/`. **Not** in the project: that would need a `.gitignore` entry in every repo and breaks on read-only checkouts. |
+| Project identity | Nearest ancestor containing `.git` (a *file* in worktrees/submodules), else cwd — so `repo/` and `repo/src/` share one cache instead of looking like two projects. |
+| Key normalisation | `os.path.normcase`, plus `.lower()` on darwin only. macOS is case-insensitive but `normcase` is a POSIX no-op; Linux is genuinely case-sensitive, so folding there would merge two real projects. |
+| Stored paths | Relative to the **project root**, converted back to cwd-relative on load, since callers `os.path.abspath()` the result. |
+| Writes | Temp file + `os.replace`, retried on `PermissionError` (Windows fails the rename while another process holds the destination). Torn reads were reproducible in 0.5s before this. |
+| Legacy global files | Never read — attributing them to whichever repo runs first would recreate the bug. Swept only on an explicit `clear_cache()`. |
+| Failure | A cache must never be why the tool won't start: unset `HOME` falls back to the temp dir, and an unwritable root degrades to a stderr warning. |
+
+Cache warnings moved to stderr as part of this (§11.2b): they are narration, and on stdout they
+corrupt `--json`.
 
 ### 11.4 Zone the prompt template
 

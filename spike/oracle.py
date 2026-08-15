@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Throwaway spike proving the `exec:` backend end-to-end.
 
 NOT the Phase 1 implementation — no refactor, no core package, no TUI changes.
@@ -247,13 +247,25 @@ TRIAGE_SCHEMA = {
 }
 
 
-def run_backend(spec, prefix, suffix, timeout, base_url, schema):
+def run_backend(spec, prefix, suffix, timeout, base_url, schema,
+                cache=True, cache_ttl_s=None):
+    b = None
     try:
-        b = backends.build(spec, base_url=base_url, timeout=timeout)
+        kw = {} if cache_ttl_s is None else {"cache_ttl_s": cache_ttl_s}
+        b = backends.build(spec, base_url=base_url, timeout=timeout, cache=cache, **kw)
         c = b.complete(prefix, suffix, schema=schema)
     except backends.BackendError as e:
         kind = EX_NOBACKEND if "unknown backend" in str(e) else EX_BACKEND
         return kind, "", str(e), None
+    finally:
+        # A backend may hold a cache that bills per token-hour until its TTL.
+        # This is a single-shot CLI: nothing here will reuse it, so holding it
+        # open would be pure rent. A real session (spec §6) is where keeping it
+        # alive starts to pay, and that is also where an owner has to exist.
+        if b is not None:
+            close = getattr(b, "close", None)
+            if callable(close):
+                close()
     return EX_OK, c.text, "", c
 
 
@@ -289,7 +301,7 @@ def cmd_pack(args) -> int:
     payload = prefix + "\n" + suffix
     out = args.out or os.path.join(SESSIONS, "pack.md")
     os.makedirs(os.path.dirname(out), exist_ok=True)
-    with open(out, "w") as f:
+    with open(out, "w", encoding="utf-8") as f:
         f.write(payload)
     emit(args, {
         "ok": True, "payload": os.path.relpath(out, ROOT),
@@ -319,17 +331,19 @@ def cmd_ask(args) -> int:
     payload = prefix + "\n" + suffix
     sid, sdir, turn = open_session(args.session)
     req = os.path.join(sdir, f"{turn:03d}-request.md")
-    with open(req, "w") as f:
+    with open(req, "w", encoding="utf-8") as f:
         f.write(payload)
 
     t0 = time.time()
     schema = TRIAGE_SCHEMA if mode == "triage" else None
     code, stdout, err, comp = run_backend(
-        args.backend, prefix, suffix, args.timeout, args.base_url, schema)
+        args.backend, prefix, suffix, args.timeout, args.base_url, schema,
+        cache=not getattr(args, "no_cache", False),
+        cache_ttl_s=getattr(args, "cache_ttl", None))
     dt = round(time.time() - t0, 1)
 
     resp = os.path.join(sdir, f"{turn:03d}-response.md")
-    with open(resp, "w") as f:
+    with open(resp, "w", encoding="utf-8") as f:
         f.write(stdout)
 
     base = {
@@ -357,11 +371,24 @@ def cmd_ask(args) -> int:
 
     if mode == "triage":
         base["triage"] = extract_json(stdout)
+        if base["triage"] is None:
+            # `ok: true` beside `triage: null` is the worst possible report: a
+            # caller branching on `ok` proceeds with no answer. Triage mode
+            # promises a machine-readable result, so failing to produce one is
+            # a failure of the call, not a quiet null.
+            base["ok"] = False
+            base["error"] = (
+                "triage mode returned no parseable JSON "
+                f"({len(stdout)} chars written to {base['response']}). "
+                "Usually a truncated answer — raise --timeout or the model's "
+                "output budget."
+            )
+            code = EX_BACKEND
     else:
         base["answer_head"] = " ".join(stdout.split())[:240]
 
     if not args.apply:
-        with open(os.path.join(sdir, f"{turn:03d}-meta.json"), "w") as f:
+        with open(os.path.join(sdir, f"{turn:03d}-meta.json"), "w", encoding="utf-8") as f:
             json.dump(base, f, indent=2)
         emit(args, base)
         return EX_OK
@@ -390,7 +417,7 @@ def cmd_ask(args) -> int:
     if args.verify:
         v = subprocess.run(args.verify, shell=True, capture_output=True, text=True, cwd=ROOT)
         log = os.path.join(sdir, f"{turn:03d}-verify.log")
-        with open(log, "w") as f:
+        with open(log, "w", encoding="utf-8") as f:
             f.write(v.stdout + v.stderr)
         base["verify"] = {
             "command": args.verify, "exit": v.returncode,
@@ -404,7 +431,7 @@ def cmd_ask(args) -> int:
                 base["reverted"] = True
             rc = EX_VERIFY
     base["ok"] = rc == EX_OK
-    with open(os.path.join(sdir, f"{turn:03d}-meta.json"), "w") as f:
+    with open(os.path.join(sdir, f"{turn:03d}-meta.json"), "w", encoding="utf-8") as f:
         json.dump(base, f, indent=2)
     emit(args, base)
     return rc
@@ -469,6 +496,14 @@ def main() -> int:
             p.add_argument("--verify")
             p.add_argument("--revert-on-fail", action="store_true")
             p.add_argument("--allow-delete", action="store_true")
+            # Gemini's prefix cache is a rented resource, not a request flag.
+            # --no-cache exists because that rent is real: a one-shot question
+            # that will never have a turn 2 pays storage for nothing.
+            p.add_argument("--no-cache", action="store_true",
+                           help="don't create a provider-side prefix cache (gemini:)")
+            p.add_argument("--cache-ttl", type=int, default=None, metavar="SECONDS",
+                           help="lifetime of the provider-side prefix cache "
+                                "(gemini:; default 300, max 3600)")
     args = ap.parse_args()
     args.apply = args.cmd == "patch"
     if args.json:

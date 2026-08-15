@@ -397,13 +397,13 @@ output, and treat rapid multi-turn as a cost the caller should know about.
 
 The same experiment against the real Anthropic API, 56k-char payload, cold turn 1:
 
-| | raw `input_tokens` | cache_read | cache_creation |
-|---|---|---|---|
-| turn 1 (cold) | 19 | 0 | ~20,343 |
-| turn 2 (~4s later) | 23 | **20,343** | 0 |
+| | raw `input_tokens` | cache_read | cache_creation | total input |
+|---|---|---|---|---|
+| turn 1 (cold) | 19 | 0 | **20,345** | 20,364 |
+| turn 2 (~4s later) | 23 | **20,345** | 0 | 20,368 |
 
-Turn 2 read the whole prefix back **four seconds** after turn 1 wrote it. Side by side on the
-same payload, turn 2 of a back-to-back pair:
+Turn 2 read the whole prefix back **four seconds** after turn 1 wrote it — 99.9% of its input.
+Side by side on the same payload, turn 2 of a back-to-back pair:
 
 | backend | cache share of input | cost delta |
 |---|---|---|

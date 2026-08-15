@@ -22,7 +22,7 @@ provider API keys**. That constraint shapes what could and could not be verified
 | `claude-cli:` backend | **live-verified** | real `claude -p --output-format json` |
 | Triage mode (use case A) | **live-verified** | found the right call sites, plus one we missed |
 | One-shot patch (use case B) | **live-verified** | 4 hunks, +32/−17, 119 tests green |
-| `anthropic:` backend | **live-verified** | real API, by the repo owner — see §2.7 |
+| `anthropic:` backend | **live-verified** | real API, twice (cold + post-fix) — §2.7 |
 | Raw-API cache behaviour | **ANSWERED: no lag** | §2.7 |
 | `gemini:` backend | **wire format only** | mock; never saw a real response |
 | `openai:` backend | **wire format only** | mock; never saw a real response |
@@ -109,13 +109,19 @@ direction.
 Run against the real Anthropic API (`anthropic:claude-opus-5`, 56,180-char payload, per-run
 nonce so turn 1 was cold):
 
-| | raw `input_tokens` | cache_read | cache_creation |
-|---|---|---|---|
-| turn 1 (cold) | 19 | 0 | ~20,343 |
-| turn 2 (~4s later) | 23 | **20,343** | 0 |
+| | raw `input_tokens` | cache_read | cache_creation | total input |
+|---|---|---|---|---|
+| turn 1 (cold) | 19 | 0 | **20,345** | 20,364 |
+| turn 2 (~4s later) | 23 | **20,345** | 0 | 20,368 |
 
-**Turn 2 read the entire prefix back from cache about four seconds after turn 1 wrote it.**
-Contrast §2.4, where the CLI re-wrote the whole prefix on a back-to-back turn and saved nothing.
+**Turn 2 read the entire prefix back from cache about four seconds after turn 1 wrote it** —
+20,345 of 20,368 input tokens, 99.9%. Contrast §2.4, where the CLI re-wrote the whole prefix on
+a back-to-back turn and saved nothing.
+
+Both columns are directly observed. The first run of this experiment could only infer turn 1's
+cache write from what turn 2 read back, because the adapter bug below discarded it; the re-run
+after the fix reports it outright, and the two agree (inferred ~20,343 vs observed 20,345 — the
+difference is nonce length between runs).
 
 Consequence for the plan: the cheap-follow-up-turn economics **hold on the raw API and do not
 hold through the CLI**. That promotes `anthropic:` from a Phase 2 optimisation to something
@@ -147,11 +153,10 @@ was invisible to the test suite: **the assertions had a hole in exactly the plac
 had a bug.** The mock now returns the real observed numbers (19 / 0 / 20,343) and asserts both
 that `cache_creation` survives and that `input_tokens` sums to 20,362 rather than 19.
 
-Caveat worth keeping: turn 1's `cache_creation` of ~20,343 is **inferred** from what turn 2 read
-back, because the buggy adapter discarded it. The fix makes it directly observable; a re-run
-turns the inference into an observation. Nothing else in the conclusion depends on it — turn 2's
-20,343-token cache read was reported directly, and the nonce guarantees only turn 1 could have
-written it.
+Both bugs are fixed and the re-run confirms the result directly, so nothing in §2.7 rests on
+inference any more. The sequence is worth remembering as a pattern: a **null-looking result was
+actually two reporting bugs stacked on a positive one.** `in=19 cached=0 created=0` read as
+"nothing happened"; it was really "everything happened and we logged none of it."
 
 ### 2.6 Triage quality (n=1, but encouraging)
 

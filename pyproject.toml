@@ -32,6 +32,12 @@ dependencies = [
     "tree-sitter>=0.25.2",
     "tree-sitter-javascript>=0.25.0",
     "tree-sitter-typescript>=0.23.2",
+    # `tomllib` is 3.11+. Without this a 3.10 user — a version this project
+    # declares support for — cannot read config.toml at all: every `ask`
+    # exits with "Reading TOML needs Python 3.11+ or the 'tomli' package".
+    # It went unnoticed because mypy pulls tomli in on 3.10, so every
+    # development environment had it by accident.
+    "tomli>=2.0.1; python_version < '3.11'",
 ]
 
 [project.scripts]
@@ -48,12 +54,46 @@ build-backend = "hatchling.build"
 [dependency-groups]
 dev = [
     "pytest",
-    "mypy>=1.0",
-    "ruff>=0.15.1",
+    "mypy>=1.19",
+    # Pinned, not floored. `ruff check` with 0.16 raises ~670 findings on code
+    # 0.15 passes clean, because the default rule set moved. A lint gate whose
+    # verdict depends on which version happened to be resolved is a gate
+    # nobody can act on, so the number is the same for the hook, for CI and on
+    # a laptop.
+    "ruff==0.15.1",
+    "pre-commit>=4.0",
+    # Without these mypy reports 8 "library stubs not installed" errors that
+    # are noise, and noise is what teaches people to skip the gate.
+    "types-requests",
+    "types-Pygments",
+    "types-pyperclip",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["kopipasta"]
+
+[tool.ruff]
+# Named explicitly rather than inherited. Ruff's *default* selection changes
+# between minor releases, and a lint gate that means something different this
+# month than last month is one nobody trusts enough to act on.
+target-version = "py310"
+line-length = 88
+
+[tool.ruff.lint]
+# E4/E7/E9/F is what ruff already checks by default and what this code already
+# passes. The additions each earn their place:
+#
+#   I      import order, so a merge never has to think about it
+#   B      real bugs — B904 loses the cause of an exception, B007 is a typo
+#   UP015  `open(p, "r")`, 31 of them
+#   UP024  `except IOError` is `except OSError` wearing a 2.7 costume
+#
+# The rest of `UP` is deliberately absent. UP006/UP045/UP035 alone are 556
+# findings — the PEP 585/604 rewrite of every `List[str]` in the tree. That is
+# a real cleanup and it is a *separate* commit: landing it here would bury the
+# change under a mechanical diff nobody can review, and a rule set chosen to
+# produce an unreviewable diff is how a new gate gets turned off in week two.
+select = ["E4", "E7", "E9", "F", "I", "B", "UP015", "UP024"]
 
 [tool.mypy]
 python_version = "3.10"
@@ -61,3 +101,22 @@ warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
 check_untyped_defs = true
+
+# `tomllib` is 3.11+, and `tomli` is its 3.10 fallback. The code imports one
+# and falls back to the other inside a try/except, which is exactly right and
+# which mypy cannot see through while checking against python_version 3.10.
+[[tool.mypy.overrides]]
+module = ["tomllib", "tomli"]
+ignore_missing_imports = true
+
+# Vendored parsers ship no stubs.
+[[tool.mypy.overrides]]
+module = ["tree_sitter.*", "tree_sitter_javascript.*", "tree_sitter_typescript.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Quiet by default, but never quiet about a warning that means a thread died:
+# the field report's blocker surfaced as PytestUnhandledThreadExceptionWarning
+# and nothing else.
+filterwarnings = ["error::pytest.PytestUnhandledThreadExceptionWarning"]

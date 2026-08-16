@@ -8,7 +8,7 @@ def add_to_gitignore(project_root: str, entry: str) -> bool:
     path = os.path.join(project_root, ".gitignore")
     content = ""
     if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             content = f.read()
 
     if entry not in content.splitlines():

@@ -3,10 +3,12 @@ Tests for path handling and robustness in the MCP server.
 Verifies normalization, error ordering, and cross-platform separator handling.
 """
 
-import pytest
-from unittest.mock import patch
 from pathlib import Path
-from kopipasta.mcp_server import apply_edits, read_files, _normalize_path, EditBlock
+from unittest.mock import patch
+
+import pytest
+
+from kopipasta.mcp_server import EditBlock, _normalize_path, apply_edits, read_files
 
 # Mock configuration
 MOCK_PROJECT_ROOT = Path("/fake/project")

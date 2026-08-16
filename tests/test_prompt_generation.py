@@ -1,11 +1,11 @@
-import os
 import json
+import os
 from unittest.mock import patch
 
 import pytest
 
 from kopipasta.core.context import LEGEND
-from kopipasta.prompt import generate_prompt_template, DEFAULT_TEMPLATE
+from kopipasta.prompt import DEFAULT_TEMPLATE, generate_prompt_template
 
 
 @pytest.fixture
@@ -120,6 +120,7 @@ def test_generate_prompt_template_regression(default_template):
 
 def test_generate_extension_prompt(tmp_path):
     import os
+
     from kopipasta.prompt import generate_extension_prompt
 
     f1 = tmp_path / "new_logic.py"
@@ -180,6 +181,7 @@ def test_get_project_structure_returns_json(tmp_path):
 def test_generate_prompt_template_with_map_files(mock_load_template, tmp_path):
     """MAP files are included in the JSON Project Structure, but NOT in File Contents."""
     from jinja2 import Template
+
     from kopipasta.prompt import DEFAULT_TEMPLATE
 
     py_file = tmp_path / "service.py"

@@ -1,9 +1,10 @@
 import base64
 import os
 import sys
+from typing import Optional
+
 import pyperclip
 from rich.console import Console
-from typing import Optional
 
 
 class ClipboardError(Exception):
@@ -61,9 +62,9 @@ def copy_to_clipboard(text: str, console: Optional[Console] = None) -> None:
             write_osc52(text, console)
             return
         except Exception as e:
-            raise ClipboardError(f"OSC 52 clipboard write failed: {e}")
+            raise ClipboardError(f"OSC 52 clipboard write failed: {e}") from e
 
     try:
         pyperclip.copy(text)
     except pyperclip.PyperclipException as e:
-        raise ClipboardError(f"Local clipboard write failed: {e}")
+        raise ClipboardError(f"Local clipboard write failed: {e}") from e

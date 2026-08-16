@@ -106,7 +106,7 @@ so.
 
 ### Context window, by model
 
-| model | context | 
+| model | context |
 |---|---|
 | haiku | 200,000 |
 | **sonnet** | **1,000,000** |

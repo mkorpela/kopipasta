@@ -1,8 +1,10 @@
 import os
 import subprocess
-import pytest
 from pathlib import Path
-from kopipasta.session import Session, SESSION_FILENAME
+
+import pytest
+
+from kopipasta.session import SESSION_FILENAME, Session
 
 
 def run_git(cmd: list, cwd: Path) -> str:

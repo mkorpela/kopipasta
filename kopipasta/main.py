@@ -1,55 +1,57 @@
 #!/usr/bin/env python3
-import os
 import argparse
+import os
 import sys
 from typing import Any, Dict, List, Optional, Tuple
-import requests
-from rich.console import Console
-from pygments import highlight
-from pygments.lexers import get_lexer_for_filename, TextLexer
-from pygments.formatters import TerminalFormatter
-import pygments.util
 
-from kopipasta.file import (
-    FileTuple,
+import pygments.util
+import requests
+from pygments import highlight
+from pygments.formatters import TerminalFormatter
+from pygments.lexers import TextLexer, get_lexer_for_filename
+from rich.console import Console
+
+from kopipasta.cache import (
+    load_map_from_cache,
+    load_selection_from_cache,
+    load_task_from_cache,
+    save_map_to_cache,
+    save_selection_to_cache,
+    save_task_to_cache,
 )
-from kopipasta.ops import (
-    print_char_count,
-    sanitize_string,
-    estimate_tokens,
-)
-from kopipasta.clipboard import copy_to_clipboard, ClipboardError
+from kopipasta.clipboard import ClipboardError, copy_to_clipboard
 from kopipasta.config import (
+    open_profile_in_editor,
     read_env_file,
     read_gitignore,
     read_global_profile,
-    open_profile_in_editor,
     read_project_context,
     read_session_state,
 )
-from kopipasta.tree_selector import TreeSelector
-from kopipasta.prompt import (
-    generate_prompt_template,
-    get_task_from_user_interactive,
-    reset_template,
-    open_template_in_editor,
+from kopipasta.file import (
+    FileTuple,
 )
-from kopipasta.cache import (
-    save_selection_to_cache,
-    load_selection_from_cache,
-    load_task_from_cache,
-    save_task_to_cache,
-    save_map_to_cache,
-    load_map_from_cache,
-)
-from kopipasta.logger import configure_logging, get_logger
 from kopipasta.interaction import EXIT_NO_HUMAN, NoHumanAttached, require_human
+from kopipasta.logger import configure_logging, get_logger
+from kopipasta.ops import (
+    estimate_tokens,
+    print_char_count,
+    sanitize_string,
+)
 from kopipasta.output import (
     HelpToStdoutParser,
     emit,
     emit_json,
+    reconfigure_utf8,
     stdout_reserved_for_output,
 )
+from kopipasta.prompt import (
+    generate_prompt_template,
+    get_task_from_user_interactive,
+    open_template_in_editor,
+    reset_template,
+)
+from kopipasta.tree_selector import TreeSelector
 
 
 def get_colored_code(file_path, code):
@@ -200,6 +202,62 @@ def _config_verb(argv: List[str]) -> int:
 #: instead of being mistaken for a filename.
 VERBS = ("ask", "apply", "map", "session", "config")
 
+#: One line each, for the front door. Kept beside VERBS rather than pulled
+#: from each verb's parser: importing all five to print help would make the
+#: cheapest command in the tool pay for `requests`, `rich` and every backend.
+VERB_HELP = (
+    ("ask", "ask a model about this repo; it proposes, it does not write"),
+    ("apply", "apply a proposed patch to the worktree, with a way back out"),
+    ("map", "print the AST skeleton of files — signatures, no bodies"),
+    ("session", "list, show and prune the recorded conversations"),
+    ("config", "show which model answers `ask`, and where that was decided"),
+)
+
+
+def _verbs_description() -> str:
+    """Why the front door has to advertise the verbs by hand.
+
+    Dispatch happens *before* argparse — the verbs have their own grammar, so
+    `ask -e file -q '...'` cannot be a subparser of the legacy parser without
+    breaking the legacy invocation. The cost of that decision is that the
+    verbs are invisible to the parser that prints `--help`, and the entire
+    agent CLI shipped undiscoverable from the one place everybody looks. A
+    feature nobody can find is worth what a feature nobody built is worth.
+
+    It goes in the *description* rather than the epilog because argparse puts
+    the epilog last, and a commands list below twenty lines of TUI flags is
+    findable only by someone who already knew it was there.
+    """
+    width = max(len(name) for name, _ in VERB_HELP)
+    return "\n".join(
+        [
+            "commands:",
+            *(f"  {name:<{width}}  {blurb}" for name, blurb in VERB_HELP),
+            "",
+            "  Each takes its own flags:  kopipasta ask --help",
+            "",
+            "With no command, the arguments below are files, directories and",
+            "URLs, and the interactive selector opens.",
+        ]
+    )
+
+
+def _verbs_epilog() -> str:
+    """The two-step, by example. Last, because it is the part you re-read."""
+    return "\n".join(
+        [
+            "The separation is the point: `kopipasta ask` writes nothing, and",
+            "`kopipasta apply` is the only thing that touches your files.",
+            "",
+            "  kopipasta ask -e src/thing.py -q 'why is this slow?'",
+            "  kopipasta ask -e src/thing.py --mode patch -q 'fix it'",
+            "  kopipasta apply current --verify 'pytest -q' --revert-on-fail",
+            "",
+            "The verify command is the quality ceiling: nothing downstream of",
+            "`apply` checks the patch harder than the command you hand it.",
+        ]
+    )
+
 
 class KopipastaApp:
     def __init__(self, argv: Optional[List[str]] = None):
@@ -283,12 +341,13 @@ class KopipastaApp:
         if sys.platform == "win32":
             # Force UTF-8 code page in Windows console to prevent emoji/unicode crashes
             os.system("chcp 65001 >nul 2>&1")
-            try:
-                sys.stdin.reconfigure(encoding="utf-8", errors="replace")
-                sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-                sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-            except AttributeError:
-                pass
+            # One helper rather than three inline calls under a single
+            # try/except: the old shape gave up on stdout and stderr as soon
+            # as stdin turned out to lack `reconfigure`, so a harness that
+            # replaced only stdin silently left the streams that carry the
+            # emoji on cp1252.
+            for stream in (sys.stdin, sys.stdout, sys.stderr):
+                reconfigure_utf8(stream)
 
     def _parse_args(self):
         """Sets up argument parsing.
@@ -303,7 +362,12 @@ class KopipastaApp:
         )
 
         parser = _HelpToStdoutParser(
-            description="Generate a prompt with project structure, file contents, and web content."
+            prog="kopipasta",
+            usage="kopipasta [command] [options] [inputs ...]",
+            description="Generate a prompt with project structure, file "
+            "contents, and web content.\n\n" + _verbs_description(),
+            epilog=_verbs_epilog(),
+            formatter_class=argparse.RawDescriptionHelpFormatter,
         )
         parser.add_argument(
             "inputs",
@@ -520,11 +584,11 @@ class KopipastaApp:
                 while True:
                     try:
                         choice = input("Use (f)ull content or (s)nippet? ").lower()
-                    except EOFError:
+                    except EOFError as exc:
                         raise NoHumanAttached(
                             f"stdin closed while choosing content for {url}. "
                             "Pass --url-full or --url-snippet."
-                        )
+                        ) from exc
                     if choice in ["f", "s"]:
                         break
                     print("Invalid choice. Please enter 'f' or 's'.")

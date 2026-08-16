@@ -1,5 +1,6 @@
-from unittest.mock import patch, MagicMock
 from pathlib import Path
+from unittest.mock import MagicMock, patch
+
 from kopipasta.main import KopipastaApp
 
 

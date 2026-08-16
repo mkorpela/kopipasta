@@ -1,6 +1,8 @@
 import os
+
 import pytest
-from kopipasta.selection import SelectionManager, FileState
+
+from kopipasta.selection import FileState, SelectionManager
 
 
 @pytest.fixture

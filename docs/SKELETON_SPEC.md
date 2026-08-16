@@ -6,7 +6,7 @@ Previously, the Map (`m`) state in `kopipasta` provided project-wide visibility 
 While we have Snippet (`s`) mode to indiscriminately grab the top 50 lines of a file, Snippets are semantically blind. A 50-line cutoff frequently truncates files in the middle of a `for` loop, cuts off the return types of functions, or captures 40 lines of import statements while missing the actual class definition. We need a way to provide deep semantic context without the token cost of a full file or the randomness of a raw snippet.
 
 ## 2. The Solution: "Semantic Maps"
-Instead of replacing the Snippet functionality, we enhance the Map (`m`) functionality to generate a **Semantic Skeleton**. 
+Instead of replacing the Snippet functionality, we enhance the Map (`m`) functionality to generate a **Semantic Skeleton**.
 When a file is mapped, `kopipasta` parses it into an Abstract Syntax Tree (AST), extracts the critical contracts (signatures, types, docstrings), and unparses them into a highly compressed, readable representation.
 
 This creates a robust 4-tier semantic "Zoom Level" in the `kopipasta` UI:

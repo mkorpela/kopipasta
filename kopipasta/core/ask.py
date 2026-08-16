@@ -65,9 +65,18 @@ from kopipasta.core.errors import (
     SchemaInvalid,
     UsageError,
 )
-from kopipasta.core.resolver import EDIT, MAP, REF, SNIPPET
+from kopipasta.core.resolver import (
+    EDIT,
+    MAP,
+    REF,
+    SNIPPET,
+    Selection,
+    SelectionSpec,
+    has_skeleton,
+    resolve,
+    walk_all,
+)
 from kopipasta.core.resolver import ROLE_ORDER as ALL_ROLES
-from kopipasta.core.resolver import SelectionSpec, has_skeleton, resolve, walk_all
 from kopipasta.core.session import Session
 from kopipasta.interaction import (
     NoHumanAttached,
@@ -275,7 +284,7 @@ def _text_arg(value: Optional[str], root: str, flag: str) -> Optional[str]:
     path = value[1:]
     target = path if os.path.isabs(path) else os.path.join(root, path)
     try:
-        with open(target, "r", encoding="utf-8") as fh:
+        with open(target, encoding="utf-8") as fh:
             return fh.read()
     except OSError as exc:
         raise UsageError(
@@ -390,16 +399,21 @@ def _looks_like_a_patch(text: str) -> bool:
     return bool(_PATCH_MARKERS.search(text or ""))
 
 
-def _planned_backend(args: argparse.Namespace):
+def _planned_backend(args: argparse.Namespace, section: str):
     """Which backend would answer, whether or not one is going to.
 
     A dry run must not fail because no backend is configured — assembling a
     payload needs no key. But it should still size that payload for the
     provider that would have read it, so this returns None rather than raising
     and the estimator falls back to the pessimistic default.
+
+    `section` is the mode. `[patch] provider = "anthropic"` has been in the
+    shipped config file and in the README from the start, and `ask` resolved
+    `[ask]` unconditionally — so the one documented reason for sections to
+    exist did nothing whatsoever.
     """
     try:
-        return resolve_backend("ask", flag=args.backend)
+        return resolve_backend(section, flag=args.backend)
     except KopipastaError:
         if not args.dry_run:
             raise
@@ -414,7 +428,7 @@ def _ask(args: argparse.Namespace) -> int:
         """Remaining seconds, or the end of the run. Bounded runtime, spec §12."""
         if args.deadline is None:
             return float("inf")
-        left = args.deadline - (time.monotonic() - started)
+        left = float(args.deadline) - (time.monotonic() - started)
         if left <= 0:
             raise DeadlineExceeded(time.monotonic() - started, args.deadline, stage)
         return left
@@ -426,11 +440,12 @@ def _ask(args: argparse.Namespace) -> int:
     #    but "how big is this payload" is the whole question a dry run exists
     #    to answer, and the answer differs by ~50% between tokenizers. So the
     #    *planned* provider sets the estimator even when `none` does the work.
-    planned = _planned_backend(args)
-    cfg = resolve_backend("ask", flag="none") if args.dry_run else planned
+    #    The mode names the config section, so it has to be resolved first.
+    mode = modesmod.get(args.mode)
+    planned = _planned_backend(args, mode.name)
+    cfg = resolve_backend(mode.name, flag="none") if args.dry_run else planned
     cfg.require_api_key()
     cpt = budgetmod.chars_per_token(planned.provider if planned else None)
-    mode = modesmod.get(args.mode)
     question = _text_arg(args.question, root, "-q") or ""
 
     # 2. Session. Resolved before the selection, because a follow-up turn
@@ -735,7 +750,7 @@ def _ask(args: argparse.Namespace) -> int:
         raise
 
 
-def _counts(selection) -> Dict[str, int]:
+def _counts(selection: Optional[Selection]) -> Dict[str, int]:
     if selection is None:
         return {"edit": 0, "ref": 0, "map": 0, "snippet": 0}
     return selection.counts()
@@ -825,13 +840,16 @@ def _call_and_report(
                 tokens=int(adopted.get("tokens") or 0),
             )
 
+    max_tokens = output_budget(args.max_tokens, cfg)
+    base["max_tokens"] = max_tokens
+
     t0 = time.monotonic()
     try:
         completion = backend.complete(
             payload.prefix,
             payload.suffix,
             schema=mode.schema,
-            max_tokens=int(args.max_tokens or cfg.max_tokens),
+            max_tokens=max_tokens,
         )
     finally:
         _release_cache(backend, session, cfg, digest, wants_cache, adopted)
@@ -947,6 +965,23 @@ def _release_cache(
         backend.close()
 
 
+def output_budget(flag: Optional[int], cfg) -> int:
+    """How many tokens the answer may occupy: the flag, or the config.
+
+    Deliberately this small. The first attempt at fixing the too-low default
+    gave `patch` a floor the other modes did not get, and that was solving the
+    wrong problem twice: the default itself was the defect, and per-mode
+    machinery built to compensate for a bad constant only hides it. Raising
+    `DEFAULTS["max_tokens"]` to what the provider's own console uses deletes
+    the special case and fixes every mode at once.
+
+    Kept as a function anyway, because it is the one place that decides the
+    number reported in the envelope as `max_tokens`, and a caller reading a
+    truncation error needs to see what was actually asked for.
+    """
+    return int(flag) if flag else int(cfg.max_tokens)
+
+
 def _interpret(
     text: str,
     mode: modesmod.Mode,
@@ -968,7 +1003,15 @@ def _interpret(
 
     if mode.expects_code:
         patches = parse_llm_output(text, console=None)
-        base["patches"] = len(patches)
+        # `"patches": 3` beside `"ok": true` was read, reasonably, as "three
+        # patches applied" — while `git status` was clean and nothing had been
+        # written. The separation of proposal from application is the best
+        # thing about this tool and the field name was undercutting it. Two
+        # counts of the same type say it without prose; `applied` is already a
+        # list of paths in `apply`, so reusing that name for a boolean would
+        # have traded one ambiguity for a worse one.
+        base["patches_proposed"] = len(patches)
+        base["patches_applied"] = 0
         if not patches:
             excerpt = " ".join(text.split())[:200] or "(nothing)"
             # "It tried and the format was wrong" and "it never tried" look
@@ -976,6 +1019,9 @@ def _interpret(
             if _looks_like_a_patch(text):
                 raise PatchNotParseable(cfg.spec, excerpt)
             raise BackendActedAsAgent(cfg.spec, excerpt)
+        # The one thing a caller holding a proposal needs next, as a command
+        # rather than as a field it has to assemble.
+        base["next"] = f"kopipasta apply --session {session.id}"
         return None
 
     if mode.structured:

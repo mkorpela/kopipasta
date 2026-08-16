@@ -13,8 +13,10 @@ that decides whether the undo exists would test the mock.
 """
 
 import json
+import os
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -142,6 +144,33 @@ def test_a_clean_patch_applies_and_exits_0(repo, capsys):
     assert data["ok"] is True
     assert data["applied"] == ["app.py"]
     assert "return 100" in (repo / "app.py").read_text()
+
+
+@needs_git
+def test_both_verbs_count_patches_with_the_same_two_names(repo, capsys):
+    """`ask` proposes and `apply` applies, and the envelope has to let a
+    caller tell those apart without knowing which verb it came from.
+
+    A bare `"patches": N` from `ask` was read as "N patches applied" while the
+    worktree was untouched. Two fields of the same type, spelled the same way
+    in both verbs, is the whole fix.
+    """
+    data = run_json(capsys, write_patch(repo, CLEAN_PATCH))
+    assert data["patches_proposed"] == 1
+    assert data["patches_applied"] == 1
+    assert "patches" not in data
+
+
+@needs_git
+def test_a_partial_apply_counts_no_file_as_applied(repo, capsys):
+    """`patches_applied` is a count of files that landed whole. A file with
+    one of two hunks in it has not landed."""
+    data = run_json(
+        capsys, write_patch(repo, HALF_MATCHING_PATCH), expect=EXIT_PATCH_PARTIAL
+    )
+    assert data["patches_proposed"] == 1
+    assert data["patches_applied"] == 0
+    assert data["partial"] == ["app.py"]
 
 
 @needs_git
@@ -345,6 +374,295 @@ def test_revert_matches_paths_the_way_git_spells_them(repo, capsys):
     assert data["reverted"] == [], "reverted a file the caller had modified"
     assert data["revert_declined"] == ["./app.py"]
     assert "# precious" in (repo / "app.py").read_text()
+
+
+# -- the verify reader must never lose the diagnostics ---------------------
+
+
+HEAVY = "\u2716 eslint\n\u23af\u23af\u23af vitest\n"
+
+
+def _emit_utf8(text: str) -> str:
+    """A shell command that writes `text` as raw utf-8 bytes.
+
+    Not `print()`: a child Python's stdout is the locale encoding when piped,
+    so on Windows it would die with UnicodeEncodeError before we ever got to
+    test the *decoding* side. Bytes on the wire is what a real `eslint` or
+    `vitest` puts there.
+    """
+    payload = repr(text.encode("utf-8"))
+    return (
+        f"{sys.executable} -c "
+        f'"import sys; sys.stdout.buffer.write({payload}); sys.stdout.flush()"'
+    )
+
+
+@needs_git
+def test_verify_output_survives_bytes_the_platform_codepage_cannot_decode(repo, capsys):
+    """Field report 2.1, the blocker.
+
+    `text=True` alone decodes with `locale.getpreferredencoding()` — cp1252 on
+    a Windows box. Every verify command whose output contains a box-drawing
+    rule or a heavy multiplication X killed the reader thread, and the
+    envelope came back `{"exit": 1, "output": ""}`: a failure reported with
+    zero diagnostics, at exactly the moment the diagnostics matter. Failing
+    output is the output most likely to contain such a character.
+    """
+    data = run_json(
+        capsys, write_patch(repo, CLEAN_PATCH), "--verify", _emit_utf8(HEAVY)
+    )
+    assert data["verify"]["exit"] == 0
+    assert "\u2716 eslint" in data["verify"]["output"]
+    assert "\u23af\u23af\u23af vitest" in data["verify"]["output"]
+
+
+@needs_git
+def test_a_failing_verify_still_carries_its_unicode_diagnostics(repo, capsys):
+    """The case that actually cost the field run: the output is lost precisely
+    when the exit code is non-zero and someone needs to read it."""
+    cmd = _emit_utf8(HEAVY) + " && exit 1"
+    data = run_json(
+        capsys, write_patch(repo, CLEAN_PATCH), "--verify", cmd, expect=EXIT_VERIFY
+    )
+    assert data["verify"]["exit"] == 1
+    assert "\u2716 eslint" in data["verify"]["output"]
+    assert data["detail"], "a verify failure with no detail is the worst outcome"
+
+
+@needs_git
+def test_a_verify_command_that_prints_an_undecodable_byte_is_not_fatal(repo, capsys):
+    """Not every stream is valid utf-8 either — a lone 0x9d happens. Replace
+    it; there is no case where crashing beats a replacement character."""
+    cmd = (
+        f"{sys.executable} -c "
+        f"\"import sys; sys.stdout.buffer.write(b'before\\x9dafter')\""
+    )
+    data = run_json(capsys, write_patch(repo, CLEAN_PATCH), "--verify", cmd)
+    assert data["verify"]["exit"] == 0
+    assert "before" in data["verify"]["output"]
+    assert "after" in data["verify"]["output"]
+
+
+# -- --format-cmd: the formatter runs before the gate does -----------------
+
+
+def _rewrite(text: str) -> str:
+    """A stand-in formatter: rewrites whatever files it is handed."""
+    payload = repr(text)
+    return (
+        f"{sys.executable} -c "
+        f"\"import sys; [open(p, 'w').write({payload}) for p in sys.argv[1:]]\" {{files}}"
+    )
+
+
+@needs_git
+def test_format_cmd_runs_between_applying_and_verifying(repo, capsys):
+    """Field report 2.3.
+
+    All four patch turns in the field run failed `prettier --check`, in a repo
+    whose gate opens with `prettier --check .`. That is a guaranteed red on
+    turn 1, every time, over whitespace — and the model cannot be prompted out
+    of it reliably. The reported workaround was to fold `prettier --write`
+    into the verify command, which works but makes the *verifier* mutate the
+    tree; that is the one thing a verifier must not do.
+    """
+    formatted = "def a():\n    return 100  # formatted\n\n\ndef b():\n    return 2\n"
+    data = run_json(
+        capsys,
+        write_patch(repo, CLEAN_PATCH),
+        "--format-cmd",
+        _rewrite(formatted),
+        "--verify",
+        "exit 0",
+    )
+    assert data["format"]["exit"] == 0
+    assert (repo / "app.py").read_text(encoding="utf-8") == formatted
+
+
+@needs_git
+def test_format_cmd_only_ever_sees_the_files_this_run_wrote(repo, capsys):
+    """`{files}` is the whole reason this is a flag and not a documented wrap.
+
+    `prettier --write .` after a patch reformats the caller's unrelated
+    uncommitted work, and --revert-on-fail would then put back only the files
+    the patch touched — leaving the rest reformatted with nothing recording
+    that it happened.
+    """
+    (repo / "ref.py").write_text("REFERENCE = 999\n", encoding="utf-8")
+    run(
+        write_patch(repo, CLEAN_PATCH),
+        "--format-cmd",
+        _rewrite("CLOBBERED\n"),
+        "--json",
+    )
+    data = json.loads(capsys.readouterr().out)
+    assert data["format"]["files"] == ["app.py"]
+    assert (repo / "ref.py").read_text(encoding="utf-8") == "REFERENCE = 999\n"
+
+
+@needs_git
+def test_a_dry_run_never_reaches_the_formatter(repo, capsys):
+    """It writes; --dry-run promises nothing is written."""
+    data = run_json(
+        capsys,
+        write_patch(repo, CLEAN_PATCH),
+        "--dry-run",
+        "--format-cmd",
+        _rewrite("CLOBBERED\n"),
+    )
+    assert "format" not in data
+    assert (repo / "app.py").read_text(encoding="utf-8") == ORIGINAL
+
+
+@needs_git
+def test_a_failing_formatter_is_reported_and_does_not_replace_the_verdict(repo, capsys):
+    """A formatter that cannot run is worth knowing about, but it is not the
+    gate. Exit 7 has to keep meaning "--verify failed", or the caller cannot
+    tell which of the two commands it needs to go and look at."""
+    data = run_json(
+        capsys,
+        write_patch(repo, CLEAN_PATCH),
+        "--format-cmd",
+        "exit 2",
+        "--verify",
+        "exit 0",
+    )
+    assert data["ok"] is True
+    assert data["format"]["exit"] == 2
+
+
+@needs_git
+def test_a_failing_formatter_says_so_out_loud(repo, capsys):
+    run(
+        write_patch(repo, CLEAN_PATCH),
+        "--format-cmd",
+        "exit 2",
+    )
+    assert "--format-cmd" in capsys.readouterr().err
+
+
+@needs_git
+def test_format_cmd_without_files_to_format_is_skipped(repo, capsys):
+    """Nothing applied means nothing to format, and `prettier --write` with an
+    empty file list formats the entire repository."""
+    data = run_json(
+        capsys,
+        write_patch(repo, NOTHING_MATCHES),
+        "--format-cmd",
+        _rewrite("CLOBBERED\n"),
+        expect=EXIT_PATCH_FAILED,
+    )
+    assert "format" not in data
+    assert (repo / "app.py").read_text(encoding="utf-8") == ORIGINAL
+
+
+@needs_git
+def test_a_path_the_model_invented_cannot_become_a_shell_command(repo, capsys):
+    """`{files}` is spliced into a `shell=True` command line, so the paths in
+    it are attacker-controlled in the only sense that matters here: they come
+    from the model's response, not from the caller.
+
+    On POSIX `shlex.quote` is exactly right. On Windows there is no correct
+    escape — `cmd.exe` expands `%VAR%` and honours `&` inside quotes it has
+    already stripped — so a path carrying a metacharacter is refused rather
+    than escaped, and the patch is left applied and unformatted.
+    """
+    marker = repo / "pwned.txt"
+    hostile = "a & b.py" if os.name == "nt" else "a; touch pwned.txt; x.py"
+    patch = write_patch(repo, f"```python\n# FILE: {hostile}\nx = 1\n```")
+    data = run_json(capsys, patch, "--format-cmd", "echo {files}")
+
+    assert data["applied"] == [hostile], "the patch itself should still land"
+    assert not marker.exists(), "the formatter ran a command out of a filename"
+    if os.name == "nt":
+        assert data["format"]["exit"] == 126
+        assert "refused" in data["format"]["output"]
+    else:
+        # shlex.quote is genuinely correct here, so it runs, harmlessly.
+        assert data["format"]["exit"] == 0
+
+
+def test_the_windows_refusal_knows_which_characters_it_cannot_survive():
+    """Pinned separately so the rule is checked on every platform, not only
+    on the one where it fires."""
+    for ch in "&|<>^%":
+        assert ch in applymod.CMD_METACHARACTERS
+    for ch in "-_.()[]{}~# ":
+        assert ch not in applymod.CMD_METACHARACTERS, (
+            "ordinary characters in ordinary filenames must not be refused"
+        )
+
+
+@needs_git
+def test_the_formatters_output_survives_a_unicode_console(repo, capsys):
+    """Same reader, same bug class as --verify. It gets the same fix."""
+    data = run_json(
+        capsys,
+        write_patch(repo, CLEAN_PATCH),
+        "--format-cmd",
+        _emit_utf8(HEAVY),
+    )
+    assert "\u2716 eslint" in data["format"]["output"]
+
+
+# -- the hint must describe what happened, not what was asked for ----------
+
+
+@needs_git
+def test_the_hint_does_not_claim_a_restoration_that_was_declined(repo, capsys):
+    """Field report 2.2.
+
+    `hint` was an unconditional string keyed off the *flag*, not off the
+    *outcome*. Declining is correct behaviour under --dirty-ok, but anyone
+    reading the console rather than parsing the JSON walked away believing the
+    tree had been restored when it had not — and took their next action
+    against a state they had mismodelled. A tool that reports a restoration it
+    did not perform is the one failure mode running it again cannot catch.
+    """
+    (repo / "app.py").write_text(ORIGINAL + "# precious\n")
+    data = run_json(
+        capsys,
+        write_patch(repo, CLEAN_PATCH),
+        "--dirty-ok",
+        "--verify",
+        "exit 1",
+        "--revert-on-fail",
+        expect=EXIT_VERIFY,
+    )
+    assert data["reverted"] == []
+    assert data["revert_declined"] == ["app.py"]
+    # The reason, not just the path: "I refused to touch your uncommitted
+    # work" and "git would not put it back" call for opposite next moves.
+    assert data["revert_declined_why"]["app.py"] == applymod.WAS_ALREADY_DIRTY
+    assert "have been restored" not in data["hint"]
+    assert "declined" in data["hint"]
+    assert "app.py" in data["hint"] or "1 file" in data["hint"]
+    assert "still applied" in data["hint"]
+
+
+@needs_git
+def test_the_hint_says_restored_when_it_did_restore(repo, capsys):
+    data = run_json(
+        capsys,
+        write_patch(repo, CLEAN_PATCH),
+        "--verify",
+        "exit 1",
+        "--revert-on-fail",
+        expect=EXIT_VERIFY,
+    )
+    assert data["reverted"] == ["app.py"]
+    assert "Restored" in data["hint"]
+    assert "app.py" in data["hint"]
+    assert "declined" not in data["hint"]
+
+
+@needs_git
+def test_without_revert_on_fail_the_hint_says_the_patch_is_still_there(repo, capsys):
+    data = run_json(
+        capsys, write_patch(repo, CLEAN_PATCH), "--verify", "exit 1", expect=EXIT_VERIFY
+    )
+    assert "still applied" in data["hint"]
+    assert "estored" not in data["hint"]
 
 
 @needs_git

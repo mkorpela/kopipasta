@@ -6,7 +6,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import List, Optional, Tuple
 
 # Define FileTuple for type hinting
 FileTuple = Tuple[str, bool, Optional[List[str]], str]
@@ -196,7 +196,7 @@ def load_selection_from_cache() -> List[str]:
         cache_file = get_selection_cache_file()
         if not cache_file.exists():
             return []
-        with open(cache_file, "r", encoding="utf-8") as f:
+        with open(cache_file, encoding="utf-8") as f:
             return _from_stored(json.load(f))
     except (OSError, ValueError) as e:
         print(
@@ -212,7 +212,7 @@ def load_map_from_cache() -> List[str]:
         cache_file = get_map_cache_file()
         if not cache_file.exists():
             return []
-        with open(cache_file, "r", encoding="utf-8") as f:
+        with open(cache_file, encoding="utf-8") as f:
             return _from_stored(json.load(f))
     except (OSError, ValueError) as e:
         print(
@@ -236,7 +236,7 @@ def load_task_from_cache() -> Optional[str]:
         cache_file = get_task_cache_file()
         if not cache_file.exists():
             return None
-        with open(cache_file, "r", encoding="utf-8") as f:
+        with open(cache_file, encoding="utf-8") as f:
             return f.read()
     except OSError as e:
         print(

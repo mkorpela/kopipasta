@@ -78,7 +78,7 @@ For `TARGET_PATH` in JSON files, `kopipasta` will simply:
 
 ## 4. Safety & Fallback Mechanisms
 
-A core philosophy of `kopipasta` is **Explicit Control over Silent Corruption**. 
+A core philosophy of `kopipasta` is **Explicit Control over Silent Corruption**.
 
 * **Deterministic Failure:** If the specified `TARGET_NODE` is not found in the AST (e.g., the LLM hallucinated the component name, or the query returns 0 matches), the patch **fails explicitly**. It does not fall back to fuzzy text matching. It logs: `❌ Node 'TableBody' not found in AST of DataTable.tsx`.
 * **Indentation Auto-Correction:** When splicing an AST node, `kopipasta` will read the leading whitespace of the original node's `start_byte` line, and auto-indent the incoming LLM block to match the surrounding tree. This completely eliminates the "2-space vs 4-space" Python bug.

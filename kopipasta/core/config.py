@@ -20,7 +20,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 from kopipasta.config import get_global_profile_path
 from kopipasta.core.errors import (
@@ -52,7 +52,24 @@ VALID_PROVIDERS = tuple(PROVIDER_KEY_ENV)
 
 DEFAULTS: Dict[str, Any] = {
     "cache_ttl_s": 300,
-    "max_tokens": 8192,
+    # What Google's own console gives this model, and the number a cap should
+    # start from: 8192 was a relic that made the *first* patch call in a real
+    # repo die at MAX_TOKENS after the entire 26k-token payload had been sent
+    # and billed. A cap is not a bill — providers charge for tokens produced,
+    # not permitted — so the cost of being generous here is a ceiling on a
+    # runaway, which `timeout_s` and `--deadline` already bound.
+    #
+    # It is a Gemini number, and Anthropic and OpenAI hard-error above their
+    # model's own output ceiling. That is a one-line fix in the section that
+    # names the provider (`[patch] max_tokens = 32000`), reported verbatim by
+    # the provider, and it is the rarer case: the alternative is everybody
+    # paying for a truncated answer by default.
+    "max_tokens": 65536,
+    # How hard the model is asked to think. Sent to Gemini as
+    # `thinkingConfig.thinkingLevel`; ignored by adapters with no such knob.
+    # "default" omits the field entirely, which is the way back if a model has
+    # never heard of it.
+    "thinking": "high",
     "timeout_s": 900,
 }
 
@@ -72,18 +89,26 @@ DEFAULT_CONFIG = """# Which model answers, and how. Edited once, not argued per 
 #
 # API keys are NOT here: they stay in the environment (GEMINI_API_KEY,
 # ANTHROPIC_API_KEY, OPENAI_API_KEY), out of a file on disk and out of any
-# session record. Sections are per verb; [ask] is the fallback for the rest.
+# session record. [ask] is the fallback for every other section.
 
 [ask]
 provider    = "gemini"
 model       = "gemini-3.7-flash"
 cache_ttl_s = 300          # a provider-side prefix cache is rented until this expires
-max_tokens  = 8192         # reasoning tokens spend this budget too
 timeout_s   = 900
+thinking    = "high"       # gemini thinkingLevel; "default" sends nothing
 
+# Sections are named after the mode, so a coordinated patch can use a
+# different model from a 400k triage frontload. Uncomment to try it.
+#
+# Set max_tokens here if the provider caps output below the 65536 default:
+# anthropic and openai reject a request above their model's own ceiling,
+# gemini does not.
+#
 # [patch]
-# provider = "anthropic"
-# model    = "claude-opus-5"
+# provider   = "anthropic"
+# model      = "claude-opus-5"
+# max_tokens = 32000        # reasoning tokens spend this budget too
 """
 
 
@@ -128,11 +153,16 @@ def open_config_in_editor() -> None:
 def _load_toml(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
+    # Both ignores are for the *other* interpreter: mypy is pinned to the
+    # 3.10 floor by python_version, where `tomllib` does not exist, and on
+    # 3.11+ `tomli` is not installed. Exactly one of these two lines is
+    # unresolvable whichever version is doing the checking, which is the
+    # situation the try/except is here to handle.
     try:
-        import tomllib  # Python 3.11+
+        import tomllib  # type: ignore[import-not-found]  # Python 3.11+
     except ModuleNotFoundError:  # pragma: no cover - depends on interpreter
         try:
-            import tomli as tomllib  # type: ignore[no-redef]
+            import tomli as tomllib  # type: ignore[no-redef,import-not-found]
         except ModuleNotFoundError:
             raise ConfigInvalid(
                 str(path),
@@ -154,6 +184,9 @@ class BackendConfig:
     cache_ttl_s: int
     max_tokens: int
     timeout_s: int
+    #: Gemini's `thinkingLevel`. Defaulted rather than required so the many
+    #: BackendConfig(...) call sites in tests and callers stay valid.
+    thinking: str = str(DEFAULTS["thinking"])
     #: field name -> human-readable provenance, for `config --show`
     sources: Dict[str, str] = field(default_factory=dict)
 
@@ -166,16 +199,27 @@ class BackendConfig:
     def api_key_env(self) -> Optional[str]:
         return PROVIDER_KEY_ENV.get(self.provider)
 
-    def require_api_key(self, env: Optional[Dict[str, str]] = None) -> None:
+    def require_api_key(self, env: Optional[Mapping[str, str]] = None) -> None:
         """Raise MissingApiKey naming the provider's provenance, not just the var."""
-        env = os.environ if env is None else env
+        environ = _environ(env)
         var = self.api_key_env
         if var is None:
             return
-        if not (env.get(var) or "").strip():
+        if not (environ.get(var) or "").strip():
             raise MissingApiKey(
                 self.provider, var, self.sources.get("provider", "unknown")
             )
+
+
+def _environ(env: Optional[Mapping[str, str]]) -> Mapping[str, str]:
+    """The environment to read, injectable for tests.
+
+    A named helper rather than `env = os.environ if env is None else env` at
+    three call sites: `os.environ` is an `_Environ[str]`, not a `dict`, so
+    rebinding the parameter widened its declared type and every later `.get`
+    on it became an error about `None`.
+    """
+    return os.environ if env is None else env
 
 
 def _split_spec(spec: str) -> Tuple[str, str]:
@@ -187,17 +231,24 @@ def resolve_backend(
     verb: str = FALLBACK_SECTION,
     *,
     flag: Optional[str] = None,
-    env: Optional[Dict[str, str]] = None,
+    env: Optional[Mapping[str, str]] = None,
     path: Optional[Path] = None,
 ) -> BackendConfig:
     """Resolve the backend for `verb`, recording where each value came from.
 
-    Sections are per verb, not per call: triage over a 400k frontload wants a
-    large cheap context window while a coordinated patch wants the strongest
-    model, and that is still an operator decision. `[ask]` is the fallback for
-    any verb without its own section.
+    `verb` is the section name — in practice the `ask` mode, since `ask` is
+    the only verb that calls a model at all. Sections are not per call: triage
+    over a 400k frontload wants a large cheap context window while a
+    coordinated patch wants the strongest model, and that is still an operator
+    decision. `[ask]` is the fallback for any section that does not exist or
+    does not name a given key.
+
+    Provenance is per key rather than per section, and it is load-bearing
+    rather than decorative: "8192 because you wrote it under [patch]" and
+    "8192 because it was inherited from [ask]" are different facts, and
+    `output_budget` branches on exactly that distinction.
     """
-    env = os.environ if env is None else env
+    environ = _environ(env)
     path = config_path() if path is None else path
 
     data = _load_toml(path)
@@ -218,8 +269,9 @@ def resolve_backend(
             section[key] = value
             key_source[key] = f"{path} [{name}]"
 
-    provider = model = None
-    source = None
+    provider: str = ""
+    model: str = ""
+    source: Optional[str] = None
 
     if flag is not None and not flag.strip():
         # An explicitly empty --backend is a mistake, not a request to fall
@@ -236,8 +288,8 @@ def resolve_backend(
     if flag:
         provider, model = _split_spec(flag)
         source = SRC_FLAG
-    elif (env.get(SRC_ENV) or "").strip():
-        provider, model = _split_spec(env[SRC_ENV].strip())
+    elif (environ.get(SRC_ENV) or "").strip():
+        provider, model = _split_spec(environ[SRC_ENV].strip())
         source = SRC_ENV
     elif section.get("provider"):
         provider = str(section["provider"]).strip()
@@ -249,11 +301,15 @@ def resolve_backend(
     if provider not in PROVIDER_KEY_ENV:
         raise UnknownProvider(provider, VALID_PROVIDERS, source or SRC_DEFAULT)
 
-    sources = {
-        "provider": source,
-        "model": key_source.get("model", source)
-        if source not in (SRC_FLAG, SRC_ENV)
-        else source,
+    # `source` is non-None from here: every branch that leaves it None also
+    # leaves `provider` empty, and that exits above via NoBackendConfigured.
+    sources: Dict[str, str] = {
+        "provider": source or SRC_DEFAULT,
+        "model": (
+            key_source.get("model", source or SRC_DEFAULT)
+            if source not in (SRC_FLAG, SRC_ENV)
+            else source or SRC_DEFAULT
+        ),
     }
 
     def scalar(name: str) -> Any:
@@ -269,18 +325,19 @@ def resolve_backend(
         cache_ttl_s=int(scalar("cache_ttl_s")),
         max_tokens=int(scalar("max_tokens")),
         timeout_s=int(scalar("timeout_s")),
+        thinking=str(scalar("thinking")).strip(),
         sources=sources,
     )
 
 
-def render_show(cfg: BackendConfig, env: Optional[Dict[str, str]] = None) -> str:
+def render_show(cfg: BackendConfig, env: Optional[Mapping[str, str]] = None) -> str:
     """`kopipasta config --show` — resolved values and where each came from.
 
     Never prints the key. Presence and length are enough to tell "unset" from
     "empty" from "the wrong one", and printing it invites pasting a secret into
     a bug report.
     """
-    env = os.environ if env is None else env
+    environ = _environ(env)
     rows = [
         ("provider", cfg.provider, cfg.sources.get("provider", "")),
         ("model", cfg.model or "(provider default)", cfg.sources.get("model", "")),
@@ -292,7 +349,7 @@ def render_show(cfg: BackendConfig, env: Optional[Dict[str, str]] = None) -> str
             ("api key", "not needed", f"{cfg.provider} borrows its host CLI's auth")
         )
     else:
-        raw = env.get(var)
+        raw = environ.get(var)
         if raw is None:
             state = "UNSET"
         elif not raw.strip():
@@ -301,7 +358,7 @@ def render_show(cfg: BackendConfig, env: Optional[Dict[str, str]] = None) -> str
             state = f"set ({len(raw)} chars)"
         rows.append(("api key", var, state))
 
-    for name in ("cache_ttl_s", "max_tokens", "timeout_s"):
+    for name in ("cache_ttl_s", "max_tokens", "thinking", "timeout_s"):
         rows.append((name, str(getattr(cfg, name)), cfg.sources.get(name, "")))
 
     w1 = max(len(r[0]) for r in rows)

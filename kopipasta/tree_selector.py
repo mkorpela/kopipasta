@@ -1,39 +1,43 @@
+import json
 import os
 import shutil
-import json
 from typing import Any, Dict, List, Optional, Tuple
+
+import click
 from prompt_toolkit import prompt as prompt_toolkit_prompt
 from prompt_toolkit.styles import Style
 from rich.console import Console
-from rich.tree import Tree
 from rich.panel import Panel
 from rich.text import Text
-import click
+from rich.tree import Tree
 
-from kopipasta.patcher import apply_patches, parse_llm_output
+from kopipasta.cache import (
+    clear_cache,
+    load_selection_from_cache,
+    load_task_from_cache,
+    save_task_to_cache,
+)
+from kopipasta.claude import configure_claude_desktop
+from kopipasta.clipboard import ClipboardError, copy_to_clipboard
+from kopipasta.core.render import get_file_snippet
 from kopipasta.file import (
     FileTuple,
+    get_human_readable_size,
     is_binary,
     is_ignored,
-    get_human_readable_size,
     read_file_contents,
 )
-from kopipasta.core.render import get_file_snippet
-from kopipasta.prompt import generate_extension_prompt
-from kopipasta.clipboard import copy_to_clipboard, ClipboardError
-from kopipasta.cache import load_selection_from_cache, clear_cache, save_task_to_cache
-from kopipasta.cache import load_task_from_cache
-from kopipasta.claude import configure_claude_desktop
-from kopipasta.ops import (
-    sanitize_string,
-    estimate_tokens,
-)
-from kopipasta.selection import SelectionManager, FileState
-from kopipasta.session import Session, SESSION_FILENAME
-from kopipasta.patcher import find_paths_in_text
-from kopipasta.interaction import NoHumanAttached, require_human
 from kopipasta.git_utils import add_to_gitignore, check_session_gitignore_status
+from kopipasta.interaction import NoHumanAttached, require_human
 from kopipasta.logger import get_logger
+from kopipasta.ops import (
+    estimate_tokens,
+    sanitize_string,
+)
+from kopipasta.patcher import apply_patches, find_paths_in_text, parse_llm_output
+from kopipasta.prompt import generate_extension_prompt
+from kopipasta.selection import FileState, SelectionManager
+from kopipasta.session import SESSION_FILENAME, Session
 
 ALWAYS_VISIBLE_FILES = {"AI_SESSION.md", "AI_CONTEXT.md"}
 RALPH_CONFIG_FILENAME = ".ralph.json"
@@ -961,9 +965,9 @@ q: Quit and finalize"""
         ralph_ignored = False
         if os.path.exists(gitignore_path):
             try:
-                with open(gitignore_path, "r", encoding="utf-8") as f:
+                with open(gitignore_path, encoding="utf-8") as f:
                     ralph_ignored = RALPH_CONFIG_FILENAME in f.read().splitlines()
-            except IOError:
+            except OSError:
                 pass
         if not ralph_ignored:
             if click.confirm(
@@ -991,7 +995,7 @@ q: Quit and finalize"""
         config_path = os.path.join(self.project_root_abs, RALPH_CONFIG_FILENAME)
         if os.path.exists(config_path):
             try:
-                with open(config_path, "r", encoding="utf-8") as f:
+                with open(config_path, encoding="utf-8") as f:
                     existing_config = json.load(f)
                     if existing_config.get("verification_command"):
                         default_cmd = existing_config["verification_command"]
@@ -1020,7 +1024,7 @@ q: Quit and finalize"""
             self.console.print(
                 f"\n[green]✅ Configuration saved to {RALPH_CONFIG_FILENAME}[/green]"
             )
-        except IOError as e:
+        except OSError as e:
             self.console.print(f"\n[red]Failed to save config: {e}[/red]")
             click.pause()
             return
@@ -1400,7 +1404,7 @@ q: Quit and finalize"""
             # a raw traceback instead of a clean exit 8 — and any caller that
             # retried would rebuild the original spin.
             self.logger.info("search_loop_terminal_lost", error=str(e))
-            raise NoHumanAttached(f"Lost the terminal during search: {e}")
+            raise NoHumanAttached(f"Lost the terminal during search: {e}") from e
 
         if key in ("\x1b", "\x1b\x1b"):
             self.search_mode = False

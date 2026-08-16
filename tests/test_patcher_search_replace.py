@@ -1,7 +1,9 @@
 import os
-import pytest
 from pathlib import Path
-from kopipasta.patcher import parse_llm_output, apply_patches
+
+import pytest
+
+from kopipasta.patcher import apply_patches, parse_llm_output
 
 
 @pytest.fixture

@@ -39,6 +39,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from kopipasta.core.errors import EmptySelection, UsageError
 from kopipasta.file import extract_symbols, is_binary, is_ignored
+from kopipasta.proc import TEXT
 
 EDIT = "edit"
 REF = "ref"
@@ -190,7 +191,7 @@ def _git(root: str, *args: str) -> List[str]:
         )
     try:
         r = subprocess.run(
-            [git, *args], cwd=root, capture_output=True, text=True, timeout=30
+            [git, *args], cwd=root, capture_output=True, timeout=30, **TEXT
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise UsageError(f"could not run git: {exc}") from exc
@@ -226,7 +227,7 @@ def read_path_list(path: str, root: str) -> List[str]:
     """
     target = path if os.path.isabs(path) else os.path.join(root, path)
     try:
-        with open(target, "r", encoding="utf-8", errors="replace") as fh:
+        with open(target, encoding="utf-8", errors="replace") as fh:
             lines = fh.read().splitlines()
     except OSError as exc:
         raise UsageError(

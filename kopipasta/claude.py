@@ -83,7 +83,7 @@ def configure_claude_desktop(
             console.print(f"[yellow]⚠ Could not create backup: {e}[/yellow]")
 
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
+            with open(config_path, encoding="utf-8") as f:
                 content = f.read().strip()
                 if content:
                     data = json.loads(content)
@@ -136,7 +136,7 @@ def configure_claude_desktop(
         # However, to be strictly safe and avoid rewriting identical JSON:
         current_content = ""
         if config_path.exists():
-            with open(config_path, "r", encoding="utf-8") as f:
+            with open(config_path, encoding="utf-8") as f:
                 current_content = f.read().strip()
 
         new_content = json.dumps(data, indent=2)

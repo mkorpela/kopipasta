@@ -52,6 +52,7 @@ from kopipasta.output import (
     stdout_reserved_for_output,
 )
 from kopipasta.patcher import apply_patches, normalise_path, parse_llm_output
+from kopipasta.proc import TEXT
 
 
 # --------------------------------------------------------------------------
@@ -128,8 +129,8 @@ def _git(root: str, *args: str, timeout: float = 60.0) -> Tuple[int, str, str]:
             [exe, *args],
             cwd=root,
             capture_output=True,
-            text=True,
             timeout=timeout,
+            **TEXT,
         )
     except subprocess.TimeoutExpired:
         return 124, "", f"git {' '.join(args)} timed out after {timeout}s"
@@ -217,7 +218,7 @@ def resolve_target(
 
 
 def _read(path: str) -> str:
-    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+    with open(path, encoding="utf-8", errors="replace") as fh:
         return fh.read()
 
 
@@ -234,7 +235,7 @@ def editable_set(root: str, session_id: str) -> Optional[Set[str]]:
     """
     path = os.path.join(root, SESSIONS_DIR, session_id, "selection.json")
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError):
         return None
@@ -252,37 +253,123 @@ def editable_set(root: str, session_id: str) -> Optional[Set[str]]:
 # --------------------------------------------------------------------------
 # verification and rollback
 # --------------------------------------------------------------------------
-def run_verify(root: str, command: str, timeout: float) -> Tuple[int, str]:
-    """Run the verify command, bounded. Its output is narration, not artifact."""
+def run_command(root: str, command: str, timeout: float, label: str) -> Tuple[int, str]:
+    """Run a shell command, bounded, and keep its output whatever it contains.
+
+    The decoding is spelled out rather than inherited (see `TEXT`): this is the
+    call that reads another tool's console output, so it is the one guaranteed
+    to meet a box-drawing rule sooner or later.
+    """
     try:
         p = subprocess.run(
             command,
             cwd=root,
             shell=True,
             capture_output=True,
-            text=True,
             timeout=timeout,
+            **TEXT,
         )
     except subprocess.TimeoutExpired:
-        return 124, f"--verify timed out after {timeout}s"
+        return 124, f"{label} timed out after {timeout}s"
     except OSError as e:
         return 127, str(e)
     tail = ((p.stdout or "") + (p.stderr or "")).strip().splitlines()
     return p.returncode, "\n".join(tail[-20:])
 
 
+def run_verify(root: str, command: str, timeout: float) -> Tuple[int, str]:
+    """Run the verify command, bounded. Its output is narration, not artifact."""
+    return run_command(root, command, timeout, "--verify")
+
+
+#: Where the applied paths are spliced into `--format-cmd`.
+FILES_TOKEN = "{files}"
+
+#: Characters `cmd.exe` acts on *after* it has stripped the quotes around
+#: them, or expands regardless of quoting. There is no escape that survives
+#: both passes reliably, which is why these are refused rather than quoted.
+CMD_METACHARACTERS = set('&|<>^"%!\r\n')
+
+
+class UnsafePath(ValueError):
+    """A path that cannot be handed to a shell safely on this platform."""
+
+
+def _quote(paths: Sequence[str]) -> str:
+    """The applied paths as one shell word list, quoted for *this* shell.
+
+    The paths come from the model's response, not from the caller, so this is
+    the one place in `apply` where untrusted text meets `shell=True`. On POSIX
+    `shlex.quote` is exactly right. On Windows nothing is: `cmd.exe` parses
+    the line twice, expanding `%VAR%` and honouring `&` in text it has already
+    unquoted, and every published escaping recipe has a counterexample. So a
+    path carrying one of those characters is refused. Refusing to format is a
+    cost of nothing; getting this wrong is arbitrary command execution in the
+    tool whose entire pitch is that it is the safe way to apply a patch.
+    """
+    if os.name != "nt":
+        import shlex
+
+        return " ".join(shlex.quote(p) for p in paths)
+    bad = sorted(p for p in paths if CMD_METACHARACTERS & set(p))
+    if bad:
+        raise UnsafePath(", ".join(bad))
+    return subprocess.list2cmdline(list(paths))
+
+
+def run_format(
+    root: str, command: str, files: Sequence[str], timeout: float
+) -> Tuple[int, str]:
+    """Normalise what was just written, before anything judges it.
+
+    Field report 2.3: every patch turn against a prettier-gated repo failed
+    `prettier --check` on whitespace the model had no way to get right, so
+    turn 1 was a guaranteed red and the correction rounds were spent on
+    formatting rather than on the bug. The reported workaround folded
+    `prettier --write` into `--verify`, which works and is the wrong shape —
+    a verifier that mutates the tree can no longer be trusted to describe it.
+
+    `{files}` is what makes this a flag rather than a documented wrap: it
+    scopes the formatter to the files this run wrote. `prettier --write .`
+    after a patch reformats the caller's unrelated uncommitted work, and the
+    revert path only knows about our own files, so nothing would ever put the
+    rest back.
+    """
+    if FILES_TOKEN in command:
+        try:
+            command = command.replace(FILES_TOKEN, _quote(files))
+        except UnsafePath as exc:
+            return 126, (
+                "--format-cmd refused: cmd.exe cannot be given these paths "
+                f"safely ({exc}). The patch is applied and unformatted; "
+                "format them by hand or rename the files."
+            )
+    return run_command(root, command, timeout, "--format-cmd")
+
+
+#: Why a file this run wrote was left as it is. The distinction matters to
+#: the caller: the first is a deliberate refusal protecting their work, the
+#: other two are the undo failing to do its job.
+WAS_ALREADY_DIRTY = "had uncommitted changes before this run"
+GIT_REFUSED = "git could not restore it"
+COULD_NOT_REMOVE = "the file it created could not be removed"
+
+
 def revert(
     root: str, result, was_dirty: Optional[Set[str]]
-) -> Tuple[List[str], List[str]]:
-    """Undo what we just did. Returns (reverted, declined).
+) -> Tuple[List[str], List[Tuple[str, str]]]:
+    """Undo what we just did. Returns (reverted, [(path, why_not), ...]).
 
     Only files this run touched, and only those that were clean beforehand.
     A file the caller had already modified is theirs, not ours: reverting it
     under --dirty-ok would destroy uncommitted work to tidy up after a failed
     test run, which is a far worse outcome than leaving the patch in place.
+
+    Each decline carries its reason, because the caller's next move depends on
+    which one it was and a bare list of paths cannot tell them apart.
     """
     reverted: List[str] = []
-    declined: List[str] = []
+    declined: List[Tuple[str, str]] = []
     # Both sides normalised: git says `app.py`, the model may have written
     # `./app.py`, and a raw comparison answers "was this already dirty?" with
     # a confident no — then reverts the caller's uncommitted work.
@@ -292,18 +379,60 @@ def revert(
             continue
         path = outcome.path
         if normalise_path(path) in already_dirty:
-            declined.append(path)
+            declined.append((path, WAS_ALREADY_DIRTY))
             continue
         if outcome.action == "created":
             try:
                 os.remove(os.path.join(root, path))
                 reverted.append(path)
             except OSError:
-                declined.append(path)
+                declined.append((path, COULD_NOT_REMOVE))
             continue
         code, _, _ = _git(root, "checkout", "--", path)
-        (reverted if code == 0 else declined).append(path)
+        if code == 0:
+            reverted.append(path)
+        else:
+            declined.append((path, GIT_REFUSED))
     return reverted, declined
+
+
+def revert_hint(
+    reverted: Sequence[str], declined: Sequence[Tuple[str, str]], asked: bool
+) -> str:
+    """What the tree actually looks like now, in one sentence per outcome.
+
+    This used to be a constant chosen by whether `--revert-on-fail` was
+    *passed*, which is a statement about the command line and not about the
+    worktree. On the one run where reverting was declined it printed "The
+    files this run touched have been restored." beside `"reverted": []` —
+    and anyone reading the console rather than parsing the JSON took their
+    next action against a state they had mismodelled. A tool that reports a
+    restoration it did not perform is the single failure mode that running it
+    again cannot catch, so the hint is now derived from the outcome.
+    """
+    if not asked:
+        return "The patch is still applied; `git diff` shows it."
+    parts: List[str] = []
+    if reverted:
+        parts.append(
+            f"Restored {len(reverted)} file(s) this run touched: "
+            + ", ".join(reverted[:8])
+            + "."
+        )
+    for reason in (WAS_ALREADY_DIRTY, GIT_REFUSED, COULD_NOT_REMOVE):
+        paths = [p for p, why in declined if why == reason]
+        if not paths:
+            continue
+        parts.append(
+            f"Revert declined: {len(paths)} file(s) {reason} "
+            f"({', '.join(paths[:8])}); they are untouched and the patch is "
+            "still applied to them."
+        )
+    if not parts:
+        # --revert-on-fail with nothing written: the verify failed over
+        # something this run did not cause.
+        return "Nothing to revert: this run wrote no files."
+    return " ".join(parts)
 
 
 # --------------------------------------------------------------------------
@@ -352,6 +481,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     v = p.add_argument_group("verification")
+    v.add_argument(
+        "--format-cmd",
+        metavar="CMD",
+        help="run this on the applied files before --verify; {files} is "
+        "replaced with them (e.g. 'npx prettier --write {files}')",
+    )
     v.add_argument(
         "--verify", metavar="CMD", help="run this after applying; exit 7 if it fails"
     )
@@ -484,7 +619,12 @@ def _apply(args: argparse.Namespace) -> int:
         "dry_run": args.dry_run,
         "target": args.target if not args.session else f"session:{args.session}",
         "session": session_id,
-        "patches": len(patches),
+        # Spelled the same way `ask` spells it, and for the same reason: a
+        # bare `patches` count is read as "patches applied" by anyone who did
+        # not write the tool, and the two verbs' envelopes should be
+        # comparable without knowing which one produced them.
+        "patches_proposed": len(patches),
+        "patches_applied": len(result.applied),
         "applied": result.applied,
         "partial": result.partial,
         "failed": result.failed,
@@ -508,21 +648,45 @@ def _apply(args: argparse.Namespace) -> int:
             **payload,
         )
 
-    # 4. Verification, and the way back out.
+    # 4. Normalise before judging. A formatter is not a gate: its failure is
+    #    reported and the run continues, because exit 7 has to keep meaning
+    #    "--verify failed" or the caller cannot tell which command to go and
+    #    look at.
+    if args.format_cmd and not args.dry_run and result.applied:
+        code, output = run_format(
+            root, args.format_cmd, result.applied, args.verify_timeout
+        )
+        payload["format"] = {
+            "command": args.format_cmd,
+            "files": list(result.applied),
+            "exit": code,
+            "output": output,
+        }
+        if code != 0:
+            narrate(
+                f"kopipasta: --format-cmd exited {code}; the patch is applied "
+                "and unformatted. " + (output.splitlines() or [""])[-1]
+            )
+
+    # 5. Verification, and the way back out.
     if args.verify and not args.dry_run:
         code, output = run_verify(root, args.verify, args.verify_timeout)
         payload["verify"] = {"command": args.verify, "exit": code, "output": output}
         if code != 0:
+            declined: List[Tuple[str, str]] = []
+            reverted: List[str] = []
             if args.revert_on_fail:
                 reverted, declined = revert(root, result, was_dirty)
                 payload["reverted"] = reverted
-                payload["revert_declined"] = declined
+                payload["revert_declined"] = [p for p, _ in declined]
+                # The reason, not just the path: "I refused to touch your
+                # uncommitted work" and "git would not put it back" call for
+                # opposite next moves.
+                payload["revert_declined_why"] = {p: why for p, why in declined}
             raise VerifyFailed(
                 f"--verify failed (exit {code}).",
                 detail=output,
-                hint="The patch is still applied; `git diff` shows it."
-                if not args.revert_on_fail
-                else "The files this run touched have been restored.",
+                hint=revert_hint(reverted, declined, args.revert_on_fail),
                 **payload,
             )
 

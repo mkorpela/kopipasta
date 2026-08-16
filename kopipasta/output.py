@@ -20,13 +20,22 @@ from typing import IO, Any, Iterator, Optional
 _artifact_stream: Optional[IO[str]] = None
 
 
-def _make_narration_safe(stream: Optional[IO[str]]) -> None:
-    """Narration must never be able to kill the run.
+def reconfigure_utf8(stream: Optional[IO[str]]) -> None:
+    """Make a stream unable to kill the run over one character.
 
     The completion banner contains emoji and the prompt body contains
     whatever is in the user's files. Redirected stderr on Windows is cp1252,
     which cannot encode either, and the resulting UnicodeEncodeError would
     surface as a crash with no obvious cause.
+
+    The encoding half of `proc.TEXT`, pointing the other way: that one governs
+    what we read from a child process, this one what we write to a terminal.
+    Both exist because the platform default is wrong and silent about it.
+
+    `reconfigure` is on `TextIOWrapper`, not on the `TextIO` the stdlib
+    advertises for `sys.stdout`, and a stream that has been replaced by a test
+    harness or a captured pipe may not have it at all. That is what the
+    `AttributeError` arm is for; it is a real case, not defensive padding.
     """
     try:
         stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
@@ -58,12 +67,12 @@ def stdout_reserved_for_output() -> Iterator[IO[str]]:
         yield previous
         return
     saved = sys.stdout
-    _make_narration_safe(sys.stderr)
+    reconfigure_utf8(sys.stderr)
     # The artifact carries the user's file contents, so it is the stream most
     # likely to meet a character cp1252 cannot encode. main._configure_platform
     # reconfigures `sys.stdout`, which by then is stderr — it can no longer
     # reach the real handle, so it is fixed up here where the handle is known.
-    _make_narration_safe(saved)
+    reconfigure_utf8(saved)
     _artifact_stream = saved
     sys.stdout = sys.stderr
     try:

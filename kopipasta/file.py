@@ -2,8 +2,8 @@ import ast
 import copy
 import fnmatch
 import os
-from typing import List, Optional, Tuple, Set
 from pathlib import Path
+from typing import List, Optional, Set, Tuple, Union
 
 try:
     import tree_sitter
@@ -152,12 +152,12 @@ def _read_gitignore_patterns(gitignore_path: str) -> list[str]:
         return []
     patterns = []
     try:
-        with open(gitignore_path, "r", encoding="utf-8") as f:
+        with open(gitignore_path, encoding="utf-8") as f:
             for line in f:
                 stripped_line = line.strip()
                 if stripped_line and not stripped_line.startswith("#"):
                     patterns.append(stripped_line)
-    except IOError:
+    except OSError:
         pass
     _gitignore_cache[gitignore_path] = patterns
     return patterns
@@ -269,11 +269,11 @@ def get_all_patterns(
     return basename_patterns, path_patterns
 
 
-def read_file_contents(file_path):
+def read_file_contents(file_path: str) -> str:
     try:
-        with open(file_path, "r", encoding="utf-8") as file:
+        with open(file_path, encoding="utf-8") as file:
             return file.read()
-    except (IOError, UnicodeDecodeError) as e:
+    except (OSError, UnicodeDecodeError) as e:
         failure = f"Error reading {file_path}: {e}"
         print(failure)
         return f"<.. {failure} ..>"
@@ -316,7 +316,7 @@ def is_binary(file_path: str) -> bool:
             # If no null byte, assume it's a text file
             _is_binary_cache[file_path] = False
             return False
-    except IOError:
+    except OSError:
         # If we can't open it, treat it as binary to be safe
         _is_binary_cache[file_path] = True
         return True
@@ -350,12 +350,18 @@ def _normalize_method_name(name: str) -> str:
     return name
 
 
-def _get_signature(node: ast.AST) -> str:
+#: The nodes these helpers are ever handed. `ast.AST` was wide enough to
+#: compile and too wide to be true: `.body` and `.name` do not exist on the
+#: base class, so the annotation was documenting a contract the callers do not
+#: have and the code would crash on anything that actually matched it.
+Definition = Union[ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef]
+
+
+def _get_signature(node: Definition) -> str:
     """Unparse the signature of a class or function, omitting the body."""
     n = copy.copy(node)
     n.body = [ast.Pass()]
-    if hasattr(n, "decorator_list"):
-        n.decorator_list = []
+    n.decorator_list = []
     try:
         code = ast.unparse(n).replace("\r\n", "\n")
         suffix = ":\n    pass"
@@ -374,7 +380,7 @@ def _get_signature(node: ast.AST) -> str:
         return f"def {node.name}"
 
 
-def _get_docstring_suffix(node: ast.AST) -> str:
+def _get_docstring_suffix(node: Definition) -> str:
     """Extract the first line of the docstring."""
     doc = ast.get_docstring(node)
     if doc:
@@ -394,7 +400,7 @@ def _extract_frontend_symbols(path: str) -> List[str]:
     try:
         with open(path, "rb") as f:
             source_bytes = f.read()
-    except IOError:
+    except OSError:
         return []
 
     try:
@@ -604,10 +610,10 @@ def extract_symbols(path: str) -> List[str]:
     if not path.endswith(".py"):
         return []
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             source = f.read()
         tree = ast.parse(source)
-    except (SyntaxError, IOError, UnicodeDecodeError):
+    except (OSError, SyntaxError, UnicodeDecodeError):
         return []
 
     symbols: List[str] = []

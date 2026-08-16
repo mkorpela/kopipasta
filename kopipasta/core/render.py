@@ -60,7 +60,7 @@ def get_file_snippet(file_path: str, max_lines: int = 50, max_bytes: int = 4096)
     snippet = ""
     byte_count = 0
     try:
-        with open(file_path, "r", encoding="utf-8", errors="replace") as file:
+        with open(file_path, encoding="utf-8", errors="replace") as file:
             for i, line in enumerate(file):
                 if i >= max_lines or byte_count >= max_bytes:
                     break
@@ -260,7 +260,7 @@ def handle_env_variables(
             "masking every detected value",
         )
 
-        for key, value in undecided_vars:
+        for key, _value in undecided_vars:
             if headless:
                 decisions_cache[key] = "m"
                 continue

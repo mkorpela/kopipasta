@@ -377,7 +377,7 @@ def _ask_payload(project, capsys, *extra_argv, task="Fix the thing."):
     )
     assert code == EXIT_OK
     data = json.loads(capsys.readouterr().out)
-    return (project / data["request"]).read_text()
+    return (project / data["request"]).read_text(encoding="utf-8")
 
 
 def test_the_payload_is_the_clipboard_prompt_with_a_different_tail(memory, capsys):

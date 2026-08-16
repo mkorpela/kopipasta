@@ -156,7 +156,7 @@ def test_gitignored_and_binary_files_never_enter_a_payload(project, capsys):
     (project / "build" / "junk.py").write_text("x = 1\n")
     (project / ".gitignore").write_text("build/\n")
     data = run_json(capsys, "--all", "-q", "x")
-    payload = (project / data["request"]).read_text()
+    payload = (project / data["request"]).read_text(encoding="utf-8")
     assert "junk.py" not in payload  # gitignored: absent even from the tree
     assert "binary" not in payload  # the bytes of a binary file are never read
 
@@ -168,7 +168,7 @@ def test_the_payload_carries_the_structure_tree_as_json(project, capsys):
     """The tree is the anti-hallucination device: it is how the model knows
     which files exist, and therefore which ones it was *not* given."""
     data = run_json(capsys, "-e", "src/calc.py", "-q", "x")
-    payload = (project / data["request"]).read_text()
+    payload = (project / data["request"]).read_text(encoding="utf-8")
     assert "## Project Structure" in payload
     start = payload.index("```json", payload.index("## Project Structure")) + len(
         "```json"
@@ -184,7 +184,7 @@ def test_the_payload_carries_the_structure_tree_as_json(project, capsys):
 
 def test_a_mapped_file_carries_its_skeleton_in_the_tree(project, capsys):
     data = run_json(capsys, "-m", "src/calc.py", "-q", "x")
-    payload = (project / data["request"]).read_text()
+    payload = (project / data["request"]).read_text(encoding="utf-8")
     assert "def add(a, b)" in payload
     assert "Add two numbers." in payload
 
@@ -210,7 +210,7 @@ def test_a_named_file_with_no_skeleton_still_reaches_the_model(
     """
     (project / name).write_text(body)
     data = run_json(capsys, "-m", name, "-q", "x")
-    payload = (project / data["request"]).read_text()
+    payload = (project / data["request"]).read_text(encoding="utf-8")
     assert "WHOLE_POINT_OF_THE_FILE" in payload
     # Counted as what it actually is, and named rather than left to inference.
     assert data["sent"]["map"] == 0
@@ -238,7 +238,7 @@ def test_every_selected_file_appears_under_a_zone_heading(project, capsys):
         "-q",
         "x",
     )
-    payload = (project / data["request"]).read_text()
+    payload = (project / data["request"]).read_text(encoding="utf-8")
     blocks = {
         line.split(":", 1)[1].split("(")[0].strip()
         for line in payload.splitlines()
@@ -267,7 +267,7 @@ def test_the_state_directory_can_never_join_an_all_selection(project, capsys):
     (state / "001-response.md").write_text("A PREVIOUS ANSWER FROM THE MODEL\n")
     (project / ".gitignore").write_text("__pycache__/\n")  # no rule for it
     data = run_json(capsys, "--all", "-q", "x")
-    payload = (project / data["request"]).read_text()
+    payload = (project / data["request"]).read_text(encoding="utf-8")
     assert "A PREVIOUS ANSWER FROM THE MODEL" not in payload
     assert "001-response.md" not in payload  # absent even from the tree
 
@@ -285,7 +285,7 @@ def test_over_budget_files_walk_down_the_ladder_instead_of_vanishing(project, ca
     assert "src/big.py" in demoted
     # -e is never demoted: that is the contract of "editable".
     assert "src/calc.py" not in demoted
-    payload = (project / data["request"]).read_text()
+    payload = (project / data["request"]).read_text(encoding="utf-8")
     assert '"big.py"' in payload  # still named in the structure tree, not gone
     assert "def f399" not in payload  # ... but its body is not
 
@@ -303,7 +303,7 @@ def test_a_demotion_reports_the_rung_the_file_actually_landed_on(project, capsys
     )
     demoted = {d["path"]: d for d in data["demoted"]}
     assert demoted["big.md"]["to"] == "path-only"
-    payload = (project / data["request"]).read_text()
+    payload = (project / data["request"]).read_text(encoding="utf-8")
     assert '"big.md"' in payload  # still named in the structure tree
     assert "prose prose prose" not in payload
 
@@ -323,7 +323,7 @@ def test_there_is_no_budget_unless_one_is_asked_for(project, capsys):
     assert "demoted" not in data
     assert data["sent"]["demoted"] == 0
     assert data["sent"]["map"] == 0  # nothing fell to a skeleton
-    assert "def f3999" in (project / data["request"]).read_text()
+    assert "def f3999" in (project / data["request"]).read_text(encoding="utf-8")
 
 
 def test_the_unbudgeted_default_survives_the_config_file(project, capsys, monkeypatch):
@@ -536,7 +536,7 @@ def test_an_unchanged_file_is_not_resent_on_the_next_turn(project, capsys, canne
     )
     assert second["turn"] == 2
     assert second["sent"]["deduped"] == 1
-    body = (project / second["request"]).read_text()
+    body = (project / second["request"]).read_text(encoding="utf-8")
     assert "prefix: prefix.md" in body  # referenced, not repeated
     assert "def add" not in body
 
@@ -549,7 +549,7 @@ def test_a_changed_file_is_resent_and_marked_as_superseding(project, capsys, can
     second = run_json(
         capsys, "-e", "src/calc.py", "--session", "s", "-q", "two", backend=canned
     )
-    body = (project / second["request"]).read_text()
+    body = (project / second["request"]).read_text(encoding="utf-8")
     assert second["sent"]["deduped"] == 0
     assert "supersedes" in body and "# fixed" in body
 
@@ -562,7 +562,7 @@ def test_a_role_change_defeats_dedup(project, capsys, canned):
         capsys, "-e", "src/main.py", "--session", "s", "-q", "two", backend=canned
     )
     assert second["sent"]["deduped"] == 0
-    assert "now edit" in (project / second["request"]).read_text()
+    assert "now edit" in (project / second["request"]).read_text(encoding="utf-8")
 
 
 def test_dedup_only_trusts_the_prefix_not_earlier_suffixes(project, capsys, canned):
@@ -594,7 +594,7 @@ def test_dedup_only_trusts_the_prefix_not_earlier_suffixes(project, capsys, cann
         "3",
         backend=canned,
     )
-    body = (project / third["request"]).read_text()
+    body = (project / third["request"]).read_text(encoding="utf-8")
     assert third["sent"]["deduped"] == 1  # only the one that is in the prefix
     assert "def main" in body
 
@@ -621,7 +621,7 @@ def test_a_skeleton_selected_on_a_later_turn_actually_reaches_the_model(
         "two",
         backend=canned,
     )
-    body = (project / second["request"]).read_text()
+    body = (project / second["request"]).read_text(encoding="utf-8")
     assert second["sent"]["map"] == 1
     assert "src/main.py" in body
     assert "def main()" in body  # the skeleton, not just the name
@@ -814,7 +814,248 @@ def test_an_unfenced_patch_is_applied_rather_than_rejected(project, capsys):
     data = run_json(
         capsys, "-e", "src/calc.py", "--mode", "patch", "-q", "x", backend=backend
     )
-    assert data["patches"] == 1
+    assert data["patches_proposed"] == 1
+
+
+# -- proposing is not applying, and the envelope has to say which -----------
+
+
+def _one_patch(project):
+    return _canned(
+        project,
+        "# FILE: src/calc.py\n"
+        "<<<<<<< SEARCH\n    return a + b\n=======\n    return a + b + 0\n"
+        ">>>>>>> REPLACE\n",
+    )
+
+
+def test_a_proposed_patch_is_counted_as_proposed_not_applied(project, capsys):
+    """Field report 2.5.
+
+    `"patches": 3` beside `"ok": true` reads as "3 patches applied". Nothing
+    had been written and `git status` was clean. The separation of proposal
+    from application is the best thing about this tool; the field name was
+    undercutting it. `patches_applied` is the same type as `patches_proposed`
+    so the two can be compared without knowing which verb produced them —
+    `applied` is already a list of paths over in `apply`, and reusing the name
+    for a boolean would be worse than the ambiguity it fixed.
+    """
+    data = run_json(
+        capsys,
+        "-e",
+        "src/calc.py",
+        "--mode",
+        "patch",
+        "-q",
+        "x",
+        backend=_one_patch(project),
+    )
+    assert data["patches_proposed"] == 1
+    assert data["patches_applied"] == 0
+    assert "patches" not in data, (
+        "the ambiguous name must not linger beside the clear one"
+    )
+    assert (project / "src" / "calc.py").read_text().endswith("return a + b\n"), (
+        "ask wrote to the worktree"
+    )
+
+
+def test_a_proposed_patch_says_what_would_apply_it(project, capsys):
+    """An agent that has just been handed a proposal needs one thing next, and
+    it is a command, not a field."""
+    data = run_json(
+        capsys,
+        "-e",
+        "src/calc.py",
+        "--mode",
+        "patch",
+        "-q",
+        "x",
+        backend=_one_patch(project),
+    )
+    assert data["next"].startswith("kopipasta apply")
+    assert data["session"] in data["next"]
+
+
+def test_a_prose_answer_has_no_patch_counts_at_all(project, capsys, canned):
+    """Absent is a clearer answer than zero for a mode that cannot propose."""
+    data = run_json(capsys, "-e", "src/calc.py", "-q", "x", backend=canned)
+    assert "patches_proposed" not in data
+    assert "patches_applied" not in data
+
+
+# -- the output budget has to fit what the mode is asked to produce --------
+
+
+def test_the_output_budget_is_not_a_relic_of_a_smaller_era(project, capsys, canned):
+    """Field report 2.4.
+
+    The first patch call in the field died at the 8192 default having produced
+    9,340 characters — one wasted call, and the failure arrives only after the
+    whole payload has been sent and billed. 8192 was never a considered
+    number: Google's own console defaults this model to 65536, and reasoning
+    tokens spend the same allowance, so the shipped ceiling was eight times
+    below what the vendor treats as ordinary.
+
+    A cap is not a bill. Providers charge for tokens produced, not permitted,
+    so the only cost of the higher number is the ceiling on a runaway — and
+    that is bounded by `--timeout` and the deadline anyway.
+    """
+    data = run_json(
+        capsys, "-e", "src/calc.py", "--mode", "answer", "-q", "x", backend=canned
+    )
+    assert data["max_tokens"] == 65536
+
+
+def test_every_mode_gets_the_same_room_to_answer_in(project, capsys, canned):
+    """No per-mode floor. It was written to compensate for a global default
+    that was simply wrong, and machinery that exists to work around a bad
+    constant is worse than fixing the constant."""
+    prose = run_json(
+        capsys, "-e", "src/calc.py", "--mode", "answer", "-q", "x", backend=canned
+    )
+    patch = run_json(
+        capsys,
+        "-e",
+        "src/calc.py",
+        "--mode",
+        "patch",
+        "-q",
+        "x",
+        backend=_one_patch(project),
+    )
+    assert prose["max_tokens"] == patch["max_tokens"] == 65536
+
+
+def test_an_explicit_max_tokens_still_wins(project, capsys):
+    """The floor is a better default, not a policy. Someone who names a number
+    has a reason, and overruling it would make the flag a lie."""
+    data = run_json(
+        capsys,
+        "-e",
+        "src/calc.py",
+        "--mode",
+        "patch",
+        "--max-tokens",
+        "1000",
+        "-q",
+        "x",
+        backend=_one_patch(project),
+    )
+    assert data["max_tokens"] == 1000
+
+
+def _with_config(monkeypatch, tmp_path, body):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(body, encoding="utf-8")
+    monkeypatch.setattr("kopipasta.core.config.config_path", lambda: cfg)
+    return cfg
+
+
+def test_max_tokens_named_in_the_modes_own_section_wins(
+    project, capsys, tmp_path, monkeypatch
+):
+    """The reason to lower it is a provider that cannot go this high.
+
+    Anthropic and OpenAI hard-error above their model's output ceiling, so
+    `[patch] max_tokens = 32000` is the documented remedy, and it has to
+    actually win.
+    """
+    _with_config(
+        monkeypatch,
+        tmp_path,
+        '[ask]\nprovider = "none"\nmodel = ""\n[patch]\nmax_tokens = 4096\n',
+    )
+    data = run_json(
+        capsys,
+        "-e",
+        "src/calc.py",
+        "--mode",
+        "patch",
+        "-q",
+        "x",
+        backend=_one_patch(project),
+    )
+    assert data["max_tokens"] == 4096
+
+
+def test_the_shipped_config_does_not_pin_the_default_it_documents(tmp_path):
+    """Writing the built-in default into the file turns a default into a
+    decision, and nothing downstream can tell the two apart afterwards — most
+    concretely, `config --show` then reports a number nobody chose as
+    configured, and the next person to raise the default cannot reach anyone
+    who has ever run `--edit-config`."""
+    from kopipasta.core.config import DEFAULT_CONFIG
+
+    assert "max_tokens  = 8192" not in DEFAULT_CONFIG
+    assert "max_tokens" in DEFAULT_CONFIG, "still worth documenting as a knob"
+
+
+# -- the mode picks the config section, as the file has always claimed -----
+
+
+def test_a_mode_reads_its_own_config_section(project, capsys, tmp_path, monkeypatch):
+    """`[patch] provider = "anthropic"` is in the shipped config file and in
+    the README, and `ask` resolved `[ask]` unconditionally — so the one
+    documented reason to have per-section config did nothing at all.
+
+    A coordinated patch wants the strongest model; triage over a 400k
+    frontload wants the big cheap window. That is the entire argument for
+    sections existing.
+    """
+    _with_config(
+        monkeypatch,
+        tmp_path,
+        '[ask]\nprovider = "none"\nmodel = ""\ntimeout_s = 900\n'
+        '[patch]\nprovider = "exec"\nmodel = "echo hi"\n',
+    )
+    data = run_json(capsys, "-e", "src/calc.py", "-q", "x")
+    assert data["backend"].startswith("none")
+
+    # Resolved for the mode, not for the verb. `--backend` still overrides.
+    from kopipasta.core.config import resolve_backend
+
+    assert resolve_backend("patch", path=tmp_path / "config.toml").provider == "exec"
+
+
+def test_a_mode_without_a_section_still_falls_back_to_ask(
+    project, capsys, tmp_path, monkeypatch
+):
+    _with_config(
+        monkeypatch, tmp_path, '[ask]\nprovider = "none"\nmodel = ""\ntimeout_s = 42\n'
+    )
+    data = run_json(capsys, "-e", "src/calc.py", "--mode", "explain", "-q", "x")
+    assert data["backend"].startswith("none")
+
+
+# -- the tool must not edit tracked files without saying so ----------------
+
+
+def test_writing_the_gitignore_rule_is_announced(project, capsys):
+    """Field report 2.6.
+
+    The first run in a repo appends `.kopipasta/` to a tracked `.gitignore`.
+    It is the right default — session records are not source — but it was the
+    only tree change that run produced, and it happened in silence. A tool
+    that edits a tracked file without saying so is one `git diff` away from
+    looking like a bug in something else.
+    """
+    assert ".kopipasta/" not in (project / ".gitignore").read_text()
+    run("-e", "src/calc.py", "-q", "x")
+    err = capsys.readouterr().err
+    # A specific sentence, not just the two words appearing somewhere: every
+    # run mentions `.gitignore` and `.kopipasta/` in passing, so a loose
+    # assertion here would pass without the feature existing.
+    assert "added '.kopipasta/' to .gitignore" in err
+    assert ".kopipasta/" in (project / ".gitignore").read_text()
+
+
+def test_the_announcement_is_not_repeated_once_the_rule_is_there(project, capsys):
+    """Narration that fires on every run is narration nobody reads."""
+    run("-e", "src/calc.py", "-q", "x")
+    capsys.readouterr()
+    run("-e", "src/calc.py", "-q", "x")
+    assert "added '.kopipasta/'" not in capsys.readouterr().err
 
 
 def test_a_response_with_no_patch_is_a_format_problem_not_a_misconfigured_backend(
@@ -958,7 +1199,9 @@ def test_no_question_and_no_human_refuses_with_its_own_exit_code(project, capsys
 def test_the_question_can_come_from_a_file(project, capsys):
     (project / "task.md").write_text("Where does expiry live?\n")
     data = run_json(capsys, "-e", "src/calc.py", "-q", "@task.md")
-    assert "Where does expiry live?" in (project / data["request"]).read_text()
+    assert "Where does expiry live?" in (project / data["request"]).read_text(
+        encoding="utf-8"
+    )
 
 
 def test_a_canned_response_drives_the_parsing_path(project, capsys):
@@ -1076,7 +1319,7 @@ def test_env_values_are_masked_without_asking(project, capsys):
     (project / ".env").write_text("API_TOKEN=sk-live-abcdefghijklmnop\n")
     (project / "src" / "conf.py").write_text('TOKEN = "sk-live-abcdefghijklmnop"\n')
     data = run_json(capsys, "-e", "src/conf.py", "-q", "x")
-    payload = (project / data["request"]).read_text()
+    payload = (project / data["request"]).read_text(encoding="utf-8")
     assert "sk-live-abcdefghijklmnop" not in payload
     assert "*" * 10 in payload
 
@@ -1087,9 +1330,13 @@ def test_env_values_are_masked_without_asking(project, capsys):
 def test_ai_context_is_offered_to_the_oracle_and_can_be_declined(project, capsys):
     (project / "AI_CONTEXT.md").write_text("# Rules\nNever use threads.\n")
     with_ctx = run_json(capsys, "-e", "src/calc.py", "-q", "x")
-    assert "Never use threads." in (project / with_ctx["request"]).read_text()
+    assert "Never use threads." in (project / with_ctx["request"]).read_text(
+        encoding="utf-8"
+    )
     without = run_json(capsys, "-e", "src/calc.py", "-q", "x", "--no-project-context")
-    assert "Never use threads." not in (project / without["request"]).read_text()
+    assert "Never use threads." not in (project / without["request"]).read_text(
+        encoding="utf-8"
+    )
 
 
 # -- git selectors ----------------------------------------------------------
@@ -1158,7 +1405,7 @@ def test_a_budget_with_no_room_for_one_file_says_the_payload_is_empty(rust, caps
         capsys, "--all", "--budget", "60", "-q", "which file expires tokens?"
     )
     assert data["no_file_contents"] is True
-    payload = (rust / data["request"]).read_text()
+    payload = (rust / data["request"]).read_text(encoding="utf-8")
     assert "expires_at" not in payload  # the tree names it; nothing shows it
 
 
@@ -1191,7 +1438,7 @@ def test_all_sends_whole_files_not_skeletons(project, capsys):
     data = run_json(capsys, "--all", "-q", "x")
     assert data["sent"]["ref"] == 4  # every non-ignored file
     assert data["sent"]["map"] == 0
-    payload = (project / data["request"]).read_text()
+    payload = (project / data["request"]).read_text(encoding="utf-8")
     assert "return a + b" in payload  # the body, not just the signature
     assert "## Reference Context (Read-Only)" in payload
 
@@ -1203,7 +1450,7 @@ def test_all_reads_a_language_it_cannot_skeleton(rust, capsys):
     assert data["sent"]["ref"] == 5
     assert "no_file_contents" not in data
     assert "path_only" not in data
-    payload = (rust / data["request"]).read_text()
+    payload = (rust / data["request"]).read_text(encoding="utf-8")
     assert "t.expires_at <= now()" in payload
 
 
@@ -1213,7 +1460,7 @@ def test_an_explicit_role_still_beats_all(project, capsys):
     data = run_json(capsys, "--all", "-e", "src/calc.py", "-q", "x")
     assert data["sent"]["edit"] == 1
     assert data["sent"]["ref"] == 3
-    payload = (project / data["request"]).read_text()
+    payload = (project / data["request"]).read_text(encoding="utf-8")
     assert payload.index("Active Workspace") < payload.index("src/calc.py")
 
 
@@ -1237,7 +1484,7 @@ def test_the_ladder_demotes_what_all_dragged_in_before_what_you_named(project, c
     demoted = {d["path"] for d in data["demoted"]}
     assert "src/bulk.py" in demoted
     assert "src/named.py" not in demoted
-    assert "# named 199" in (project / data["request"]).read_text()
+    assert "# named 199" in (project / data["request"]).read_text(encoding="utf-8")
 
 
 def test_a_budget_still_brings_a_whole_repo_down_to_size(project, capsys):
@@ -1245,7 +1492,7 @@ def test_a_budget_still_brings_a_whole_repo_down_to_size(project, capsys):
     (project / "src" / "big.py").write_text(big)
     data = run_json(capsys, "--all", "--budget", "1k", "-q", "x")
     assert data["demoted"], "nothing demoted despite a budget far under the repo"
-    payload = (project / data["request"]).read_text()
+    payload = (project / data["request"]).read_text(encoding="utf-8")
     assert "def f399" not in payload  # the body is gone
     assert '"big.py"' in payload  # the name is not
 

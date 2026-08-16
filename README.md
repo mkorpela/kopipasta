@@ -64,6 +64,11 @@ Returns a hypothesis, a ranked `relevant_files`, a `suggested_selection`, and
 `missing_context` — the last being the honest signal that the model answered without
 seeing something it needed.
 
+**Triage tells you where to look, not what is missing.** A skeleton shows that an interface
+exists, not which fields it already has, so "must edit, 0.9" over a file whose plumbing is
+already in place is the expected failure of the cheap pass, not a malfunction. One `rg`
+disproves it in thirty seconds, and that is still the right trade against reading the tree.
+
 ### 2. Distill — pivot to the minimal working set
 
 ```bash
@@ -79,7 +84,7 @@ a tight, high-signal window without re-reading anything irrelevant.
 ```bash
 kopipasta ask -e 'src/auth/tokens.py' -e 'src/auth/session.py' \
               -r 'tests/test_auth*.py' -m 'src/**/*.py' \
-              --mode patch -q "$(cat task.md)" --json
+              --mode patch -q @task.md --json
 
 kopipasta apply current --verify 'pytest -q' --revert-on-fail --json
 ```
@@ -87,6 +92,38 @@ kopipasta apply current --verify 'pytest -q' --revert-on-fail --json
 One model call with the whole subsystem in view, zoned into editable (`-e`) and read-only
 (`-r`), applied deterministically, verified, reported as a diffstat — and rolled back if the
 tests fail.
+
+`ask` **proposes**. Nothing is written until `apply` runs, and the envelope says so:
+`patches_proposed` and `patches_applied` are separate counts, and `next` is the exact command
+that would apply them.
+
+> **`-q @file`, not `-q "…"`, for anything longer than a sentence.** Prompts contain braces,
+> quotes and newlines, and every shell mangles a different subset of them — PowerShell splits
+> `{'—'}` before the tool ever sees it. Reading the task from a file also makes it reviewable
+> and re-runnable.
+
+### The verify command is the quality ceiling
+
+This is the one thing worth internalising before the flag list. `apply --verify` is not a
+safety net you configure once — it is the entire mechanism by which a wrong answer is caught.
+Nothing downstream of it checks harder than the command you hand it.
+
+A model can produce output that is green and broken at the same time: tests that pass while
+three promises reject unhandled, a lint error traded for a different lint error. Neither is
+visible to `--verify 'tsc --noEmit'`; both are visible to the project's real gate. **A cheap
+verify buys a cheap answer.** Pass the same command CI runs.
+
+`--format-cmd` exists so the gate is not spent on whitespace:
+
+```bash
+kopipasta apply current \
+  --format-cmd 'npx prettier --write {files}' \
+  --verify 'npm run check' --revert-on-fail
+```
+
+`{files}` is replaced with the files this run actually wrote, so the formatter cannot wander
+into unrelated uncommitted work. It runs after the patch and before the verify, and its
+failure is reported without becoming the verdict — exit 7 keeps meaning "`--verify` failed".
 
 ---
 
@@ -129,7 +166,8 @@ role wins, so `-m '**/*.py' -e src/api.py` skeletons the tree but sends that one
 ```
 
 Globs, directories and literal paths all work; `@file` reads patterns from a file anywhere a
-pattern is expected. `.gitignore` and binary filtering always apply.
+pattern is expected — including `-q @task.md`, which is the recommended form for any prompt
+long enough that a shell could mangle it. `.gitignore` and binary filtering always apply.
 
 **A selection that matches nothing is an error, not a warning** — a typo'd glob would
 otherwise produce a confident answer built from nothing:
@@ -165,14 +203,27 @@ KOPIPASTA_BACKEND                    per-shell or per-job override
 [ask]
 provider = "gemini"
 model    = "gemini-3.7-flash"
+thinking = "high"          # gemini thinkingLevel; "default" sends nothing
 
 [patch]
-provider = "anthropic"
-model    = "claude-opus-5"
+provider   = "anthropic"
+model      = "claude-opus-5"
+max_tokens = 32000         # only needed where the provider caps output
 ```
 
-Sections are per verb: triage over a 400k frontload wants a big cheap context window, a
-coordinated patch wants the strongest model. Edit with `kopipasta --edit-config`.
+Sections are named after the `--mode`: triage over a 400k frontload wants a big cheap context
+window, a coordinated patch wants the strongest model. A mode with no section inherits
+`[ask]`. Edit with `kopipasta --edit-config`.
+
+Two defaults worth knowing, because both are about the same budget:
+
+- **`max_tokens` is 65536**, what Google's console uses for this model — not the 8192 that
+  used to kill the first patch call *after* the whole payload had been sent and billed. A cap
+  is not a bill; providers charge for tokens produced, not permitted. Anthropic and OpenAI
+  reject anything above their model's ceiling, so set `max_tokens` in that provider's section.
+- **`thinking` is `"high"`.** Reasoning tokens are billed as output and spend the same
+  allowance. By the time the model starts thinking, the expensive part of the call is already
+  paid for, so cheap thinking over a large payload is the worst point on that curve.
 
 **API keys live in the environment, never in that file** — `GEMINI_API_KEY`,
 `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`. Backends: `gemini:`, `anthropic:`, `openai:` (and any
@@ -186,7 +237,8 @@ key itself, only whether it is set:
 provider     anthropic          config.toml [patch]
 model        claude-opus-5      config.toml [patch]
 api key      ANTHROPIC_API_KEY  set (108 chars)
-max_tokens   4096               config.toml [ask]
+max_tokens   32000              config.toml [patch]
+thinking     high               built-in default
 timeout_s    900                built-in default
 ```
 
@@ -246,6 +298,15 @@ Nothing ever blocks waiting for a human that isn't there. With no terminal attac
 kopipasta either applies the safe default and says so on stderr, or exits 8 naming the flag
 that would have answered the question. Set `KOPIPASTA_NONINTERACTIVE=1` to make that explicit
 in scripts.
+
+Two fields exist because their absence was read as the opposite of the truth:
+
+- `patches_proposed` / `patches_applied` — never a bare `patches`, which reads as "applied"
+  when `ask` has written nothing at all.
+- `hint`, on a failed `--verify`, is derived from what the revert actually did. When a revert
+  is declined — the file had uncommitted changes before the run, so it is the caller's, not
+  ours — the hint says so and names the reason in `revert_declined_why`. A tool that reports a
+  restoration it did not perform is the one failure mode that running it again cannot catch.
 
 ---
 
@@ -334,10 +395,38 @@ Desktop for you.
 
 ```bash
 uv tool install kopipasta      # recommended
-uv sync                        # for development
 ```
 
 Python 3.10+.
+
+## Developing
+
+```bash
+uv sync --group dev
+uv run pre-commit install --install-hooks     # installs pre-commit AND pre-push
+```
+
+The hooks run `ruff format`, `ruff check --fix` and `mypy` on commit, and the test
+suite on push. The suite takes about a minute, which is a tax nobody pays on every
+commit — they pay it by typing `--no-verify`, which switches off the fast checks at
+the same time. Slow gates belong at the slow boundary.
+
+Every tool runs through `uv run --frozen`, so the version is the one in `uv.lock` and
+nothing else. That is not fussiness: this code passes `ruff check` clean on 0.15.1 and
+reports ~670 findings on 0.16.3, because ruff's default rule selection moves between
+minor releases. A hook and a CI job that disagree about what "lint" means is worse
+than having neither — whichever one is red gets treated as the broken one.
+
+CI runs the same three commands, plus the suite on Linux, **Windows** and macOS across
+3.10 and 3.12. Windows is not thoroughness for its own sake: every blocker in
+`docs/FIELD_REPORT_AMBIENT.md` was invisible on Linux, because cp1252 is the default
+encoding there and nowhere else.
+
+A fourth job installs the built package with no dev dependencies and runs it. It exists
+because `tomli` was missing from the runtime dependencies for every 3.10 install and
+nothing caught it for a long time: mypy depends on `tomli` below 3.11, so every
+development environment had it by accident and the only configuration that mattered was
+the one nobody ever ran.
 
 ## Safety
 

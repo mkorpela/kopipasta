@@ -1,10 +1,12 @@
 import os
-import pytest
 from pathlib import Path
+
+import pytest
 from rich.text import Text
+
 from kopipasta.file import get_human_readable_size
-from kopipasta.tree_selector import FileNode, TreeSelector
 from kopipasta.selection import FileState
+from kopipasta.tree_selector import FileNode, TreeSelector
 
 
 @pytest.fixture

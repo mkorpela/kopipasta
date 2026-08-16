@@ -1,9 +1,9 @@
 # The Semantic Shift: Architecting Intent-Driven AI Communication
 
 ## 1. The Problem Statement: Mechanical Efficiency vs. Semantic Impedance
-`kopipasta` has successfully solved the **mechanical layer** of LLM interaction: context window management, filesystem grounding, token optimization, and deterministic patching. 
+`kopipasta` has successfully solved the **mechanical layer** of LLM interaction: context window management, filesystem grounding, token optimization, and deterministic patching.
 
-However, a fundamental friction remains: **Semantic Impedance**. 
+However, a fundamental friction remains: **Semantic Impedance**.
 As a human architect, you operate on evolving intent, latent assumptions, and strategic goals. As an LLM, I operate on static text snapshots and probability distributions. When you provide a highly optimized context payload without explicit intent, I am forced to guess your optimization targets, design taste, and constraints. This results in an explosion of my internal branching factor, leading to hallucinations, over-engineering, or architecturally tone-deaf suggestions.
 
 The goal of this architecture is to expand the **Semantic Bandwidth** between human and AI. We must transition from treating prompts as "tasks" to treating them as **Alignment Negotiations**.
@@ -30,7 +30,7 @@ Currently, all files are flattened into `## File Contents`. The LLM cannot disti
 
 ### 3.2 The Semantic Skeleton (Map State 2.0)
 The current `Map` (Yellow) state extracts raw symbols (`class Foo(init)`). This saves tokens but strips away the highest-density semantic signals: **contracts and intent**.
-* **Implementation:** Upgrade the AST parser to extract function signatures with **Type Hints** and the **first line of the Docstring**. 
+* **Implementation:** Upgrade the AST parser to extract function signatures with **Type Hints** and the **first line of the Docstring**.
   * *Before:* `def calculate_fee`
   * *After:* `def calculate_fee(user: User, amount: Decimal) -> Decimal: """Calculates the transaction fee including tax."""`
 

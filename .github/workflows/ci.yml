@@ -1,0 +1,135 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The one thing this project cannot afford to discover in production: a
+  # prompt with nobody to answer it, inside a runner with no terminal.
+  KOPIPASTA_NONINTERACTIVE: "1"
+  FORCE_COLOR: "1"
+
+jobs:
+  lint:
+    name: lint and types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # --frozen everywhere: the lockfile is the only thing that makes the
+      # hook on a laptop and this job agree on what "lint" means. Ruff's
+      # default rule set moves between minor releases, and a gate whose
+      # verdict depends on resolution order is one nobody can act on.
+      - name: Install
+        run: uv sync --frozen --group dev
+
+      - name: The lockfile matches pyproject.toml
+        # --frozen above would happily use a stale lock. This is the check
+        # that a dependency added by hand was actually locked.
+        run: uv lock --check
+
+      - name: ruff format
+        run: uv run --frozen ruff format --check --diff .
+
+      - name: ruff check
+        run: uv run --frozen ruff check --output-format=github .
+
+      - name: mypy
+        run: uv run --frozen mypy kopipasta
+
+  test:
+    name: py${{ matrix.python }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    # Read by uv directly, so this does not depend on a particular
+    # setup-uv input name surviving the next major version of the action.
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+    strategy:
+      # One red cell should not hide the others. The whole point of this
+      # matrix is telling "broken everywhere" apart from "broken on Windows".
+      fail-fast: false
+      matrix:
+        # Windows is not an afterthought here, it is the reason the matrix
+        # exists. Every blocker in docs/FIELD_REPORT_AMBIENT.md was invisible
+        # on Linux: cp1252 is the default encoding there and nowhere else, so
+        # a suite that only ran on ubuntu was green while `--verify` was
+        # discarding its own diagnostics in the field.
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.10", "3.12"]
+        include:
+          # The floor and the ceiling on every OS, plus the middle version
+          # once — enough to catch a syntax-level regression without paying
+          # for nine cells.
+          - os: ubuntu-latest
+            python: "3.11"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # `apply` is built on git: the worktree check IS the undo, and the
+          # tests drive a real git rather than a mock for that reason.
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install
+        run: uv sync --frozen --group dev
+
+      - name: Identify to git
+        # tests/test_apply.py builds real repositories and commits in them.
+        run: |
+          git config --global user.email "ci@example.com"
+          git config --global user.name "ci"
+          git config --global init.defaultBranch main
+
+      - name: pytest
+        run: uv run --frozen pytest -q --durations=10
+
+  package:
+    name: installs clean on py${{ matrix.python }}
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # Deliberately NOT the dev group, and deliberately not the lockfile.
+      # This is the only job that sees what a user sees. `tomli` was missing
+      # from the runtime dependencies for every 3.10 install and nobody
+      # noticed, because mypy depends on it below 3.11 — so every development
+      # environment and every other CI job had it by accident, and the one
+      # configuration that mattered was the only one nobody ran.
+      - name: Install the wheel alone
+        run: |
+          uv venv
+          uv pip install .
+
+      - name: The entry points resolve
+        run: |
+          uv run --no-project kopipasta --help
+          # `--backend none` needs no key and no config file, so this exits 0
+          # on a bare runner and still walks the whole resolution path.
+          uv run --no-project kopipasta config --show --backend none
+
+      - name: TOML is readable on this interpreter
+        run: |
+          uv run --no-project python -c "import sys; from pathlib import Path; from kopipasta.core.config import _load_toml; assert _load_toml(Path('pyproject.toml'))['project']['name'] == 'kopipasta'; print('config readable on', sys.version)"

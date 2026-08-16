@@ -10,16 +10,15 @@ These tests protect against regressions where:
 
 import subprocess
 import tempfile
-from unittest.mock import patch, MagicMock
 from pathlib import Path
-
+from unittest.mock import MagicMock, patch
 
 from kopipasta.mcp_server import (
+    SAFE_CLIENT_TIMEOUT,
     _prepare_command,
     _run_cmd,
-    read_context,
     apply_edits,
-    SAFE_CLIENT_TIMEOUT,
+    read_context,
 )
 
 

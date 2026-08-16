@@ -240,3 +240,60 @@ def test_help_is_still_success_on_stdout(tmp_path):
     r = _run(["ask", "--help"], tmp_path)
     assert r.returncode == 0
     assert "--budget" in r.stdout
+
+
+# -- the verbs have to be discoverable from the front door -----------------
+
+
+@pytest.mark.parametrize("verb", ["ask", "apply", "map", "session", "config"])
+def test_bare_help_lists_every_verb(verb, tmp_path):
+    """Field report: `kopipasta --help` documented only the legacy TUI flags.
+
+    Dispatch happens before argparse, so the verbs are invisible to the parser
+    that prints the help — which meant the entire agent CLI existed and could
+    not be found from the one place everybody looks. A feature nobody can
+    discover has the same value as a feature nobody built.
+    """
+    r = _run(["--help"], tmp_path)
+    assert r.returncode == 0
+    assert verb in r.stdout
+
+
+def test_the_commands_come_before_the_legacy_flags(tmp_path):
+    """Discoverability is about position, not presence.
+
+    A `commands:` block after twenty lines of TUI flags is findable by
+    someone who already knows to look for it, which is exactly the person who
+    did not need it.
+    """
+    out = _run(["--help"], tmp_path).stdout
+    assert out.index("ask") < out.index("--reset-template")
+
+
+def test_the_usage_line_admits_a_command_can_come_first(tmp_path):
+    """`usage: kopipasta [-h] [-t TASK] ... [inputs ...]` says, precisely,
+    that the first word is a path. It was not."""
+    usage = _run(["--help"], tmp_path).stdout.split("\n\n")[0]
+    assert "command" in usage
+
+
+def test_bare_help_says_how_to_get_a_verbs_own_help(tmp_path):
+    """Naming the verbs without naming the next step just moves the guessing
+    one round trip later."""
+    r = _run(["--help"], tmp_path)
+    assert "kopipasta ask --help" in r.stdout
+
+
+def test_bare_help_describes_the_two_step(tmp_path):
+    """`ask` proposes and `apply` writes. That separation is the tool's whole
+    safety model, and it is worth one line at the front door."""
+    r = _run(["--help"], tmp_path)
+    assert "kopipasta ask" in r.stdout
+    assert "kopipasta apply" in r.stdout
+
+
+def test_bare_help_is_not_narration(tmp_path):
+    """Spec 11.2b: `kopipasta --help | less` must work."""
+    r = _run(["--help"], tmp_path)
+    assert "ask" in r.stdout
+    assert r.stderr == ""

@@ -57,6 +57,7 @@ from kopipasta.core.errors import (
     ResponseTruncated,
     UsageError,
 )
+from kopipasta.proc import TEXT
 
 
 @dataclass
@@ -175,7 +176,7 @@ class NoneBackend:
     def complete(self, prefix: str, suffix: str, **_: Any) -> Completion:
         if self.canned:
             try:
-                with open(self.canned, "r", encoding="utf-8") as fh:
+                with open(self.canned, encoding="utf-8") as fh:
                     return Completion(text=fh.read(), model="none")
             except OSError as exc:
                 raise UsageError(
@@ -206,8 +207,8 @@ class ExecBackend:
                 shell=True,
                 input=f"{prefix}\n\n{suffix}",
                 capture_output=True,
-                text=True,
                 timeout=self.timeout,
+                **TEXT,
             )
         except subprocess.TimeoutExpired:
             raise BackendTimeout("exec", self.timeout) from None
@@ -275,8 +276,8 @@ class ClaudeCliBackend:
                 cmd,
                 input=f"{prefix}\n\n{suffix}",
                 capture_output=True,
-                text=True,
                 timeout=self.timeout,
+                **TEXT,
             )
         except subprocess.TimeoutExpired:
             raise BackendTimeout(self.provider, self.timeout) from None
@@ -514,10 +515,18 @@ class GeminiBackend:
         cache_ttl_s: int = DEFAULT_TTL_S,
         source: str = "",
         label: str = "",
+        thinking: str = "high",
         **_: Any,
     ) -> None:
         self.provider = "gemini"
         self.model = model
+        # Sent as `thinkingConfig.thinkingLevel`, verbatim. Not validated
+        # against a whitelist: Google adds levels, and a whitelist here would
+        # put a kopipasta release between the user and a feature that already
+        # works. A bad value returns the provider's own 400, which this tool
+        # quotes rather than paraphrases. "default" means send nothing, which
+        # is the way back for a model that has never heard of the field.
+        self.thinking = (thinking or "").strip()
         # Which project rented it. One API key serves every repo on the
         # machine, and the cache list is per key, so without this a sweep run
         # in repo A cannot tell repo B's live lease from its own orphan — and
@@ -761,6 +770,10 @@ class GeminiBackend:
         **_: Any,
     ) -> Completion:
         gen: Dict[str, Any] = {"temperature": 0, "maxOutputTokens": max_tokens}
+        if self.thinking and self.thinking != "default":
+            # Reasoning tokens are billed as output and spend maxOutputTokens,
+            # so this and the budget above are one decision, not two.
+            gen["thinkingConfig"] = {"thinkingLevel": self.thinking}
         if schema:
             # Enforced by the API. This is what upgrades a mode from "please
             # return JSON" to a guarantee.
@@ -1013,6 +1026,7 @@ def build(
             cache=cache,
             cache_ttl_s=cfg.cache_ttl_s if cache_ttl_s is None else cache_ttl_s,
             label=label,
+            thinking=cfg.thinking,
             **kwargs,
         )
     if provider in ("openai", "openai-compat", "gemini-compat"):

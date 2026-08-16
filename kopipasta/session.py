@@ -1,12 +1,13 @@
+import json
 import os
 import re
 import subprocess
-import json
 import uuid
 from datetime import datetime
 from typing import Optional, TypedDict
 
-from kopipasta.git_utils import check_session_gitignore_status, add_to_gitignore
+from kopipasta.git_utils import add_to_gitignore, check_session_gitignore_status
+from kopipasta.proc import TEXT
 
 SESSION_FILENAME = "AI_SESSION.md"
 
@@ -37,16 +38,16 @@ class Session:
         if not self.is_active:
             return ""
         try:
-            with open(self.path, "r", encoding="utf-8") as f:
+            with open(self.path, encoding="utf-8") as f:
                 return f.read()
-        except IOError:
+        except OSError:
             return ""
 
     def get_metadata(self) -> Optional[SessionMetadata]:
         if not self.is_active:
             return None
         try:
-            with open(self.path, "r", encoding="utf-8") as f:
+            with open(self.path, encoding="utf-8") as f:
                 first_line = f.readline()
                 match = re.search(r"<!-- KOPIPASTA_METADATA (.+) -->", first_line)
                 if match:
@@ -112,7 +113,7 @@ class Session:
             with open(self.path, "w", encoding="utf-8") as f:
                 f.write(file_content)
             return True
-        except IOError as e:
+        except OSError as e:
             console_printer(f"Failed to create session file: {e}")
             return False
 
@@ -227,12 +228,16 @@ class Session:
 
     def _get_git_head(self) -> Optional[str]:
         try:
-            result = subprocess.run(
+            # Annotated because `**TEXT` hides `text=True` from the type
+            # checker: splatting a dict loses the overload that says stdout is
+            # `str`, so without this the return is silently `Any`. The one
+            # spelling of the decoding policy is worth that (see proc.TEXT).
+            result: "subprocess.CompletedProcess[str]" = subprocess.run(
                 ["git", "rev-parse", "HEAD"],
                 cwd=self.project_root,
                 capture_output=True,
-                text=True,
                 check=True,
+                **TEXT,
             )
             return result.stdout.strip()
         except subprocess.CalledProcessError:
@@ -240,12 +245,12 @@ class Session:
 
     def _get_git_branch(self) -> str:
         try:
-            result = subprocess.run(
+            result: "subprocess.CompletedProcess[str]" = subprocess.run(
                 ["git", "rev-parse", "--abbrev-ref", "HEAD"],
                 cwd=self.project_root,
                 capture_output=True,
-                text=True,
                 check=True,
+                **TEXT,
             )
             branch = result.stdout.strip()
             if branch == "HEAD":

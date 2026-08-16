@@ -34,14 +34,14 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from kopipasta.core.budget import CHARS_PER_TOKEN, estimate_tokens
 from kopipasta.core.modes import Mode
-from kopipasta.core.resolver import EDIT, MAP, REF, SNIPPET, Entry, Selection
-from kopipasta.file import extract_symbols, read_file_contents
 from kopipasta.core.render import (
     get_file_snippet,
     get_language_for_file,
     get_project_structure,
     handle_env_variables,
 )
+from kopipasta.core.resolver import EDIT, MAP, REF, SNIPPET, Entry, Selection
+from kopipasta.file import extract_symbols, read_file_contents
 
 #: The quad-memory layers, in the order the clipboard prompt has always
 #: emitted them: global kernel, project constitution, working memory

@@ -1,0 +1,77 @@
+# Local hooks, run through `uv`, on purpose.
+#
+# The idiomatic alternative is `astral-sh/ruff-pre-commit` with a `rev:`. It
+# was rejected because it puts the ruff version in a second place: this repo
+# passes `ruff check` clean on 0.15.1 and reports ~670 findings on 0.16.3,
+# because ruff's default rule selection moves between minor releases. A hook
+# and a CI job that disagree about what "lint" means is worse than no hook —
+# whichever one is red gets treated as the broken one.
+#
+# So there is exactly one source of truth for every tool version: the `dev`
+# dependency group in pyproject.toml, resolved through uv.lock. The cost is
+# that contributors need uv, which this project already requires.
+#
+#   uv sync --group dev
+#   uv run pre-commit install --install-hooks -t pre-commit -t pre-push
+#
+default_install_hook_types: [pre-commit, pre-push]
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+        # The patcher tests embed real model output as fixtures, and in a
+        # unified diff a context line for a blank line *is* a single space.
+        # This hook rewrote `- ` to `-` inside three of them on its first run,
+        # quietly weakening the tests that exist to prove kopipasta tolerates
+        # exactly that shape. Whitespace is data in these files.
+        exclude: ^tests/test_patcher.*\.py$
+      # A model's patch is applied verbatim; a 40MB file arriving that way is
+      # not something anyone reviews line by line.
+      - id: check-added-large-files
+        args: [--maxkb=512]
+
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff format
+        entry: uv run --frozen ruff format
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      - id: ruff-check
+        name: ruff check
+        entry: uv run --frozen ruff check --fix
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      # The whole package, not the changed files: mypy's answer for one module
+      # depends on the signatures in the ones it imports, so checking a subset
+      # reports errors that do not exist and misses ones that do.
+      - id: mypy
+        name: mypy
+        entry: uv run --frozen mypy kopipasta
+        language: system
+        types: [python]
+        pass_filenames: false
+        require_serial: true
+
+      # Pre-PUSH, not pre-commit. The suite is ~65s: on every commit that is a
+      # tax people pay by passing --no-verify, which disables the fast hooks
+      # above at the same time. Slow gates belong at the slow boundary.
+      - id: pytest
+        name: pytest
+        stages: [pre-push]
+        entry: uv run --frozen pytest -q
+        language: system
+        types: [python]
+        pass_filenames: false
+        require_serial: true

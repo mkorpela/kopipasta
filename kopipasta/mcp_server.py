@@ -1,19 +1,20 @@
 import json
 import os
-import re
 import platform
+import re
 import subprocess
 import sys
 import uuid
-from pathlib import Path
-from typing import Dict, Any, Generator, List, Optional, Tuple, IO
 from collections import defaultdict
+from pathlib import Path
+from typing import IO, Any, Dict, Generator, List, Optional, Tuple
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
-from kopipasta.file import is_ignored, is_binary
-from kopipasta.config import read_gitignore, get_active_project
+from kopipasta.config import get_active_project, read_gitignore
+from kopipasta.file import is_binary, is_ignored
+from kopipasta.proc import TEXT
 
 # Initialize FastMCP server
 mcp = FastMCP("kopipasta-ralph")
@@ -60,7 +61,7 @@ def _load_config() -> Dict[str, Any]:
             f"Please run 'r' in kopipasta to generate it. "
             f"(searched: {config_path})"
         )
-    with open(config_path, "r", encoding="utf-8") as f:
+    with open(config_path, encoding="utf-8") as f:
         result: Dict[str, Any] = json.load(f)
         return result
 
@@ -104,8 +105,8 @@ def _get_shell_env() -> Dict[str, str]:
         result = subprocess.run(
             [shell, "-lc", "echo $PATH"],
             capture_output=True,
-            text=True,
             timeout=5,
+            **TEXT,
         )
         if result.returncode == 0 and result.stdout.strip():
             env["PATH"] = result.stdout.strip()
@@ -179,7 +180,7 @@ def _run_cmd(command: str, cwd: Path) -> str:
             stderr=err_file,
             env=_get_shell_env(),
             stdin=subprocess.DEVNULL,
-            text=True,
+            **TEXT,
         )
 
         # Wait for the safe duration

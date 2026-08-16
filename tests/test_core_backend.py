@@ -210,6 +210,7 @@ def cfg(provider, model, **kw):
         cache_ttl_s=kw.get("cache_ttl_s", 300),
         max_tokens=kw.get("max_tokens", 8192),
         timeout_s=kw.get("timeout_s", 30),
+        thinking=kw.get("thinking", "high"),
         sources={"provider": "--backend"},
     )
 
@@ -289,8 +290,15 @@ def test_anthropic_truncation_is_a_failure_not_a_short_answer(server):
 def gem(server, **kw):
     # base_url replaces the whole base, version path included — the same trap
     # as pointing a compat client at a URL missing its trailing segment.
+    #
+    # `thinking` travels on the config rather than as a build() argument,
+    # because that is the only path it has in production: a test that reached
+    # past the config would not notice the wiring being absent.
+    thinking = kw.pop("thinking", "high")
     return be.build(
-        cfg("gemini", "gemini-3.7-flash"), base_url=f"{server.url}/v1beta", **kw
+        cfg("gemini", "gemini-3.7-flash", thinking=thinking),
+        base_url=f"{server.url}/v1beta",
+        **kw,
     )
 
 
@@ -299,6 +307,78 @@ def test_gemini_does_not_create_a_cache_unless_asked(server):
     gem(server).complete(PREFIX, SUFFIX)
     assert server.created == []
     assert server.seen["gemini"][0]["contents"][0]["parts"][0]["text"] == PREFIX
+
+
+# -- thinking level: an operator decision, not a model default -------------
+
+
+def test_gemini_asks_for_high_thinking_by_default(server):
+    """Left unsent, the level is whatever the model happens to default to,
+    which is a decision made by someone who has not seen the question.
+
+    Every job this tool exists for — triage over a 400k frontload, a
+    coordinated multi-file patch — is reasoning-heavy, and the input has
+    already been paid for by the time the model starts thinking. Cheap
+    thinking over an expensive payload is the worst point on that curve.
+
+    The field name was verified against the live API rather than inferred,
+    because a wrong key in `generationConfig` is a 400 and a mock will happily
+    accept any spelling. One question, three levels, `thoughtsTokenCount` from
+    `gemini-3.7-flash`:
+
+        low 344   |   (field omitted) 691   |   high 1266
+
+    So it is both accepted and load-bearing — the model's own default sits
+    between the two named levels, which is exactly the case a mock cannot
+    distinguish from the field being ignored.
+    """
+    gem(server).complete(PREFIX, SUFFIX)
+    gen = server.seen["gemini"][0]["generationConfig"]
+    assert gen["thinkingConfig"] == {"thinkingLevel": "high"}
+
+
+def test_the_thinking_level_is_configurable(server):
+    gem(server, thinking="low").complete(PREFIX, SUFFIX)
+    gen = server.seen["gemini"][0]["generationConfig"]
+    assert gen["thinkingConfig"] == {"thinkingLevel": "low"}
+
+
+def test_thinking_default_sends_nothing_at_all(server):
+    """An escape hatch that means "whatever the model does", for a model that
+    has never heard of the field. Sending a `thinkingConfig` it does not know
+    is a 400, and there has to be a way back from that without downgrading."""
+    gem(server, thinking="default").complete(PREFIX, SUFFIX)
+    assert "thinkingConfig" not in server.seen["gemini"][0]["generationConfig"]
+
+
+def test_an_unknown_thinking_level_is_passed_through_verbatim(server):
+    """Google adds levels; a validating whitelist here would mean a kopipasta
+    release stands between the user and a feature that already works. A bad
+    value comes back as the provider's own 400, quoted verbatim."""
+    gem(server, thinking="medium").complete(PREFIX, SUFFIX)
+    gen = server.seen["gemini"][0]["generationConfig"]
+    assert gen["thinkingConfig"] == {"thinkingLevel": "medium"}
+
+
+def test_the_thinking_level_reaches_the_backend_from_the_config(server):
+    """The wiring, not the adapter: a config key nothing reads is worse than
+    no config key, because `config --show` reports it as in effect."""
+    c = cfg("gemini", "gemini-3.7-flash")
+    c.thinking = "low"
+    b = be.build(c, base_url=f"{server.url}/v1beta")
+    b.complete(PREFIX, SUFFIX)
+    assert server.seen["gemini"][0]["generationConfig"]["thinkingConfig"] == {
+        "thinkingLevel": "low"
+    }
+
+
+def test_providers_that_have_no_such_knob_are_not_broken_by_it(server):
+    """`thinking` is a Gemini fact. Every other adapter has to ignore it
+    rather than choke on an unexpected keyword."""
+    for provider, model in (("anthropic", "claude-opus-5"), ("openai", "gpt-5")):
+        c = cfg(provider, model)
+        c.thinking = "high"
+        assert be.build(c, base_url=server.url).complete(PREFIX, SUFFIX).text == ANSWER
 
 
 def test_gemini_cache_carries_an_explicit_ttl_and_an_identifiable_name(server):

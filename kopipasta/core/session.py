@@ -36,6 +36,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from kopipasta.core.context import Turn
 from kopipasta.core.errors import UsageError
 from kopipasta.git_utils import add_to_gitignore
+from kopipasta.output import narrate
+from kopipasta.proc import TEXT
 
 STATE_DIR = ".kopipasta"
 SESSIONS_DIR = os.path.join(STATE_DIR, "sessions")
@@ -55,7 +57,7 @@ def new_session_id() -> str:
 
 def _read_json(path: str, default: Any) -> Any:
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             return json.load(fh)
     except (OSError, ValueError):
         return default
@@ -114,8 +116,8 @@ def _git_head(root: str) -> str:
             [git, "rev-parse", "--short", "HEAD"],
             cwd=root,
             capture_output=True,
-            text=True,
             timeout=10,
+            **TEXT,
         )
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -188,13 +190,22 @@ class Session:
         # bug in the spike, so the ignore entry is written before anything else
         # lands in the directory — via the existing helper, which handles the
         # missing-trailing-newline case that the spike got wrong.
-        add_to_gitignore(self.root, f"{STATE_DIR}/")
+        #
+        # Announced when it happens, because on a first run in a fresh repo it
+        # is the *only* change the run makes to the tree, and a tracked file
+        # edited in silence is one `git diff` away from looking like a bug in
+        # something else. Said once: the helper only returns True on the write.
+        if add_to_gitignore(self.root, f"{STATE_DIR}/"):
+            narrate(
+                f"kopipasta: added '{STATE_DIR}/' to .gitignore — session "
+                "records are bookkeeping, not source."
+            )
         self._dir_ready = True
 
     @staticmethod
     def read_current(root: str) -> Optional[str]:
         try:
-            with open(os.path.join(root, CURRENT), "r", encoding="utf-8") as fh:
+            with open(os.path.join(root, CURRENT), encoding="utf-8") as fh:
                 name = fh.read().strip()
         except OSError:
             return None
@@ -230,7 +241,7 @@ class Session:
     # -- the fixed prefix ----------------------------------------------------
     def load_prefix(self) -> Optional[str]:
         try:
-            with open(self.path(PREFIX_FILE), "r", encoding="utf-8") as fh:
+            with open(self.path(PREFIX_FILE), encoding="utf-8") as fh:
                 return fh.read()
         except OSError:
             return None
@@ -286,7 +297,7 @@ class Session:
         """
         turns: List[Turn] = []
         try:
-            with open(self.path(TRANSCRIPT), "r", encoding="utf-8") as fh:
+            with open(self.path(TRANSCRIPT), encoding="utf-8") as fh:
                 lines = fh.readlines()
         except OSError:
             return turns
@@ -461,7 +472,11 @@ def list_sessions(root: str) -> List[str]:
 
 
 def read_meta(root: str, session_id: str) -> Dict[str, Any]:
-    return _read_json(os.path.join(session_dir(root, session_id), META), {})
+    meta = _read_json(os.path.join(session_dir(root, session_id), META), {})
+    # The file is whatever is on disk. A hand-edited `meta.json` holding a
+    # list would otherwise be handed back under a Dict annotation and fail
+    # somewhere far from here.
+    return meta if isinstance(meta, dict) else {}
 
 
 def read_turns(root: str, session_id: str) -> List[Dict[str, Any]]:
@@ -470,7 +485,6 @@ def read_turns(root: str, session_id: str) -> List[Dict[str, Any]]:
     try:
         with open(
             os.path.join(session_dir(root, session_id), TRANSCRIPT),
-            "r",
             encoding="utf-8",
         ) as fh:
             lines = fh.readlines()

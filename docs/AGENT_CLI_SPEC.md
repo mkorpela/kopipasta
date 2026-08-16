@@ -139,6 +139,20 @@ Two rules keep that fall-through from becoming a trap:
   nonexistent file. Verbs that are specced but unbuilt say so specifically — "not yet" and "no
   such thing" send the caller to different places.
 
+Dispatching before argparse has one cost that has to be paid deliberately: the verbs are
+invisible to the parser that prints `--help`. **`kopipasta --help` must list them anyway**,
+above the legacy flags rather than in a trailing epilog. The agent CLI shipped complete and
+undiscoverable from the one place both a human and an agent look first, which is worth exactly
+as much as not having shipped it.
+
+### Text that came from a shell
+
+Any argument that takes prose takes `@file` instead — `-q @task.md` is the documented form,
+not a footnote. A prompt long enough to be worth writing contains braces, quotes and newlines,
+and each shell mangles a different subset: PowerShell splits `{'—'}` before argparse ever sees
+the string, and the resulting error blames the tool for "unrecognized arguments". Reading it
+from a file also makes the prompt reviewable and the run repeatable.
+
 ---
 
 ## 4. Selection Grammar
@@ -442,10 +456,20 @@ Default stdout is the artifact or a compact summary; `--json` makes stdout a sin
   "usage": {"input": 412330, "cached": 389100, "output": 1840},
   "sent": {"edit": 2, "ref": 14, "map": 380, "demoted": 22},
   "answer_head": "Token expiry is validated in two places...",
-  "patches": 2,
+  "max_tokens": 32000,
+  "patches_proposed": 2,
+  "patches_applied": 0,
+  "next": "kopipasta apply --session 2026-08-15-a3f9",
   "files_cited": ["kopipasta/patcher.py", "kopipasta/file.py"]
 }
 ```
+
+**Proposing and applying are counted separately, and never as a bare `patches`.** A
+`"patches": 2` beside `"ok": true` reads as "two patches applied" — and `ask` has written
+nothing, ever. Both verbs spell the two counts the same way, so an envelope is comparable
+without knowing which verb produced it. `applied` was not reused for a boolean because it is
+already a list of paths in `apply`, and one ambiguity traded for a type collision is a worse
+deal than the ambiguity.
 
 `files_cited` costs nothing: `patcher.find_paths_in_text` already extracts valid project paths
 from model prose. For triage, *which files* is the payload — handing back an array beats making
@@ -562,8 +586,43 @@ Three things the field set encodes, each from observed failure (findings §2.6, 
 
 `suggested_selection` feeds straight into `--from-file` for the follow-up call.
 
+**Triage tells you where to look, not what is missing.** An AST skeleton shows that an
+interface exists, not which fields it already carries, so triage over a map will confidently
+nominate files whose plumbing is already in place — 0.85–0.90 on "must edit, to carry this
+state across the boundary" when that state has been on the view model for months. This is
+structural to skeleton mode rather than bad luck, and it is still the right trade: thirty
+seconds of `rg` disproves it, against reading the tree.
+
 Other modes — `review`, `explain`, `plan` — are the same machinery with a different template and
 schema.
+
+**The section a mode reads is named after the mode.** `[patch] provider = "anthropic"` has
+been in the shipped config file and in the README from the beginning while `ask` resolved
+`[ask]` unconditionally, so the one documented reason for sections to exist did nothing. A
+mode with no section of its own inherits `[ask]`, as everything else does.
+
+### Output budget and thinking are one decision
+
+`max_tokens` defaults to **65536**, not 8192. Reasoning tokens are billed as output and spend
+the same allowance, so a ceiling sized for a paragraph of prose truncates any answer a
+thinking model produces — and the failure lands *after* the entire payload has been sent and
+billed, which is the most expensive place to discover it. A cap is not a bill: providers
+charge for tokens produced, not permitted, so the only thing the higher number costs is the
+ceiling on a runaway, and `timeout_s` and `--deadline` already bound that. 65536 is what
+Google's own console uses for this model.
+
+It is a Gemini number. Anthropic and OpenAI reject a request above their model's output
+ceiling, and the remedy is one line in the section that names the provider —
+`[patch] max_tokens = 32000` — reported verbatim by the provider when it happens. That is the
+rarer case; the alternative is everybody paying for a truncated answer by default.
+
+`thinking` defaults to `"high"`, sent to Gemini as `generationConfig.thinkingConfig.
+thinkingLevel` and ignored by adapters with no such knob. Left unsent it is whatever the model
+happens to default to, which is a decision made by someone who has not seen the question —
+and by the time the model starts thinking, the expensive part of the call has already been
+paid for. `"default"` omits the field, which is the way back for a model that has never heard
+of it. Values are passed through unvalidated: Google adds levels, and a whitelist here would
+put a kopipasta release between a user and a feature that already works.
 
 ---
 
@@ -582,13 +641,49 @@ A large patch landing unattended needs the guarantees a human review would have 
  The shrink/hallucination guard declines suspicious overwrites by default; `--force` overrides.
 - The shrink/hallucination guard declines the file by default; `--force` overrides.
 - `--verify 'pytest -q'` runs after applying, with `--revert-on-fail` to restore via git.
+- `--format-cmd 'npx prettier --write {files}'` runs between the two. In a repo whose gate
+  opens with a formatter check, every patch turn fails on whitespace the model cannot be
+  prompted into getting right, and the correction rounds are spent on the wrong thing. `{files}`
+  is substituted with the files this run wrote — the alternative, folding `prettier --write`
+  into `--verify`, makes the verifier mutate the tree and lets it reformat unrelated
+  uncommitted work that the revert path knows nothing about. A failing formatter is reported
+  and does not become the verdict: exit 7 has to keep meaning "`--verify` failed", or the
+  caller cannot tell which of the two commands to go and read.
+
+**The verify command is the quality ceiling of the tool.** A model can produce output that is
+green and broken simultaneously — tests passing while unhandled rejections land after each
+assertion, one lint error traded for another. None of that is visible to a cheap
+`--verify 'tsc --noEmit'`; all of it is visible to the project's real gate. `apply --verify`
+is not a safety net configured once, it is the entire mechanism, and a cheap verify buys a
+cheap answer.
+
+**The hint on a verify failure is derived from what happened, not from which flags were
+passed.** `--revert-on-fail` used to print "The files this run touched have been restored."
+unconditionally, including beside `"reverted": []` when every file had been correctly declined
+for having uncommitted changes of its own. Anyone reading the console rather than parsing the
+JSON then acted against a state they had mismodelled, and a reported-but-not-performed
+restoration is the single failure mode that re-running the command cannot reveal. Each decline
+carries its reason in `revert_declined_why`: refusing to touch the caller's work and git
+failing to restore a file are opposite situations with opposite next moves.
 - ~~`--commit [msg]` returns a revertable SHA in the JSON.~~ **Cancelled.** A tool that assembles
   context does not need to write git history, and `apply && git commit` is one line the caller
   already knows how to write. Everything it would need is in place — `PatchResult` names exactly
   the files this run touched, so it could stage those and never `git add -A` — so this is a
   scope decision, not a difficulty one.
 
-Two constraints any implementation must honour:
+**Every captured subprocess decodes as utf-8 with `errors="replace"`, never by platform
+default.** `subprocess.run(..., text=True)` alone decodes with `locale.getpreferredencoding()`,
+which is cp1252 on a stock Windows box, and the readers run on background threads — so the
+exception is *printed* rather than raised, the exit code arrives intact, and the captured
+output arrives **empty**. `--verify` reported `{"exit": 1, "output": ""}` on ordinary vitest
+and eslint output: a failure with zero diagnostics, at precisely the moment the diagnostics
+are the only thing anybody wants, because failing output is the output most likely to contain
+a box-drawing rule. When only one of the two reader threads died, the survivor's text was kept
+whole and the caller read a plausible transcript that had silently lost its first half. The
+policy lives in one constant (`kopipasta.proc.TEXT`) and an AST test keeps every call site on
+it, because the bug is not in any one call site — it is in the default.
+
+Two further constraints any implementation must honour:
 
 - **A policy refusal must not raise inside the applier.** Its per-file body catches broad
   exceptions, so a refusal thrown from within would be swallowed and reported as a corrupt patch,

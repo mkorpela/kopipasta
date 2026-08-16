@@ -14,15 +14,12 @@ from core.
 import os
 import shutil
 import subprocess
-import uuid
 import sys
+import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Tuple, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from jinja2 import Template
-
-from kopipasta.file import FileTuple
-from kopipasta.interaction import get_task_from_user_interactive, require_human
 
 # Re-exported for callers that predate the split. The definitions are in core
 # so that importing them cannot drag the template engine and the terminal UI
@@ -33,6 +30,8 @@ from kopipasta.core.render import (  # noqa: F401
     get_project_structure,
     handle_env_variables,
 )
+from kopipasta.file import FileTuple
+from kopipasta.interaction import get_task_from_user_interactive, require_human
 
 if TYPE_CHECKING:  # pragma: no cover - core.context is imported lazily below
     from kopipasta.core.resolver import Selection
@@ -145,7 +144,7 @@ def reset_template():
         with open(template_path, "w", encoding="utf-8") as f:
             f.write(DEFAULT_TEMPLATE)
         print(f"Template reset to default at: {template_path}")
-    except IOError as e:
+    except OSError as e:
         print(f"Error writing template file: {e}")
 
 
@@ -178,7 +177,7 @@ def load_template() -> Template:
     ensure_template_exists()
     template_path = get_template_path()
     try:
-        with open(template_path, "r", encoding="utf-8") as f:
+        with open(template_path, encoding="utf-8") as f:
             content = f.read()
         return Template(content, keep_trailing_newline=True)
     except Exception as e:

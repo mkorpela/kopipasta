@@ -389,7 +389,7 @@ def get(name: str) -> Mode:
     override = os.path.join(modes_dir(), f"{mode.name}.md")
     if os.path.isfile(override):
         try:
-            with open(override, "r", encoding="utf-8") as fh:
+            with open(override, encoding="utf-8") as fh:
                 text = fh.read().strip()
         except OSError:
             return mode

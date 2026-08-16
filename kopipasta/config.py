@@ -14,7 +14,7 @@ def read_env_file() -> Dict[str, str]:
     env_vars = {}
     if os.path.exists(".env"):
         try:
-            with open(".env", "r", encoding="utf-8") as env_file:
+            with open(".env", encoding="utf-8") as env_file:
                 for line in env_file:
                     line = line.strip()
                     if line and not line.startswith("#"):
@@ -74,7 +74,7 @@ def read_gitignore() -> List[str]:
     if os.path.exists(".gitignore"):
         print(".gitignore detected.")
         try:
-            with open(".gitignore", "r", encoding="utf-8") as file:
+            with open(".gitignore", encoding="utf-8") as file:
                 for line in file:
                     line = line.strip()
                     if line and not line.startswith("#"):
@@ -156,7 +156,7 @@ def open_profile_in_editor():
             with open(config_path, "w", encoding="utf-8") as f:
                 f.write(default_content)
             print(f"Created new profile at: {config_path}")
-        except IOError as e:
+        except OSError as e:
             print(f"Error creating profile: {e}")
             return
 

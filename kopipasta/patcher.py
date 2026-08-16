@@ -2,15 +2,14 @@ import os
 import re
 import sys
 from dataclasses import dataclass
-from typing import Iterable, List, Union, TypedDict, Tuple, Optional
 from difflib import SequenceMatcher
+from typing import Iterable, List, Optional, Tuple, TypedDict, Union
 
 import click
 from rich.console import Console
 from structlog.stdlib import BoundLogger
 
 from kopipasta.interaction import human_attached, use_default_without_human
-
 
 # --- Data Structures for Parsed Patches ---
 
@@ -1160,9 +1159,9 @@ def apply_patches(
         original_content_log: Optional[str] = None
         if os.path.exists(file_path):
             try:
-                with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                with open(file_path, encoding="utf-8", errors="replace") as f:
                     original_content_log = f.read()
-            except IOError:
+            except OSError:
                 original_content_log = "<IOError: Could not read original>"
         else:
             original_content_log = "<New File>"
@@ -1289,7 +1288,7 @@ def apply_patches(
                 continue
 
             # File exists, so we apply a patch.
-            with open(file_path, "r", encoding="utf-8") as f:
+            with open(file_path, encoding="utf-8") as f:
                 original_content = f.read()
 
             if patch_type == "diff" and isinstance(patch_content, list):

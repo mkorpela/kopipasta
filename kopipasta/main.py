@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 import os
 import argparse
 import sys
@@ -152,8 +152,12 @@ def _config_verb(argv: List[str]) -> int:
         prog="kopipasta config",
         description="Show the resolved configuration and where each value came from.",
     )
-    parser.add_argument("--show", action="store_true", help="the default, and the only mode")
-    parser.add_argument("--verb", default="ask", help="which section to resolve (default: ask)")
+    parser.add_argument(
+        "--show", action="store_true", help="the default, and the only mode"
+    )
+    parser.add_argument(
+        "--verb", default="ask", help="which section to resolve (default: ask)"
+    )
     parser.add_argument("--backend", help="resolve as if --backend had been passed")
     parser.add_argument("--json", action="store_true")
     try:
@@ -294,7 +298,9 @@ class KopipastaApp:
         parser. Falling through to it would turn every verb into a usage error
         from the wrong parser.
         """
-        argv = self._resolve_subcommand(sys.argv[1:] if self.argv is None else list(self.argv))
+        argv = self._resolve_subcommand(
+            sys.argv[1:] if self.argv is None else list(self.argv)
+        )
 
         parser = _HelpToStdoutParser(
             description="Generate a prompt with project structure, file contents, and web content."

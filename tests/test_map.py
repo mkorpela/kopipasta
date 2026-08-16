@@ -103,9 +103,9 @@ def test_a_pattern_that_matches_nothing_is_a_usage_error(project):
 def big(project):
     for i in range(40):
         (project / "src" / f"mod{i}.py").write_text(
-            f'def function_number_{i}(argument_one, argument_two):\n'
+            f"def function_number_{i}(argument_one, argument_two):\n"
             f'    """Do the {i}th thing, at some length so the skeleton costs something."""\n'
-            f'    return argument_one + argument_two\n'
+            f"    return argument_one + argument_two\n"
         )
     return project
 

@@ -1,4 +1,4 @@
-﻿"""The cache used to be a single global directory shared by every project.
+"""The cache used to be a single global directory shared by every project.
 
 Because it stores *relative* paths, that was not a mere clobber: two repos
 that both have a `src/main.py` would silently inherit each other's selection,
@@ -52,7 +52,9 @@ def test_a_selection_does_not_leak_into_another_repo(home, tmp_path, monkeypatch
     assert cache.load_selection_from_cache() == []
 
 
-def test_a_task_description_does_not_leak_into_another_repo(home, tmp_path, monkeypatch):
+def test_a_task_description_does_not_leak_into_another_repo(
+    home, tmp_path, monkeypatch
+):
     """The worst of the four: task text is prose, often confidential, and it
     was loaded as the default task in whatever repo you opened next."""
     a, b = make_repo(tmp_path, "repo_a"), make_repo(tmp_path, "repo_b")
@@ -99,7 +101,10 @@ def test_the_same_repo_still_gets_its_selection_back(home, tmp_path, monkeypatch
     monkeypatch.chdir(a)
 
     cache.save_selection_to_cache(sel("README.md", os.path.join("src", "main.py")))
-    assert cache.load_selection_from_cache() == ["README.md", os.path.join("src", "main.py")]
+    assert cache.load_selection_from_cache() == [
+        "README.md",
+        os.path.join("src", "main.py"),
+    ]
 
 
 def test_deleted_files_are_still_filtered_out(home, tmp_path, monkeypatch):
@@ -156,7 +161,9 @@ def test_the_cache_dir_records_which_path_it_belongs_to(home, tmp_path, monkeypa
     a = make_repo(tmp_path, "repo_a")
     monkeypatch.chdir(a)
 
-    stamp = json.loads((cache.get_cache_file_path() / "project.json").read_text(encoding="utf-8"))
+    stamp = json.loads(
+        (cache.get_cache_file_path() / "project.json").read_text(encoding="utf-8")
+    )
     assert os.path.normcase(stamp["root"]) == os.path.normcase(str(a.resolve()))
 
 
@@ -256,7 +263,9 @@ def test_an_unusable_home_does_not_crash(tmp_path, monkeypatch):
     assert cache.get_cache_root()  # falls back to temp rather than raising
 
 
-def test_an_unwritable_cache_root_degrades_to_a_warning(home, tmp_path, monkeypatch, capsys):
+def test_an_unwritable_cache_root_degrades_to_a_warning(
+    home, tmp_path, monkeypatch, capsys
+):
     a = make_repo(tmp_path, "repo_a")
     monkeypatch.chdir(a)
 
@@ -288,7 +297,9 @@ def test_a_failed_write_leaves_no_temp_file_behind(home, tmp_path, monkeypatch):
     monkeypatch.chdir(a)
     cache_dir = cache.get_cache_file_path()
 
-    monkeypatch.setattr(cache.os, "replace", lambda *a, **k: (_ for _ in ()).throw(OSError("nope")))
+    monkeypatch.setattr(
+        cache.os, "replace", lambda *a, **k: (_ for _ in ()).throw(OSError("nope"))
+    )
     cache.save_selection_to_cache(sel("README.md"))
 
     assert [p.name for p in cache_dir.glob("*.tmp")] == []
@@ -322,7 +333,9 @@ def test_a_transient_windows_lock_is_retried_not_lost(home, tmp_path, monkeypatc
 # -- concurrency -----------------------------------------------------------
 
 
-def test_a_concurrent_write_never_leaves_a_half_written_file(home, tmp_path, monkeypatch):
+def test_a_concurrent_write_never_leaves_a_half_written_file(
+    home, tmp_path, monkeypatch
+):
     """Agents run things in parallel. A torn write shows up as a corruption
     warning on the next read, which reads as data loss to the user."""
     import threading
@@ -336,7 +349,9 @@ def test_a_concurrent_write_never_leaves_a_half_written_file(home, tmp_path, mon
 
     def writer():
         while not stop.is_set():
-            cache.save_selection_to_cache(sel("README.md", os.path.join("src", "main.py")))
+            cache.save_selection_to_cache(
+                sel("README.md", os.path.join("src", "main.py"))
+            )
 
     def reader():
         while not stop.is_set():

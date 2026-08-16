@@ -36,7 +36,13 @@ from kopipasta.core import budget as budgetmod
 from kopipasta.core.errors import EXIT_OK, BudgetExceeded, KopipastaError
 from kopipasta.core.resolver import MAP, SelectionSpec, resolve
 from kopipasta.file import extract_symbols
-from kopipasta.output import HelpToStdoutParser, emit, emit_json, narrate, stdout_reserved_for_output
+from kopipasta.output import (
+    HelpToStdoutParser,
+    emit,
+    emit_json,
+    narrate,
+    stdout_reserved_for_output,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -54,13 +60,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_selection_args(p)
     b = p.add_argument_group("budget")
-    b.add_argument("--budget", metavar="SIZE",
-                   help="cap the output, e.g. 400k tokens or 40kc characters.\n"
-                        "Unset by default: every selected file is mapped.")
-    b.add_argument("--strict-budget", action="store_true",
-                   help="exit 6 instead of dropping files to path-only")
-    p.add_argument("--json", action="store_true",
-                   help="stdout becomes a single JSON object (spec §8)")
+    b.add_argument(
+        "--budget",
+        metavar="SIZE",
+        help="cap the output, e.g. 400k tokens or 40kc characters.\n"
+        "Unset by default: every selected file is mapped.",
+    )
+    b.add_argument(
+        "--strict-budget",
+        action="store_true",
+        help="exit 6 instead of dropping files to path-only",
+    )
+    p.add_argument(
+        "--json",
+        action="store_true",
+        help="stdout becomes a single JSON object (spec §8)",
+    )
     p.epilog = (
         (p.epilog or "")
         + "\n\nEvery selected file is rendered as a skeleton, whichever flag selected it.\n"
@@ -177,7 +192,9 @@ def _map(args: argparse.Namespace) -> int:
     if demotions:
         payload["path_only"] = [d.path for d in demotions]
     if selection.unmatched():
-        payload["unmatched"] = [{"flag": f, "pattern": p} for f, p in selection.unmatched()]
+        payload["unmatched"] = [
+            {"flag": f, "pattern": p} for f, p in selection.unmatched()
+        ]
 
     if args.json:
         emit_json(payload)

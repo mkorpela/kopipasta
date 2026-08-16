@@ -67,6 +67,7 @@ def test_delete_proceeds_when_explicitly_permitted(headless, workdir):
 def test_the_flag_does_not_silently_prompt_instead(headless, workdir, monkeypatch):
     """--allow-delete means 'may delete', and with no human it must not reach
     a prompt at all — that would be the stall it exists to prevent."""
+
     def explode(*a, **k):
         raise AssertionError("click.confirm reached with no human attached")
 
@@ -84,7 +85,9 @@ def test_no_prompt_is_attempted_when_declining_either(headless, workdir, monkeyp
     apply_patches(parse_llm_output(DELETE_OUTPUT))
 
 
-def test_a_present_human_is_still_asked_even_with_the_flag(with_human, workdir, monkeypatch):
+def test_a_present_human_is_still_asked_even_with_the_flag(
+    with_human, workdir, monkeypatch
+):
     """--allow-delete says 'this run may delete', not 'delete without telling
     me'. A human who says no still wins."""
     asked = {"n": 0}
@@ -165,6 +168,8 @@ def test_ordinary_patches_still_apply_headlessly(headless, workdir):
     target = workdir / "plain.py"
     target.write_text("old\n")
 
-    apply_patches(parse_llm_output("```python\n# FILE: plain.py\nnew content here\n```"))
+    apply_patches(
+        parse_llm_output("```python\n# FILE: plain.py\nnew content here\n```")
+    )
 
     assert "new content here" in target.read_text()

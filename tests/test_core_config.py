@@ -37,7 +37,9 @@ def test_config_file_is_read(tmp_path):
 
 def test_env_beats_config(tmp_path):
     cfg = resolve_backend(
-        "ask", env={"KOPIPASTA_BACKEND": "openai:gpt-5"}, path=write(tmp_path, TWO_SECTIONS)
+        "ask",
+        env={"KOPIPASTA_BACKEND": "openai:gpt-5"},
+        path=write(tmp_path, TWO_SECTIONS),
     )
     assert cfg.spec == "openai:gpt-5"
     assert cfg.sources["provider"] == "KOPIPASTA_BACKEND"
@@ -95,7 +97,9 @@ def test_no_backend_anywhere_is_an_onboarding_error(tmp_path):
 
 def test_unknown_provider_lists_valid_ones_and_suggests(tmp_path):
     with pytest.raises(UnknownProvider) as exc:
-        resolve_backend("ask", env={}, path=write(tmp_path, '[ask]\nprovider = "gemni"\n'))
+        resolve_backend(
+            "ask", env={}, path=write(tmp_path, '[ask]\nprovider = "gemni"\n')
+        )
     rendered = exc.value.render()
     assert "gemini" in rendered
     assert exc.value.exit_code == 1

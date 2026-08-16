@@ -54,7 +54,9 @@ def test_exit_codes_match_the_spec_table():
     assert e.MissingApiKey("p", "V", "s").exit_code == 2
     assert e.BackendError("x").exit_code == 3
     assert e.BudgetExceeded(1, 0, []).exit_code == 6
-    assert EXIT_NO_HUMAN == 8  # owned by interaction.py, listed in errors for completeness
+    assert (
+        EXIT_NO_HUMAN == 8
+    )  # owned by interaction.py, listed in errors for completeness
 
 
 def test_retryable_is_not_derived_from_the_exit_code():
@@ -75,7 +77,9 @@ def test_auth_rejection_is_not_retryable_and_is_not_exit_3():
 
 def test_provider_text_is_quoted_verbatim():
     """Paraphrasing upstream errors destroys the detail that identifies them."""
-    upstream = "API key not valid. Please pass a valid API key. [reason: API_KEY_INVALID]"
+    upstream = (
+        "API key not valid. Please pass a valid API key. [reason: API_KEY_INVALID]"
+    )
     err = e.AuthRejected("gemini", "GEMINI_API_KEY", upstream)
     assert upstream in err.render()
 
@@ -100,7 +104,9 @@ def test_truncation_is_a_failure_not_a_warning():
 
 
 def test_agent_backend_diagnosis_names_the_flag_that_fixes_it():
-    err = e.BackendActedAsAgent("exec:claude -p", "The edit tool needs permission approval")
+    err = e.BackendActedAsAgent(
+        "exec:claude -p", "The edit tool needs permission approval"
+    )
     assert err.to_json()["error"] == "backend_not_a_completion"
     assert "--disallowedTools" in err.render()
     assert err.retryable is False

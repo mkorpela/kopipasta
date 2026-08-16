@@ -38,8 +38,13 @@ def project(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("KOPIPASTA_NONINTERACTIVE", "1")
     # No test may reach a provider, however the developer's shell is set up.
-    for var in ("KOPIPASTA_BACKEND", "GEMINI_API_KEY", "GOOGLE_API_KEY",
-                "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+    for var in (
+        "KOPIPASTA_BACKEND",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+    ):
         monkeypatch.delenv(var, raising=False)
     # Clear the per-path caches in kopipasta.file, which are process-global and
     # would otherwise carry answers about one tmp_path into the next test.
@@ -132,7 +137,9 @@ def test_no_selectors_at_all_names_the_flags_that_fix_it(project, capsys):
 
 
 def test_at_file_expands_into_patterns(project, capsys):
-    (project / "sel.txt").write_text("# from a triage answer\nsrc/calc.py\nsrc/main.py\n")
+    (project / "sel.txt").write_text(
+        "# from a triage answer\nsrc/calc.py\nsrc/main.py\n"
+    )
     data = run_json(capsys, "-r", "@sel.txt", "-q", "x")
     assert data["sent"]["ref"] == 2
 
@@ -163,7 +170,9 @@ def test_the_payload_carries_the_structure_tree_as_json(project, capsys):
     data = run_json(capsys, "-e", "src/calc.py", "-q", "x")
     payload = (project / data["request"]).read_text()
     assert "## Project Structure" in payload
-    start = payload.index("```json", payload.index("## Project Structure")) + len("```json")
+    start = payload.index("```json", payload.index("## Project Structure")) + len(
+        "```json"
+    )
     tree = json.loads(payload[start : payload.index("```", start)].strip())
     # Every non-ignored file, not just the selected ones.
     assert sorted(tree["src"]) == ["calc.py", "main.py"]
@@ -183,10 +192,10 @@ def test_a_mapped_file_carries_its_skeleton_in_the_tree(project, capsys):
 @pytest.mark.parametrize(
     "name, body",
     [
-        ("notes.md", "# Notes\n\nWHOLE_POINT_OF_THE_FILE\n"),      # no AST at all
+        ("notes.md", "# Notes\n\nWHOLE_POINT_OF_THE_FILE\n"),  # no AST at all
         ("schema.sql", "CREATE TABLE t (id int); -- WHOLE_POINT_OF_THE_FILE\n"),
-        ("src/broken.py", "def WHOLE_POINT_OF_THE_FILE(:\n"),       # will not parse
-        ("src/consts.py", "WHOLE_POINT_OF_THE_FILE = 1\n"),         # no top-level defs
+        ("src/broken.py", "def WHOLE_POINT_OF_THE_FILE(:\n"),  # will not parse
+        ("src/consts.py", "WHOLE_POINT_OF_THE_FILE = 1\n"),  # no top-level defs
     ],
 )
 def test_a_named_file_with_no_skeleton_still_reaches_the_model(
@@ -218,19 +227,29 @@ def test_every_selected_file_appears_under_a_zone_heading(project, capsys):
     (project / "pyproject.toml").write_text("[project]\nname = 'x'\n")
     data = run_json(
         capsys,
-        "-e", "src/calc.py",
-        "-r", "src/main.py",
-        "-m", "docs/spec.md",
-        "-m", "pyproject.toml",
-        "-q", "x",
+        "-e",
+        "src/calc.py",
+        "-r",
+        "src/main.py",
+        "-m",
+        "docs/spec.md",
+        "-m",
+        "pyproject.toml",
+        "-q",
+        "x",
     )
     payload = (project / data["request"]).read_text()
-    blocks = {line.split(":", 1)[1].split("(")[0].strip()
-              for line in payload.splitlines() if line.startswith("# FILE:")}
+    blocks = {
+        line.split(":", 1)[1].split("(")[0].strip()
+        for line in payload.splitlines()
+        if line.startswith("# FILE:")
+    }
     assert blocks == {"src/calc.py", "src/main.py", "docs/spec.md", "pyproject.toml"}
     # And the counts add up to what is in the payload, so `sent` can be trusted
     # without opening the request.
-    assert sum(data["sent"][r] for r in ("edit", "ref", "map", "snippet")) == len(blocks)
+    assert sum(data["sent"][r] for r in ("edit", "ref", "map", "snippet")) == len(
+        blocks
+    )
 
 
 def test_the_state_directory_can_never_join_an_all_selection(project, capsys):
@@ -259,7 +278,9 @@ def test_the_state_directory_can_never_join_an_all_selection(project, capsys):
 def test_over_budget_files_walk_down_the_ladder_instead_of_vanishing(project, capsys):
     big = "\n".join(f"def f{i}():\n    return {i}" for i in range(400))
     (project / "src" / "big.py").write_text(big)
-    data = run_json(capsys, "-r", "src/*.py", "-e", "src/calc.py", "--budget", "1k", "-q", "x")
+    data = run_json(
+        capsys, "-r", "src/*.py", "-e", "src/calc.py", "--budget", "1k", "-q", "x"
+    )
     demoted = {d["path"]: d for d in data["demoted"]}
     assert "src/big.py" in demoted
     # -e is never demoted: that is the contract of "editable".
@@ -277,7 +298,9 @@ def test_a_demotion_reports_the_rung_the_file_actually_landed_on(project, capsys
     is both the truth and the rung that frees the budget the caller asked for.
     """
     (project / "big.md").write_text("# Doc\n\n" + "prose prose prose\n" * 400)
-    data = run_json(capsys, "-r", "big.md", "-e", "src/calc.py", "--budget", "1k", "-q", "x")
+    data = run_json(
+        capsys, "-r", "big.md", "-e", "src/calc.py", "--budget", "1k", "-q", "x"
+    )
     demoted = {d["path"]: d for d in data["demoted"]}
     assert demoted["big.md"]["to"] == "path-only"
     payload = (project / data["request"]).read_text()
@@ -344,9 +367,7 @@ def test_strict_budget_is_enforced_by_the_corrective_pass(project, capsys):
     The budget is derived from two measured renders rather than hardcoded, so
     the test cannot quietly stop covering this as the templates change.
     """
-    body = "\n\n".join(
-        f'def pad{i}():\n    return "{"x" * 60}"' for i in range(12)
-    )
+    body = "\n\n".join(f'def pad{i}():\n    return "{"x" * 60}"' for i in range(12))
     (project / "src" / "pad.py").write_text(body + "\n")
     skeleton = run_json(capsys, "-m", "src/pad.py", "-q", "x")["est_input_tokens"]
     full = run_json(capsys, "-r", "src/pad.py", "-q", "x")["est_input_tokens"]
@@ -357,8 +378,17 @@ def test_strict_budget_is_enforced_by_the_corrective_pass(project, capsys):
     assert lenient["sent"]["demoted"] == 1  # without the flag: demote and carry on
     assert lenient["est_input_tokens"] <= budget  # ... and it really does fit
 
-    data = run_json(capsys, "-r", "src/pad.py", "--budget", str(budget), "--strict-budget",
-                    "-q", "x", expect=EXIT_BUDGET)
+    data = run_json(
+        capsys,
+        "-r",
+        "src/pad.py",
+        "--budget",
+        str(budget),
+        "--strict-budget",
+        "-q",
+        "x",
+        expect=EXIT_BUDGET,
+    )
     assert data["error"] == "budget_exceeded"
     assert data["demoted"] == ["src/pad.py"]
 
@@ -368,7 +398,9 @@ def test_a_bad_budget_string_says_what_it_wanted(project, capsys):
     assert "--budget" in data["summary"]
 
 
-def test_the_estimate_follows_the_provider_that_will_read_it(project, capsys, monkeypatch):
+def test_the_estimate_follows_the_provider_that_will_read_it(
+    project, capsys, monkeypatch
+):
     """One global chars/token cannot serve two tokenizers 50% apart.
 
     Measured on this repo: Anthropic 2.50 chars/token, Gemini 3.42-3.87. With
@@ -384,8 +416,12 @@ def test_the_estimate_follows_the_provider_that_will_read_it(project, capsys, mo
 
     # Compared as chars-per-token so the assertion survives the two prompt
     # templates being different lengths — the ratio is the thing under test.
-    assert claude["payload_chars"] / claude["est_input_tokens"] == pytest.approx(2.5, abs=0.02)
-    assert gemini["payload_chars"] / gemini["est_input_tokens"] == pytest.approx(3.4, abs=0.02)
+    assert claude["payload_chars"] / claude["est_input_tokens"] == pytest.approx(
+        2.5, abs=0.02
+    )
+    assert gemini["payload_chars"] / gemini["est_input_tokens"] == pytest.approx(
+        3.4, abs=0.02
+    )
 
 
 def test_a_dry_run_sizes_for_the_real_provider_with_no_backend_configured(
@@ -403,7 +439,9 @@ def test_a_dry_run_sizes_for_the_real_provider_with_no_backend_configured(
     assert data["est_input_tokens"] > 0
 
 
-def test_strict_budget_refuses_on_a_counted_number_not_a_guess(project, capsys, monkeypatch):
+def test_strict_budget_refuses_on_a_counted_number_not_a_guess(
+    project, capsys, monkeypatch
+):
     """The one decision worth a round trip (spec §5).
 
     Everywhere else the estimate only chooses what to demote. Under
@@ -427,8 +465,17 @@ def test_strict_budget_refuses_on_a_counted_number_not_a_guess(project, capsys, 
     monkeypatch.setattr(askmod, "build", fake_build)
 
     # An estimate far under the budget; the real count far over it.
-    data = run_json(capsys, "-r", "src/calc.py", "--budget", "500k", "--strict-budget",
-                    "-q", "x", expect=EXIT_BUDGET)
+    data = run_json(
+        capsys,
+        "-r",
+        "src/calc.py",
+        "--budget",
+        "500k",
+        "--strict-budget",
+        "-q",
+        "x",
+        expect=EXIT_BUDGET,
+    )
     assert counted["n"] == 999_999, "the count was never asked for"
     assert data["error"] == "budget_exceeded"
     assert data["wanted_tokens"] == 999_999  # the measured number, not the guess
@@ -437,16 +484,28 @@ def test_strict_budget_refuses_on_a_counted_number_not_a_guess(project, capsys, 
 def test_a_backend_that_cannot_count_still_honours_strict_budget(project, capsys):
     """`none` has no tokenizer. The estimate is pessimistic, so falling back
     to it can only refuse early, never overshoot."""
-    data = run_json(capsys, "-r", "src/calc.py", "--budget", "500k", "--strict-budget",
-                    "-q", "x")
+    data = run_json(
+        capsys, "-r", "src/calc.py", "--budget", "500k", "--strict-budget", "-q", "x"
+    )
     assert data["ok"] is True
 
 
-def test_the_budget_is_read_in_the_same_currency_as_the_payload(project, capsys, monkeypatch):
+def test_the_budget_is_read_in_the_same_currency_as_the_payload(
+    project, capsys, monkeypatch
+):
     """`--budget 40kc` is a char budget: both sides convert with one ratio."""
     monkeypatch.setenv("GEMINI_API_KEY", "k")
-    data = run_json(capsys, "--all", "-q", "x", "--dry-run", "--backend", "gemini",
-                    "--budget", "1000kc")
+    data = run_json(
+        capsys,
+        "--all",
+        "-q",
+        "x",
+        "--dry-run",
+        "--backend",
+        "gemini",
+        "--budget",
+        "1000kc",
+    )
     assert data["sent"]["demoted"] == 0
     assert data["est_input_tokens"] == int(data["payload_chars"] / 3.4)
 
@@ -472,7 +531,9 @@ def test_the_state_directory_is_gitignored_on_first_write(project, capsys):
 
 def test_an_unchanged_file_is_not_resent_on_the_next_turn(project, capsys, canned):
     run_json(capsys, "-e", "src/calc.py", "--session", "s", "-q", "one", backend=canned)
-    second = run_json(capsys, "-e", "src/calc.py", "--session", "s", "-q", "two", backend=canned)
+    second = run_json(
+        capsys, "-e", "src/calc.py", "--session", "s", "-q", "two", backend=canned
+    )
     assert second["turn"] == 2
     assert second["sent"]["deduped"] == 1
     body = (project / second["request"]).read_text()
@@ -482,8 +543,12 @@ def test_an_unchanged_file_is_not_resent_on_the_next_turn(project, capsys, canne
 
 def test_a_changed_file_is_resent_and_marked_as_superseding(project, capsys, canned):
     run_json(capsys, "-e", "src/calc.py", "--session", "s", "-q", "one", backend=canned)
-    (project / "src" / "calc.py").write_text("def add(a, b):\n    return a + b  # fixed\n")
-    second = run_json(capsys, "-e", "src/calc.py", "--session", "s", "-q", "two", backend=canned)
+    (project / "src" / "calc.py").write_text(
+        "def add(a, b):\n    return a + b  # fixed\n"
+    )
+    second = run_json(
+        capsys, "-e", "src/calc.py", "--session", "s", "-q", "two", backend=canned
+    )
     body = (project / second["request"]).read_text()
     assert second["sent"]["deduped"] == 0
     assert "supersedes" in body and "# fixed" in body
@@ -493,7 +558,9 @@ def test_a_role_change_defeats_dedup(project, capsys, canned):
     """Same bytes, different role. Deduping on the hash alone would answer
     `-e file` with the 50-line snippet turn 1 sent, and report it as sent."""
     run_json(capsys, "-s", "src/main.py", "--session", "s", "-q", "one", backend=canned)
-    second = run_json(capsys, "-e", "src/main.py", "--session", "s", "-q", "two", backend=canned)
+    second = run_json(
+        capsys, "-e", "src/main.py", "--session", "s", "-q", "two", backend=canned
+    )
     assert second["sent"]["deduped"] == 0
     assert "now edit" in (project / second["request"]).read_text()
 
@@ -503,10 +570,30 @@ def test_dedup_only_trusts_the_prefix_not_earlier_suffixes(project, capsys, cann
     replayed. Treating it as still-present would withhold it from the model
     while the record claimed it was sent."""
     run_json(capsys, "-e", "src/calc.py", "--session", "s", "-q", "one", backend=canned)
-    run_json(capsys, "-e", "src/calc.py", "-e", "src/main.py", "--session", "s", "-q", "2",
-             backend=canned)
-    third = run_json(capsys, "-e", "src/calc.py", "-e", "src/main.py", "--session", "s", "-q", "3",
-                     backend=canned)
+    run_json(
+        capsys,
+        "-e",
+        "src/calc.py",
+        "-e",
+        "src/main.py",
+        "--session",
+        "s",
+        "-q",
+        "2",
+        backend=canned,
+    )
+    third = run_json(
+        capsys,
+        "-e",
+        "src/calc.py",
+        "-e",
+        "src/main.py",
+        "--session",
+        "s",
+        "-q",
+        "3",
+        backend=canned,
+    )
     body = (project / third["request"]).read_text()
     assert third["sent"]["deduped"] == 1  # only the one that is in the prefix
     assert "def main" in body
@@ -522,8 +609,18 @@ def test_a_skeleton_selected_on_a_later_turn_actually_reaches_the_model(
     a payload the caller believes contains a file it does not.
     """
     run_json(capsys, "-e", "src/calc.py", "--session", "s", "-q", "one", backend=canned)
-    second = run_json(capsys, "-e", "src/calc.py", "-m", "src/main.py", "--session", "s",
-                      "-q", "two", backend=canned)
+    second = run_json(
+        capsys,
+        "-e",
+        "src/calc.py",
+        "-m",
+        "src/main.py",
+        "--session",
+        "s",
+        "-q",
+        "two",
+        backend=canned,
+    )
     body = (project / second["request"]).read_text()
     assert second["sent"]["map"] == 1
     assert "src/main.py" in body
@@ -533,9 +630,15 @@ def test_a_skeleton_selected_on_a_later_turn_actually_reaches_the_model(
 
 def test_the_prefix_is_byte_identical_across_turns(project, capsys, canned):
     """It is the cache breakpoint. Re-rendering it would miss on every turn."""
-    first = run_json(capsys, "-e", "src/calc.py", "--session", "s", "-q", "one", backend=canned)
-    prefix = (project / ".kopipasta" / "sessions" / first["session"] / "prefix.md").read_bytes()
-    (project / "src" / "calc.py").write_text("def add(a, b):\n    return a + b  # changed\n")
+    first = run_json(
+        capsys, "-e", "src/calc.py", "--session", "s", "-q", "one", backend=canned
+    )
+    prefix = (
+        project / ".kopipasta" / "sessions" / first["session"] / "prefix.md"
+    ).read_bytes()
+    (project / "src" / "calc.py").write_text(
+        "def add(a, b):\n    return a + b  # changed\n"
+    )
     run_json(capsys, "-e", "src/calc.py", "--session", "s", "-q", "two", backend=canned)
     assert (
         project / ".kopipasta" / "sessions" / first["session"] / "prefix.md"
@@ -574,8 +677,18 @@ def test_a_follow_up_turn_records_the_context_it_inherited(project, capsys, cann
     `files: {}` — which tells `apply` that nothing was editable, so it either
     rejects every patch or treats "empty" as "unrestricted" and allows any.
     """
-    run_json(capsys, "-e", "src/calc.py", "-r", "src/main.py",
-             "--session", "s", "-q", "one", backend=canned)
+    run_json(
+        capsys,
+        "-e",
+        "src/calc.py",
+        "-r",
+        "src/main.py",
+        "--session",
+        "s",
+        "-q",
+        "one",
+        backend=canned,
+    )
     run_json(capsys, "--session", "s", "-q", "two", backend=canned)
 
     record = json.loads((project / ".kopipasta/sessions/s/selection.json").read_text())
@@ -625,7 +738,9 @@ def test_continue_resumes_the_pointer(project, capsys, canned):
     assert "2" in record, "the follow-up did not land in the same session"
 
 
-def test_continue_is_honoured_under_json_because_it_is_explicit(project, capsys, canned):
+def test_continue_is_honoured_under_json_because_it_is_explicit(
+    project, capsys, canned
+):
     """--json refuses to *guess* at `current`; it does not refuse to be told.
 
     The raciness argument is about an agent that omitted --session inheriting
@@ -641,8 +756,9 @@ def test_continue_with_no_previous_session_is_a_usage_error(project, capsys):
     """Nothing to continue is a wrong command line, not a fresh session:
     silently starting one would answer a follow-up question with no context
     and look exactly like success."""
-    data = run_json(capsys, "-e", "src/calc.py", "--continue", "-q", "x",
-                    expect=EXIT_USAGE)
+    data = run_json(
+        capsys, "-e", "src/calc.py", "--continue", "-q", "x", expect=EXIT_USAGE
+    )
     assert data["error"] == "usage"
 
 
@@ -666,8 +782,17 @@ def test_a_response_with_no_patch_content_blames_the_backend(project, capsys):
     """The `claude -p` failure: it reached for its own edit tool instead of
     emitting a patch. The fix is to disable the backend's tools."""
     backend = _canned(project, "I have made the change using my editing tool.")
-    data = run_json(capsys, "-e", "src/calc.py", "--mode", "patch", "-q", "x",
-                    backend=backend, expect=3)
+    data = run_json(
+        capsys,
+        "-e",
+        "src/calc.py",
+        "--mode",
+        "patch",
+        "-q",
+        "x",
+        backend=backend,
+        expect=3,
+    )
     assert data["error"] == "backend_not_a_completion"
 
 
@@ -686,15 +811,16 @@ def test_an_unfenced_patch_is_applied_rather_than_rejected(project, capsys):
         "<<<<<<< SEARCH\n    return a + b\n=======\n    return a + b + 0\n"
         ">>>>>>> REPLACE\n",
     )
-    data = run_json(capsys, "-e", "src/calc.py", "--mode", "patch", "-q", "x",
-                    backend=backend)
+    data = run_json(
+        capsys, "-e", "src/calc.py", "--mode", "patch", "-q", "x", backend=backend
+    )
     assert data["patches"] == 1
 
 
 def test_a_response_with_no_patch_is_a_format_problem_not_a_misconfigured_backend(
     project, capsys
 ):
-    """"It never tried" and "it tried and the format was wrong" are
+    """ "It never tried" and "it tried and the format was wrong" are
     indistinguishable from a patch count of zero and need opposite responses.
     Sending a caller to reconfigure a backend that behaved correctly costs it
     the one thing it cannot get back."""
@@ -706,8 +832,17 @@ def test_a_response_with_no_patch_is_a_format_problem_not_a_misconfigured_backen
         "<<<<<<< SEARCH\n    return a + b\n=======\n    return a + b + 0\n"
         ">>>>>>> REPLACE\n",
     )
-    data = run_json(capsys, "-e", "src/calc.py", "--mode", "patch", "-q", "x",
-                    backend=backend, expect=5)
+    data = run_json(
+        capsys,
+        "-e",
+        "src/calc.py",
+        "--mode",
+        "patch",
+        "-q",
+        "x",
+        backend=backend,
+        expect=5,
+    )
     assert data["error"] == "unparseable_patch"
     assert data["retryable"] is True
     assert "```" in data["hint"], "the hint must name the thing that was missing"
@@ -723,8 +858,16 @@ def test_the_patch_template_asks_for_the_fence_the_parser_requires(project):
 
 
 def test_a_session_id_cannot_escape_the_sessions_directory(project, capsys):
-    data = run_json(capsys, "-e", "src/calc.py", "--session", "../../etc", "-q", "x",
-                    expect=EXIT_USAGE)
+    data = run_json(
+        capsys,
+        "-e",
+        "src/calc.py",
+        "--session",
+        "../../etc",
+        "-q",
+        "x",
+        expect=EXIT_USAGE,
+    )
     assert data["error"] == "usage"
 
 
@@ -834,7 +977,15 @@ def test_a_canned_response_drives_the_parsing_path(project, capsys):
         )
     )
     code = askmod.run(
-        ["--backend", f"none:{project / 'answer.json'}", "-e", "src/calc.py", "-q", "x", "--json"]
+        [
+            "--backend",
+            f"none:{project / 'answer.json'}",
+            "-e",
+            "src/calc.py",
+            "-q",
+            "x",
+            "--json",
+        ]
     )
     assert code == EXIT_OK
     data = json.loads(capsys.readouterr().out)
@@ -847,7 +998,15 @@ def test_a_mode_that_promised_json_and_got_prose_is_a_failed_call(project, capsy
     into the rest of its task with no answer."""
     (project / "answer.txt").write_text("I could not say, really.")
     code = askmod.run(
-        ["--backend", f"none:{project / 'answer.txt'}", "-e", "src/calc.py", "-q", "x", "--json"]
+        [
+            "--backend",
+            f"none:{project / 'answer.txt'}",
+            "-e",
+            "src/calc.py",
+            "-q",
+            "x",
+            "--json",
+        ]
     )
     data = json.loads(capsys.readouterr().out)
     assert code != EXIT_OK
@@ -861,7 +1020,15 @@ def test_a_failure_still_reports_what_was_sent(project, capsys):
     the evidence, so the request path travels with the failure too."""
     (project / "answer.txt").write_text("nope")
     askmod.run(
-        ["--backend", f"none:{project / 'answer.txt'}", "-e", "src/calc.py", "-q", "x", "--json"]
+        [
+            "--backend",
+            f"none:{project / 'answer.txt'}",
+            "-e",
+            "src/calc.py",
+            "-q",
+            "x",
+            "--json",
+        ]
     )
     data = json.loads(capsys.readouterr().out)
     assert (project / data["request"]).exists()
@@ -934,12 +1101,19 @@ def test_changed_needs_git_and_says_so_when_it_is_missing(project, capsys, monke
     assert "git" in data["summary"]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="git plumbing differs enough to be its own test")
+@pytest.mark.skipif(
+    os.name == "nt", reason="git plumbing differs enough to be its own test"
+)
 def test_changed_selects_the_working_tree(project, capsys):
     import subprocess
 
-    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
-           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@t",
+    }
     (project / ".git").rmdir()
     subprocess.run(["git", "init", "-q"], cwd=project, check=True, env=env)
     subprocess.run(["git", "add", "-A"], cwd=project, check=True, env=env)
@@ -980,7 +1154,9 @@ def test_a_budget_with_no_room_for_one_file_says_the_payload_is_empty(rust, caps
     skeletons there is no middle rung to land on, so the ladder takes every
     file straight to path-only and the counts still read as healthy.
     """
-    data = run_json(capsys, "--all", "--budget", "60", "-q", "which file expires tokens?")
+    data = run_json(
+        capsys, "--all", "--budget", "60", "-q", "which file expires tokens?"
+    )
     assert data["no_file_contents"] is True
     payload = (rust / data["request"]).read_text()
     assert "expires_at" not in payload  # the tree names it; nothing shows it
@@ -1048,8 +1224,12 @@ def test_the_ladder_demotes_what_all_dragged_in_before_what_you_named(project, c
     has to hold inside the reference role too: a small file the caller named
     must outlive a large one nobody chose.
     """
-    (project / "src" / "bulk.py").write_text("\n".join(f"# bulk {i}" for i in range(4000)))
-    (project / "src" / "named.py").write_text("\n".join(f"# named {i}" for i in range(200)))
+    (project / "src" / "bulk.py").write_text(
+        "\n".join(f"# bulk {i}" for i in range(4000))
+    )
+    (project / "src" / "named.py").write_text(
+        "\n".join(f"# named {i}" for i in range(200))
+    )
     # Budget chosen so that dropping the bulk file alone is enough: if the
     # order were wrong, the named file would go first and the bulk one would
     # survive. A tighter budget exhausts every rung and proves nothing.

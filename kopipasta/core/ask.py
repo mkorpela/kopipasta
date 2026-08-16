@@ -98,24 +98,61 @@ LOUD_TOKENS = 100_000
 def add_selection_args(parser: argparse.ArgumentParser) -> None:
     """The selection grammar of spec §4. Shared with the other verbs."""
     g = parser.add_argument_group("selection (repeatable, order-independent)")
-    g.add_argument("-e", "--edit", action="append", metavar="PATTERN",
-                   help="full content, editable — the active workspace")
-    g.add_argument("-r", "--ref", action="append", metavar="PATTERN",
-                   help="full content, read-only — dependencies and call sites")
-    g.add_argument("-m", "--map", action="append", metavar="PATTERN",
-                   help="AST skeleton only — signatures and one docstring line")
-    g.add_argument("-s", "--snippet", action="append", metavar="PATTERN",
-                   help="first 50 lines only — a coarse peek")
-    g.add_argument("-x", "--exclude", action="append", metavar="PATTERN",
-                   help="drop these; applied last, wins over everything")
-    g.add_argument("--all", action="store_true",
-                   help="every non-ignored file, in full and read-only (use --budget to cap)")
-    g.add_argument("--changed", action="store_true",
-                   help="git working-tree changes, including untracked, as editable")
-    g.add_argument("--changed-since", metavar="REF",
-                   help="git diff --name-only REF...HEAD, as editable")
-    g.add_argument("--from-file", metavar="PATH",
-                   help="newline-delimited paths, as reference — feeds a triage answer back in")
+    g.add_argument(
+        "-e",
+        "--edit",
+        action="append",
+        metavar="PATTERN",
+        help="full content, editable — the active workspace",
+    )
+    g.add_argument(
+        "-r",
+        "--ref",
+        action="append",
+        metavar="PATTERN",
+        help="full content, read-only — dependencies and call sites",
+    )
+    g.add_argument(
+        "-m",
+        "--map",
+        action="append",
+        metavar="PATTERN",
+        help="AST skeleton only — signatures and one docstring line",
+    )
+    g.add_argument(
+        "-s",
+        "--snippet",
+        action="append",
+        metavar="PATTERN",
+        help="first 50 lines only — a coarse peek",
+    )
+    g.add_argument(
+        "-x",
+        "--exclude",
+        action="append",
+        metavar="PATTERN",
+        help="drop these; applied last, wins over everything",
+    )
+    g.add_argument(
+        "--all",
+        action="store_true",
+        help="every non-ignored file, in full and read-only (use --budget to cap)",
+    )
+    g.add_argument(
+        "--changed",
+        action="store_true",
+        help="git working-tree changes, including untracked, as editable",
+    )
+    g.add_argument(
+        "--changed-since",
+        metavar="REF",
+        help="git diff --name-only REF...HEAD, as editable",
+    )
+    g.add_argument(
+        "--from-file",
+        metavar="PATH",
+        help="newline-delimited paths, as reference — feeds a triage answer back in",
+    )
     parser.epilog = (
         "Patterns take globs (src/**/*.py), directories (recursive) and literal paths.\n"
         "@file anywhere a pattern is expected reads patterns from that file.\n"
@@ -134,48 +171,100 @@ def build_parser() -> argparse.ArgumentParser:
     add_selection_args(p)
 
     q = p.add_argument_group("the question")
-    q.add_argument("-q", "--question", metavar="TEXT",
-                   help="the task or question. @file reads it from a file.")
-    q.add_argument("--mode", default=modesmod.DEFAULT_MODE, metavar="MODE",
-                   help=f"{', '.join(modesmod.MODE_NAMES)} (default: {modesmod.DEFAULT_MODE})")
-    q.add_argument("--no-project-context", action="store_true",
-                   help="do not prepend AI_CONTEXT.md")
-    q.add_argument("--no-memory", action="store_true",
-                   help="prepend none of the memory layers: the global profile, "
-                        "AI_CONTEXT.md and AI_SESSION.md")
+    q.add_argument(
+        "-q",
+        "--question",
+        metavar="TEXT",
+        help="the task or question. @file reads it from a file.",
+    )
+    q.add_argument(
+        "--mode",
+        default=modesmod.DEFAULT_MODE,
+        metavar="MODE",
+        help=f"{', '.join(modesmod.MODE_NAMES)} (default: {modesmod.DEFAULT_MODE})",
+    )
+    q.add_argument(
+        "--no-project-context", action="store_true", help="do not prepend AI_CONTEXT.md"
+    )
+    q.add_argument(
+        "--no-memory",
+        action="store_true",
+        help="prepend none of the memory layers: the global profile, "
+        "AI_CONTEXT.md and AI_SESSION.md",
+    )
 
     b = p.add_argument_group("budget and backend")
-    b.add_argument("--budget", metavar="SIZE",
-                   help="cap the payload, e.g. 400k tokens or 40kc characters.\n"
-                        "Unset by default: the whole selection is sent.")
-    b.add_argument("--strict-budget", action="store_true",
-                   help="exit 6 instead of demoting files down the ladder")
-    b.add_argument("--backend", metavar="SPEC",
-                   help="provider:model, overriding the config file. 'none' calls no model.")
-    b.add_argument("--dry-run", action="store_true",
-                   help="assemble and record everything, call no model (same as --backend none)")
-    b.add_argument("--max-tokens", type=int, metavar="N",
-                   help="output budget for the answer; reasoning tokens spend it too")
-    b.add_argument("--timeout", type=float, metavar="SECONDS", help="cap one backend call")
-    b.add_argument("--deadline", type=float, metavar="SECONDS",
-                   help="cap the whole invocation, whichever stage misbehaves")
+    b.add_argument(
+        "--budget",
+        metavar="SIZE",
+        help="cap the payload, e.g. 400k tokens or 40kc characters.\n"
+        "Unset by default: the whole selection is sent.",
+    )
+    b.add_argument(
+        "--strict-budget",
+        action="store_true",
+        help="exit 6 instead of demoting files down the ladder",
+    )
+    b.add_argument(
+        "--backend",
+        metavar="SPEC",
+        help="provider:model, overriding the config file. 'none' calls no model.",
+    )
+    b.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="assemble and record everything, call no model (same as --backend none)",
+    )
+    b.add_argument(
+        "--max-tokens",
+        type=int,
+        metavar="N",
+        help="output budget for the answer; reasoning tokens spend it too",
+    )
+    b.add_argument(
+        "--timeout", type=float, metavar="SECONDS", help="cap one backend call"
+    )
+    b.add_argument(
+        "--deadline",
+        type=float,
+        metavar="SECONDS",
+        help="cap the whole invocation, whichever stage misbehaves",
+    )
     b.add_argument("--base-url", metavar="URL", help="override the provider endpoint")
 
     s = p.add_argument_group("session")
     which = s.add_mutually_exclusive_group()
-    which.add_argument("--session", metavar="ID",
-                       help="continue (or start) a named conversation")
-    which.add_argument("--continue", dest="continue_", action="store_true",
-                       help="continue the session in 'current' (ask starts fresh otherwise)")
-    which.add_argument("--new", action="store_true",
-                       help="start a fresh session — the default, stated explicitly")
-    s.add_argument("--no-cache", action="store_true",
-                   help="never create a provider-side prefix cache")
-    s.add_argument("--cache-ttl", type=int, metavar="SECONDS",
-                   help="lifetime of that cache; it is rented until it expires")
+    which.add_argument(
+        "--session", metavar="ID", help="continue (or start) a named conversation"
+    )
+    which.add_argument(
+        "--continue",
+        dest="continue_",
+        action="store_true",
+        help="continue the session in 'current' (ask starts fresh otherwise)",
+    )
+    which.add_argument(
+        "--new",
+        action="store_true",
+        help="start a fresh session — the default, stated explicitly",
+    )
+    s.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="never create a provider-side prefix cache",
+    )
+    s.add_argument(
+        "--cache-ttl",
+        type=int,
+        metavar="SECONDS",
+        help="lifetime of that cache; it is rented until it expires",
+    )
 
-    p.add_argument("--json", action="store_true",
-                   help="stdout becomes a single JSON object (spec §8)")
+    p.add_argument(
+        "--json",
+        action="store_true",
+        help="stdout becomes a single JSON object (spec §8)",
+    )
     return p
 
 
@@ -353,9 +442,7 @@ def _ask(args: argparse.Namespace) -> int:
     session = Session.open(root, args.session, follow_current=args.continue_)
     prefix = session.load_prefix()
     if prefix is not None and not args.json:
-        narrate(
-            f"kopipasta: continuing session {session.id}, turn {session.turn}"
-        )
+        narrate(f"kopipasta: continuing session {session.id}, turn {session.turn}")
 
     if not question:
         # No safe default exists for "what is the task", so this refuses
@@ -396,10 +483,14 @@ def _ask(args: argparse.Namespace) -> int:
     demotions: List[budgetmod.Demotion] = []
     if not spec.is_empty():
         selection = resolve(spec, ignore, root)
-        wanted_tokens = budgetmod.estimate_tokens(budgetmod.selection_chars(selection), cpt)
+        wanted_tokens = budgetmod.estimate_tokens(
+            budgetmod.selection_chars(selection), cpt
+        )
         demotions = budgetmod.demote_to_fit(selection, budget_tokens, cpt)
         if demotions and args.strict_budget:
-            raise BudgetExceeded(wanted_tokens, budget_tokens or 0, [d.path for d in demotions])
+            raise BudgetExceeded(
+                wanted_tokens, budget_tokens or 0, [d.path for d in demotions]
+            )
         if demotions:
             narrate(budgetmod.summarise(demotions))
         if selection.unmappable:
@@ -435,11 +526,17 @@ def _ask(args: argparse.Namespace) -> int:
         # same order. `ask` used to send only the constitution, so a prompt
         # tuned against a profile and a live AI_SESSION.md quietly behaved
         # differently here — on the surface with nobody watching for it.
-        memory = {} if args.no_memory else {
-            "user_profile": read_global_profile(),
-            "project_context": None if args.no_project_context else read_project_context(root),
-            "session_state": read_session_state(root),
-        }
+        memory = (
+            {}
+            if args.no_memory
+            else {
+                "user_profile": read_global_profile(),
+                "project_context": None
+                if args.no_project_context
+                else read_project_context(root),
+                "session_state": read_session_state(root),
+            }
+        )
 
         def render() -> str:
             return render_prefix(
@@ -488,7 +585,7 @@ def _ask(args: argparse.Namespace) -> int:
         session.save_prefix(prefix, hashes)
     else:
         prefix_reused = True
-        for entry in (selection.by_role(*ALL_ROLES) if selection else []):
+        for entry in selection.by_role(*ALL_ROLES) if selection else []:
             digest = content_hash(entry.path)
             hashes[entry.rel] = {"role": entry.role, "hash": digest}
             previous = in_prefix.get(entry.rel)
@@ -508,7 +605,12 @@ def _ask(args: argparse.Namespace) -> int:
                 )
             if note:
                 updates.append(
-                    Update(entry.rel, entry.role, role_content(entry.path, entry.role), note)
+                    Update(
+                        entry.rel,
+                        entry.role,
+                        role_content(entry.path, entry.role),
+                        note,
+                    )
                 )
             else:
                 # Already in the prefix, byte for byte, in this same role.
@@ -557,7 +659,9 @@ def _ask(args: argparse.Namespace) -> int:
     if demotions:
         base["demoted"] = [d.as_json() for d in demotions[:DEMOTED_IN_JSON]]
     if selection is not None and selection.unmatched():
-        base["unmatched"] = [{"flag": f, "pattern": p} for f, p in selection.unmatched()]
+        base["unmatched"] = [
+            {"flag": f, "pattern": p} for f, p in selection.unmatched()
+        ]
     if selection is not None and selection.unmappable:
         # `sent` already counts these under `snippet` rather than `map`. This
         # names them, so a caller who asked for a skeleton can see which files
@@ -604,8 +708,19 @@ def _ask(args: argparse.Namespace) -> int:
 
     # 5. The call.
     try:
-        return _call_and_report(args, cfg, mode, session, payload, base, question, ignore,
-                                root, check_deadline, budget_tokens)
+        return _call_and_report(
+            args,
+            cfg,
+            mode,
+            session,
+            payload,
+            base,
+            question,
+            ignore,
+            root,
+            check_deadline,
+            budget_tokens,
+        )
     except KopipastaError as exc:
         # §15: when the oracle is wrong the caller inherits the answer with
         # none of the evidence. Failures carry what was sent, so the caller can
@@ -614,7 +729,9 @@ def _ask(args: argparse.Namespace) -> int:
         exc.fields.setdefault("turn", session.turn)
         exc.fields.setdefault("request", base["request"])
         exc.fields.setdefault("sent", sent)
-        session.write_turn_meta({**base, "ok": False, "error": exc.slug, "summary": exc.summary})
+        session.write_turn_meta(
+            {**base, "ok": False, "error": exc.slug, "summary": exc.summary}
+        )
         raise
 
 
@@ -766,8 +883,9 @@ def _call_and_report(
         }
     )
     session.write_turn_meta(base)
-    session.update_meta(backend=cfg.spec, model=completion.model or cfg.model,
-                        usage=base.get("usage"))
+    session.update_meta(
+        backend=cfg.spec, model=completion.model or cfg.model, usage=base.get("usage")
+    )
     # Written on every run, including --json: `apply current` (spec §1, §11) is
     # reached from an agent's `ask --json`, so withholding the pointer there
     # left the flagship workflow with no handle to the artifact it just made.
@@ -820,7 +938,9 @@ def _release_cache(
             tokens=int(handle["tokens"]),
             # Reusing a cache does not extend its lease. Only the turn that
             # created one gets to set the expiry.
-            expires_at=(adopted or {}).get("expires_at") if handle.get("adopted") else None,
+            expires_at=(adopted or {}).get("expires_at")
+            if handle.get("adopted")
+            else None,
         )
     else:
         session.clear_cache_handle()
@@ -883,7 +1003,10 @@ def _files_cited(text: str, ignore: Sequence[str], root: str) -> List[str]:
     English.
     """
     try:
-        rels = [os.path.relpath(p, root).replace(os.sep, "/") for p in walk_all(ignore, root)]
+        rels = [
+            os.path.relpath(p, root).replace(os.sep, "/")
+            for p in walk_all(ignore, root)
+        ]
     except OSError:  # pragma: no cover
         return []
     return find_paths_in_text(text, rels)[:20]
@@ -929,4 +1052,10 @@ def _emit(
         narrate(f"kopipasta: follow up with  --session {base['session']}")
 
 
-__all__ = ["add_selection_args", "build_parser", "extract_json", "report_failure", "run"]
+__all__ = [
+    "add_selection_args",
+    "build_parser",
+    "extract_json",
+    "report_failure",
+    "run",
+]

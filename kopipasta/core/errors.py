@@ -122,7 +122,8 @@ class InteractionRequired(KopipastaError):
     def __init__(self, summary: str, hint: Optional[str] = None) -> None:
         super().__init__(
             summary,
-            hint=hint or "Pass the flag that answers the question, or run it in a terminal.",
+            hint=hint
+            or "Pass the flag that answers the question, or run it in a terminal.",
         )
 
 
@@ -231,7 +232,9 @@ class EmptySelection(KopipastaError):
     exit_code = EXIT_USAGE
     slug = "empty_selection"
 
-    def __init__(self, matches: Sequence[tuple], candidates: Optional[Sequence[str]] = None):
+    def __init__(
+        self, matches: Sequence[tuple], candidates: Optional[Sequence[str]] = None
+    ):
         lines: List[str] = []
         for flag, pattern, count in matches:
             line = f"{flag} {pattern}".ljust(34) + f"{count:>4} files"
@@ -242,7 +245,8 @@ class EmptySelection(KopipastaError):
             lines.append(line)
         super().__init__(
             "no files matched.",
-            detail="\n".join(lines) + "\nNothing was selected, so there is nothing to ask about.",
+            detail="\n".join(lines)
+            + "\nNothing was selected, so there is nothing to ask about.",
             hint="Check the patterns above, or use --all to select the whole project.",
             patterns=[{"flag": f, "pattern": p, "matched": c} for f, p, c in matches],
         )
@@ -299,7 +303,9 @@ class ModelRejected(BackendError):
     slug = "model_rejected"
     retryable = False
 
-    def __init__(self, provider: str, model: str, provider_message: str, source: str) -> None:
+    def __init__(
+        self, provider: str, model: str, provider_message: str, source: str
+    ) -> None:
         KopipastaError.__init__(
             self,
             f"{provider} rejected the model {model!r}.",
@@ -315,7 +321,9 @@ class RateLimited(BackendError):
     slug = "rate_limited"
     retryable = True
 
-    def __init__(self, provider: str, retry_after_s: Optional[float], provider_message: str) -> None:
+    def __init__(
+        self, provider: str, retry_after_s: Optional[float], provider_message: str
+    ) -> None:
         wait = f" Retry after {retry_after_s:g}s." if retry_after_s else ""
         KopipastaError.__init__(
             self,
@@ -377,7 +385,9 @@ class ResponseTruncated(BackendError):
     slug = "truncated"
     retryable = False
 
-    def __init__(self, provider: str, finish_reason: str, max_tokens: int, chars: int) -> None:
+    def __init__(
+        self, provider: str, finish_reason: str, max_tokens: int, chars: int
+    ) -> None:
         KopipastaError.__init__(
             self,
             f"{provider} stopped early ({finish_reason}); the answer is incomplete.",
@@ -394,7 +404,9 @@ class SchemaInvalid(BackendError):
     slug = "schema_invalid"
     retryable = True
 
-    def __init__(self, provider: str, detail: str, response_path: Optional[str] = None) -> None:
+    def __init__(
+        self, provider: str, detail: str, response_path: Optional[str] = None
+    ) -> None:
         KopipastaError.__init__(
             self,
             f"{provider} returned a response that does not match the expected schema.",
@@ -454,6 +466,6 @@ class BackendActedAsAgent(BackendError):
             "the backend behaved as an agent, not a completion.",
             detail=f"It returned no code blocks. It said: {excerpt}",
             hint="Run the backend with its file and shell tools disabled, e.g.\n"
-            "  exec:claude -p --disallowedTools \"Edit,Write,Read,Bash,Glob,Grep,Task\"",
+            '  exec:claude -p --disallowedTools "Edit,Write,Read,Bash,Glob,Grep,Task"',
             backend=backend,
         )

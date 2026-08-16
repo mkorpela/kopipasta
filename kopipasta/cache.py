@@ -94,7 +94,10 @@ def get_cache_file_path(project_root: Optional[str] = None) -> Path:
         # Record which path this hash came from, so the directory is
         # debuggable and a collision would be visible rather than baffling.
         try:
-            _atomic_write(stamp, json.dumps({"root": str(find_project_root(project_root))}, indent=2))
+            _atomic_write(
+                stamp,
+                json.dumps({"root": str(find_project_root(project_root))}, indent=2),
+            )
         except OSError:
             pass
     return cache_dir
@@ -171,7 +174,10 @@ def _from_stored(stored: List[str]) -> List[str]:
 def save_selection_to_cache(files_to_include: List[FileTuple]):
     """Saves the list of selected file paths to this project's cache."""
     try:
-        _atomic_write(get_selection_cache_file(), json.dumps(_to_stored([f[0] for f in files_to_include]), indent=2))
+        _atomic_write(
+            get_selection_cache_file(),
+            json.dumps(_to_stored([f[0] for f in files_to_include]), indent=2),
+        )
     except OSError as e:
         print(f"\nWarning: Could not save selection to cache: {e}", file=sys.stderr)
 
@@ -193,7 +199,10 @@ def load_selection_from_cache() -> List[str]:
         with open(cache_file, "r", encoding="utf-8") as f:
             return _from_stored(json.load(f))
     except (OSError, ValueError) as e:
-        print(f"\nWarning: Could not load previous selection from cache: {e}", file=sys.stderr)
+        print(
+            f"\nWarning: Could not load previous selection from cache: {e}",
+            file=sys.stderr,
+        )
         return []
 
 
@@ -206,7 +215,10 @@ def load_map_from_cache() -> List[str]:
         with open(cache_file, "r", encoding="utf-8") as f:
             return _from_stored(json.load(f))
     except (OSError, ValueError) as e:
-        print(f"\nWarning: Could not load previous map selection from cache: {e}", file=sys.stderr)
+        print(
+            f"\nWarning: Could not load previous map selection from cache: {e}",
+            file=sys.stderr,
+        )
         return []
 
 
@@ -227,7 +239,9 @@ def load_task_from_cache() -> Optional[str]:
         with open(cache_file, "r", encoding="utf-8") as f:
             return f.read()
     except OSError as e:
-        print(f"\nWarning: Could not load previous task from cache: {e}", file=sys.stderr)
+        print(
+            f"\nWarning: Could not load previous task from cache: {e}", file=sys.stderr
+        )
         return None
 
 

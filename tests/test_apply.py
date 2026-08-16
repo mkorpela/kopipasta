@@ -169,9 +169,13 @@ def test_a_half_matching_patch_exits_4_and_says_which_file(repo, capsys):
 
 
 @needs_git
-def test_a_patch_that_matches_nothing_exits_5_and_leaves_the_worktree_alone(repo, capsys):
+def test_a_patch_that_matches_nothing_exits_5_and_leaves_the_worktree_alone(
+    repo, capsys
+):
     """Spec §8: fully failed, worktree untouched — so a retry is safe."""
-    data = run_json(capsys, write_patch(repo, NOTHING_MATCHES), expect=EXIT_PATCH_FAILED)
+    data = run_json(
+        capsys, write_patch(repo, NOTHING_MATCHES), expect=EXIT_PATCH_FAILED
+    )
     assert data["failed"] == ["app.py"]
     assert data["changed"] is False
     assert (repo / "app.py").read_text() == ORIGINAL
@@ -196,7 +200,9 @@ def test_a_dirty_worktree_is_refused(repo, capsys):
     data = run_json(capsys, write_patch(repo, CLEAN_PATCH), expect=EXIT_USAGE)
     assert data["error"] == "dirty_worktree"
     assert "app.py" in data["files"]
-    assert "# uncommitted" in (repo / "app.py").read_text(), "refused, but still patched"
+    assert "# uncommitted" in (repo / "app.py").read_text(), (
+        "refused, but still patched"
+    )
 
 
 @needs_git
@@ -229,8 +235,12 @@ def test_a_missing_git_is_narrated_not_fatal(repo, capsys, monkeypatch):
 
 @needs_git
 def test_dry_run_touches_nothing_but_reports_the_same_verdict(repo, capsys):
-    data = run_json(capsys, write_patch(repo, HALF_MATCHING_PATCH), "--dry-run",
-                    expect=EXIT_PATCH_PARTIAL)
+    data = run_json(
+        capsys,
+        write_patch(repo, HALF_MATCHING_PATCH),
+        "--dry-run",
+        expect=EXIT_PATCH_PARTIAL,
+    )
     assert data["dry_run"] is True
     assert data["partial"] == ["app.py"]
     assert (repo / "app.py").read_text() == ORIGINAL, "dry run wrote to disk"
@@ -250,8 +260,9 @@ def test_dry_run_does_not_need_a_clean_worktree(repo, capsys):
 
 @needs_git
 def test_a_failing_verify_exits_7(repo, capsys):
-    data = run_json(capsys, write_patch(repo, CLEAN_PATCH),
-                    "--verify", "exit 3", expect=EXIT_VERIFY)
+    data = run_json(
+        capsys, write_patch(repo, CLEAN_PATCH), "--verify", "exit 3", expect=EXIT_VERIFY
+    )
     assert data["verify"]["exit"] == 3
     # Not reverted: the caller did not ask for that.
     assert "return 100" in (repo / "app.py").read_text()
@@ -266,8 +277,14 @@ def test_a_passing_verify_exits_0(repo, capsys):
 
 @needs_git
 def test_revert_on_fail_puts_the_file_back(repo, capsys):
-    data = run_json(capsys, write_patch(repo, CLEAN_PATCH), "--verify", "exit 1",
-                    "--revert-on-fail", expect=EXIT_VERIFY)
+    data = run_json(
+        capsys,
+        write_patch(repo, CLEAN_PATCH),
+        "--verify",
+        "exit 1",
+        "--revert-on-fail",
+        expect=EXIT_VERIFY,
+    )
     assert data["reverted"] == ["app.py"]
     assert (repo / "app.py").read_text() == ORIGINAL
 
@@ -276,8 +293,9 @@ def test_revert_on_fail_puts_the_file_back(repo, capsys):
 def test_revert_on_fail_removes_a_file_it_created(repo, capsys):
     """`git checkout --` cannot restore a file that was never tracked."""
     patch = write_patch(repo, "```python\n# FILE: brand_new.py\nprint('hi')\n```")
-    data = run_json(capsys, patch, "--verify", "exit 1", "--revert-on-fail",
-                    expect=EXIT_VERIFY)
+    data = run_json(
+        capsys, patch, "--verify", "exit 1", "--revert-on-fail", expect=EXIT_VERIFY
+    )
     assert data["reverted"] == ["brand_new.py"]
     assert not (repo / "brand_new.py").exists()
 
@@ -288,8 +306,15 @@ def test_revert_refuses_to_discard_work_it_did_not_do(repo, capsys):
     the caller had already modified would destroy uncommitted work to tidy up
     after a failed test run — a worse outcome than leaving the patch."""
     (repo / "app.py").write_text(ORIGINAL + "# precious\n")
-    data = run_json(capsys, write_patch(repo, CLEAN_PATCH), "--dirty-ok",
-                    "--verify", "exit 1", "--revert-on-fail", expect=EXIT_VERIFY)
+    data = run_json(
+        capsys,
+        write_patch(repo, CLEAN_PATCH),
+        "--dirty-ok",
+        "--verify",
+        "exit 1",
+        "--revert-on-fail",
+        expect=EXIT_VERIFY,
+    )
     assert data["revert_declined"] == ["app.py"]
     assert data["reverted"] == []
     assert "# precious" in (repo / "app.py").read_text()
@@ -307,8 +332,15 @@ def test_revert_matches_paths_the_way_git_spells_them(repo, capsys):
     """
     (repo / "app.py").write_text(ORIGINAL + "# precious\n")
     dotted = CLEAN_PATCH.replace("### app.py", "### ./app.py")
-    data = run_json(capsys, write_patch(repo, dotted), "--dirty-ok",
-                    "--verify", "exit 1", "--revert-on-fail", expect=EXIT_VERIFY)
+    data = run_json(
+        capsys,
+        write_patch(repo, dotted),
+        "--dirty-ok",
+        "--verify",
+        "exit 1",
+        "--revert-on-fail",
+        expect=EXIT_VERIFY,
+    )
 
     assert data["reverted"] == [], "reverted a file the caller had modified"
     assert data["revert_declined"] == ["./app.py"]
@@ -327,7 +359,9 @@ def test_a_session_with_nothing_editable_still_enforces_the_zone(repo, capsys):
     d = repo / ".kopipasta" / "sessions" / "s1"
     d.mkdir(parents=True)
     (d / "selection.json").write_text(
-        json.dumps({"1": {"files": {"ref.py": {"role": "ref", "hash": "y"}}, "demoted": []}})
+        json.dumps(
+            {"1": {"files": {"ref.py": {"role": "ref", "hash": "y"}}, "demoted": []}}
+        )
     )
     (d / "001-response.md").write_text(
         """
@@ -348,8 +382,9 @@ REFERENCE = 99
 
 
 def test_revert_on_fail_without_verify_is_a_usage_error(repo, capsys):
-    data = run_json(capsys, write_patch(repo, CLEAN_PATCH),
-                    "--revert-on-fail", expect=EXIT_USAGE)
+    data = run_json(
+        capsys, write_patch(repo, CLEAN_PATCH), "--revert-on-fail", expect=EXIT_USAGE
+    )
     assert data["error"] == "usage"
 
 
@@ -373,7 +408,9 @@ REFERENCE = 99
     (repo / ".kopipasta" / "sessions" / "s1" / "001-response.md").write_text(patch)
     data = run_json(capsys, "--session", "s1", expect=EXIT_PATCH_FAILED)
     assert data["skipped"] == ["ref.py"]
-    assert (repo / "ref.py").read_text() == "REFERENCE = 1\n", "read-only file was edited"
+    assert (repo / "ref.py").read_text() == "REFERENCE = 1\n", (
+        "read-only file was edited"
+    )
 
 
 @needs_git
@@ -547,10 +584,22 @@ def test_ask_then_apply_works_on_the_first_run_in_a_clean_repo(repo, capsys, tmp
 
     canned = tmp_path / "canned-patch.md"
     canned.write_text(CLEAN_PATCH)
-    assert askmod.run(
-        ["--backend", f"none:{canned}", "-e", "app.py", "--mode", "patch",
-         "-q", "make a() return 100", "--json"]
-    ) == EXIT_OK
+    assert (
+        askmod.run(
+            [
+                "--backend",
+                f"none:{canned}",
+                "-e",
+                "app.py",
+                "--mode",
+                "patch",
+                "-q",
+                "make a() return 100",
+                "--json",
+            ]
+        )
+        == EXIT_OK
+    )
     capsys.readouterr()
 
     assert ".kopipasta/" in (repo / ".gitignore").read_text()

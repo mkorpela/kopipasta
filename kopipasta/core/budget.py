@@ -52,16 +52,19 @@ CHARS_PER_TOKEN = 2.5
 #: pessimistic ratio wastes budget, a wrong-but-optimistic one overflows the
 #: window.
 PROVIDER_CHARS_PER_TOKEN = {
-    "anthropic": 2.5,   # findings §2.5, via claude-cli cache_creation deltas
+    "anthropic": 2.5,  # findings §2.5, via claude-cli cache_creation deltas
     "claude-cli": 2.5,  # the same tokenizer
-    "gemini": 3.4,      # 4 payloads, 379k chars, via countTokens: 3.42-3.87
+    "gemini": 3.4,  # 4 payloads, 379k chars, via countTokens: 3.42-3.87
     "gemini-compat": 3.4,
 }
 
 
 def chars_per_token(provider: Optional[str]) -> float:
     """The ratio for this provider, pessimistic where nothing was measured."""
-    return PROVIDER_CHARS_PER_TOKEN.get((provider or "").strip().lower(), CHARS_PER_TOKEN)
+    return PROVIDER_CHARS_PER_TOKEN.get(
+        (provider or "").strip().lower(), CHARS_PER_TOKEN
+    )
+
 
 #: `# FILE: path` + fenced block + blank lines.
 FRAME_CHARS = 40
@@ -144,7 +147,9 @@ def render_chars(entry: Entry, role: Optional[str] = None) -> int:
         except Exception:  # a file that will not parse simply has no skeleton
             return 0
     if role == SNIPPET:
-        return min(_file_chars(entry.path), SNIPPET_CHARS) + FRAME_CHARS + len(entry.rel)
+        return (
+            min(_file_chars(entry.path), SNIPPET_CHARS) + FRAME_CHARS + len(entry.rel)
+        )
     return _file_chars(entry.path) + FRAME_CHARS + len(entry.rel)
 
 
@@ -170,7 +175,9 @@ _STAGES: Tuple[Tuple[str, Optional[bool]], ...] = (
 )
 
 
-def _stage_entries(selection: Selection, role: str, bulk: Optional[bool]) -> List[Entry]:
+def _stage_entries(
+    selection: Selection, role: str, bulk: Optional[bool]
+) -> List[Entry]:
     """One stage's candidates, largest first, computed when the stage starts.
 
     *When* matters. Building all four lists up front looks equivalent and is
@@ -222,7 +229,9 @@ def demote_to_fit(
             after = render_chars(entry, MAP) if entry.role in (REF, SNIPPET) else 0
             if after:
                 steps.append(
-                    Demotion(entry.rel, entry.role, MAP, estimate_tokens(before - after, cpt))
+                    Demotion(
+                        entry.rel, entry.role, MAP, estimate_tokens(before - after, cpt)
+                    )
                 )
                 entry.role = MAP
                 total -= before - after
@@ -232,7 +241,9 @@ def demote_to_fit(
                 # on the same rung, and calling the second one "-> map" would
                 # report a skeleton for a file that renders to nothing at all.
                 steps.append(
-                    Demotion(entry.rel, entry.role, PATH_ONLY, estimate_tokens(before, cpt))
+                    Demotion(
+                        entry.rel, entry.role, PATH_ONLY, estimate_tokens(before, cpt)
+                    )
                 )
                 selection.entries.pop(entry.path, None)
                 total -= before
@@ -251,14 +262,18 @@ def collapse(steps: Sequence[Demotion]) -> List[Demotion]:
     for step in steps:
         first = merged.get(step.path)
         if first is None:
-            merged[step.path] = Demotion(step.path, step.frm, step.to, step.saved_tokens)
+            merged[step.path] = Demotion(
+                step.path, step.frm, step.to, step.saved_tokens
+            )
         else:
             first.to = step.to
             first.saved_tokens += step.saved_tokens
     return list(merged.values())
 
 
-def summarise(demotions: Sequence[Demotion], limit: int = 8, label: str = "over budget") -> str:
+def summarise(
+    demotions: Sequence[Demotion], limit: int = 8, label: str = "over budget"
+) -> str:
     """The stderr narration. Names files, because a count is not actionable."""
     if not demotions:
         return ""
@@ -268,7 +283,10 @@ def summarise(demotions: Sequence[Demotion], limit: int = 8, label: str = "over 
     if more > 0:
         head.append(f"  ... and {more} more")
     return "\n".join(
-        [f"kopipasta: {label} — demoted {len(demotions)} file(s), ~{saved:,} tokens:", *head]
+        [
+            f"kopipasta: {label} — demoted {len(demotions)} file(s), ~{saved:,} tokens:",
+            *head,
+        ]
     )
 
 

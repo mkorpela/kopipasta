@@ -31,7 +31,10 @@ def test_an_unfenced_search_replace_patch_is_still_a_patch():
     assert len(patches) == 1
     assert patches[0]["file_path"] == "src/calc.py"
     assert patches[0]["type"] == "diff"
-    assert patches[0]["content"][0]["new_lines"] == ["def add(a, b):", "    return a + b + 1"]
+    assert patches[0]["content"][0]["new_lines"] == [
+        "def add(a, b):",
+        "    return a + b + 1",
+    ]
 
 
 def test_the_prose_around_an_unfenced_patch_is_not_part_of_it():
@@ -66,11 +69,14 @@ def test_prose_with_a_file_header_never_becomes_a_whole_file_rewrite():
     one nothing does, so a header followed by text is not a rewrite — it is a
     model talking about a file. Guessing here destroys the file.
     """
-    assert parse_llm_output(
-        "# FILE: src/calc.py\n"
-        "This module adds two numbers. It could use a docstring,\n"
-        "and the parameter names could be clearer.\n"
-    ) == []
+    assert (
+        parse_llm_output(
+            "# FILE: src/calc.py\n"
+            "This module adds two numbers. It could use a docstring,\n"
+            "and the parameter names could be clearer.\n"
+        )
+        == []
+    )
 
 
 def test_a_fenced_patch_is_not_reparsed_by_the_fallback():

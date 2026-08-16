@@ -1059,7 +1059,9 @@ def _confirm_destructive(
     if human_attached():
         return click.confirm(prompt, default=False)
     if opted_in:
-        print(f"kopipasta: {what} — permitted by flag, no human to ask.", file=sys.stderr)
+        print(
+            f"kopipasta: {what} — permitted by flag, no human to ask.", file=sys.stderr
+        )
         return True
     use_default_without_human(what, default_desc)
     return False
@@ -1401,9 +1403,7 @@ def apply_patches(
                         f.write(final_content)
 
                 result.record(
-                    FileOutcome(
-                        path=file_path, status=APPLIED, action="overwritten"
-                    )
+                    FileOutcome(path=file_path, status=APPLIED, action="overwritten")
                 )
                 console.print(
                     f"✅ {'Would overwrite' if dry_run else 'Overwrote'} "
@@ -1416,9 +1416,7 @@ def apply_patches(
 
         except Exception as e:
             console.print(f"❌ [bold red]Error processing {file_path}: {e}[/bold red]")
-            result.record(
-                FileOutcome(path=file_path, status=FAILED, reason=str(e))
-            )
+            result.record(FileOutcome(path=file_path, status=FAILED, reason=str(e)))
             if logger:
                 logger.error("patch_failed", file_path=file_path, error=str(e))
 

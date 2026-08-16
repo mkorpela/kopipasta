@@ -131,7 +131,9 @@ class Turn:
     answer: str
 
 
-def _masker(env_vars: Optional[Dict[str, str]]) -> Tuple[Dict[str, str], Dict[str, str]]:
+def _masker(
+    env_vars: Optional[Dict[str, str]],
+) -> Tuple[Dict[str, str], Dict[str, str]]:
     """Always mask, never ask.
 
     In the TUI a human decides per variable. Here the payload is on its way to
@@ -345,7 +347,10 @@ def render_suffix(
             caveat = role_note(u.role)
             note = f"{u.note}; {caveat}" if caveat else u.note
             out += _block(
-                u.rel, u.rel, handle_env_variables(u.content, env, decisions), f" ({note})"
+                u.rel,
+                u.rel,
+                handle_env_variables(u.content, env, decisions),
+                f" ({note})",
             )
 
     out += ["## Task Instructions", "", question.strip(), "", mode.instructions, ""]

@@ -173,7 +173,9 @@ class BackendConfig:
         if var is None:
             return
         if not (env.get(var) or "").strip():
-            raise MissingApiKey(self.provider, var, self.sources.get("provider", "unknown"))
+            raise MissingApiKey(
+                self.provider, var, self.sources.get("provider", "unknown")
+            )
 
 
 def _split_spec(spec: str) -> Tuple[str, str]:
@@ -206,7 +208,9 @@ def resolve_backend(
     # `config --show` exists to prevent.
     section: Dict[str, Any] = {}
     key_source: Dict[str, str] = {}
-    for name in (FALLBACK_SECTION, verb) if verb != FALLBACK_SECTION else (FALLBACK_SECTION,):
+    for name in (
+        (FALLBACK_SECTION, verb) if verb != FALLBACK_SECTION else (FALLBACK_SECTION,)
+    ):
         block = data.get(name)
         if not isinstance(block, dict):
             continue
@@ -247,7 +251,9 @@ def resolve_backend(
 
     sources = {
         "provider": source,
-        "model": key_source.get("model", source) if source not in (SRC_FLAG, SRC_ENV) else source,
+        "model": key_source.get("model", source)
+        if source not in (SRC_FLAG, SRC_ENV)
+        else source,
     }
 
     def scalar(name: str) -> Any:
@@ -282,7 +288,9 @@ def render_show(cfg: BackendConfig, env: Optional[Dict[str, str]] = None) -> str
 
     var = cfg.api_key_env
     if var is None:
-        rows.append(("api key", "not needed", f"{cfg.provider} borrows its host CLI's auth"))
+        rows.append(
+            ("api key", "not needed", f"{cfg.provider} borrows its host CLI's auth")
+        )
     else:
         raw = env.get(var)
         if raw is None:

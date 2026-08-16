@@ -84,7 +84,12 @@ TRIAGE_SCHEMA: Dict[str, Any] = {
         "missing_context": {"type": "array", "items": {"type": "string"}},
         "suggested_selection": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["relevant_files", "hypothesis", "missing_context", "suggested_selection"],
+    "required": [
+        "relevant_files",
+        "hypothesis",
+        "missing_context",
+        "suggested_selection",
+    ],
 }
 
 REVIEW_SCHEMA: Dict[str, Any] = {
@@ -186,7 +191,9 @@ def _review_summary(d: Dict[str, Any]) -> str:
     for f in d.get("findings") or []:
         if not isinstance(f, dict):
             continue
-        out.append(f"[{f.get('severity', '?')}] {f.get('path', '?')}: {f.get('what', '')}")
+        out.append(
+            f"[{f.get('severity', '?')}] {f.get('path', '?')}: {f.get('what', '')}"
+        )
         if f.get("why"):
             out.append(f"    why: {f['why']}")
         if f.get("fix"):
@@ -207,7 +214,10 @@ def _plan_summary(d: Dict[str, Any]) -> str:
             out.append(f"    files: {', '.join(step['files'])}")
         if step.get("risk"):
             out.append(f"    risk: {step['risk']}")
-    for label, key in (("open questions", "open_questions"), ("missing context", "missing_context")):
+    for label, key in (
+        ("open questions", "open_questions"),
+        ("missing context", "missing_context"),
+    ):
         items = d.get(key) or []
         if items:
             out += ["", f"{label}:"] + [f"  {x}" for x in items]

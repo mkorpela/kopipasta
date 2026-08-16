@@ -64,7 +64,9 @@ def test_triage_renders_the_answer_a_caller_asked_for():
     out = modes.TRIAGE.summary(
         {
             "hypothesis": "expiry is checked twice",
-            "relevant_files": [{"path": "auth.py", "why": "owns expiry", "confidence": 0.9}],
+            "relevant_files": [
+                {"path": "auth.py", "why": "owns expiry", "confidence": 0.9}
+            ],
             "missing_context": ["tests/"],
             "suggested_selection": ["auth.py"],
         }
@@ -77,7 +79,10 @@ def test_triage_renders_the_answer_a_caller_asked_for():
 
 def test_a_summary_survives_a_provider_that_returns_junk_in_a_valid_shape():
     """The schema guarantees the keys, not that every item is an object."""
-    assert modes.TRIAGE.summary({"relevant_files": ["auth.py", None], "hypothesis": ""}) == ""
+    assert (
+        modes.TRIAGE.summary({"relevant_files": ["auth.py", None], "hypothesis": ""})
+        == ""
+    )
 
 
 def test_aliases_resolve_to_the_same_mode():

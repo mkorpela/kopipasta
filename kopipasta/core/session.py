@@ -263,11 +263,15 @@ class Session:
         data = _read_json(self.path(PREFIX_FILES), {})
         turn = int(data.get("turn") or 1)
         return {
-            rel: SentFile(rel=rel, role=rec.get("role", ""), hash=rec.get("hash", ""), turn=turn)
+            rel: SentFile(
+                rel=rel, role=rec.get("role", ""), hash=rec.get("hash", ""), turn=turn
+            )
             for rel, rec in (data.get("files") or {}).items()
         }
 
-    def record_selection(self, files: Dict[str, Dict[str, str]], demoted: List[dict]) -> None:
+    def record_selection(
+        self, files: Dict[str, Dict[str, str]], demoted: List[dict]
+    ) -> None:
         self._ensure_dir()
         data = _read_json(self.path(SELECTION), {})
         data[str(self.turn)] = {"files": files, "demoted": demoted}
@@ -295,7 +299,13 @@ class Session:
             if len(answer) > max_answer_chars:
                 answer = answer[:max_answer_chars] + "\n... (truncated in replay)"
             if rec.get("question"):
-                turns.append(Turn(n=int(rec.get("turn", 0)), question=rec["question"], answer=answer))
+                turns.append(
+                    Turn(
+                        n=int(rec.get("turn", 0)),
+                        question=rec["question"],
+                        answer=answer,
+                    )
+                )
         return turns
 
     def append_transcript(self, record: Dict[str, Any]) -> None:
@@ -370,7 +380,9 @@ class Session:
     # session — a *different process* — read a cache turn 1 paid to create.
     # The rent is bounded by the TTL, which is why the handle carries its own
     # expiry and why nothing here is trusted without the provider agreeing.
-    def load_cache_handle(self, provider: str, model: str, digest: str) -> Optional[Dict[str, Any]]:
+    def load_cache_handle(
+        self, provider: str, model: str, digest: str
+    ) -> Optional[Dict[str, Any]]:
         rec = _read_json(self.path(CACHE_FILE), None)
         if not isinstance(rec, dict):
             return None
@@ -456,7 +468,11 @@ def read_turns(root: str, session_id: str) -> List[Dict[str, Any]]:
     """The transcript, oldest first. Malformed lines are skipped, not fatal."""
     out: List[Dict[str, Any]] = []
     try:
-        with open(os.path.join(session_dir(root, session_id), TRANSCRIPT), "r", encoding="utf-8") as fh:
+        with open(
+            os.path.join(session_dir(root, session_id), TRANSCRIPT),
+            "r",
+            encoding="utf-8",
+        ) as fh:
             lines = fh.readlines()
     except OSError:
         return out
@@ -498,7 +514,12 @@ def read_lease(root: str, session_id: str) -> Optional[Dict[str, Any]]:
     if not isinstance(rec, dict) or not rec.get("name"):
         return None
     left = float(rec.get("expires_at") or 0) - time.time()
-    return {**rec, "session": session_id, "expired": left <= 0, "expires_in_s": round(left, 1)}
+    return {
+        **rec,
+        "session": session_id,
+        "expired": left <= 0,
+        "expires_in_s": round(left, 1),
+    }
 
 
 def live_leases(root: str) -> Dict[str, Dict[str, Any]]:

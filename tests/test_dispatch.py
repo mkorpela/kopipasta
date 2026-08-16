@@ -133,7 +133,9 @@ def test_specced_but_unimplemented_verbs_say_so(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("verb", ["ask", "apply", "map", "config"])
-def test_implemented_verbs_are_dispatched_before_the_legacy_parser(verb, tmp_path, monkeypatch):
+def test_implemented_verbs_are_dispatched_before_the_legacy_parser(
+    verb, tmp_path, monkeypatch
+):
     """`ask -e file -q "..."` is not a command line the TUI's parser can be
     taught. It has to be intercepted before argparse sees it, or every verb
     becomes a usage error from the wrong parser."""

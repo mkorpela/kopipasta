@@ -44,7 +44,13 @@ from kopipasta.core.errors import (
 )
 from kopipasta.core.session import SESSIONS_DIR, Session
 from kopipasta.interaction import NoHumanAttached
-from kopipasta.output import HelpToStdoutParser, emit, emit_json, narrate, stdout_reserved_for_output
+from kopipasta.output import (
+    HelpToStdoutParser,
+    emit,
+    emit_json,
+    narrate,
+    stdout_reserved_for_output,
+)
 from kopipasta.patcher import apply_patches, normalise_path, parse_llm_output
 
 
@@ -177,7 +183,9 @@ def _latest_response(root: str, session_id: str) -> str:
     return os.path.join(directory, responses[-1])
 
 
-def resolve_target(root: str, target: str, session_flag: Optional[str]) -> Tuple[str, Optional[str]]:
+def resolve_target(
+    root: str, target: str, session_flag: Optional[str]
+) -> Tuple[str, Optional[str]]:
     """(text, session_id). `session_id` is None for a file or stdin.
 
     Knowing which session the patch came from is what lets the editable zone
@@ -235,7 +243,8 @@ def editable_set(root: str, session_id: str) -> Optional[Set[str]]:
     latest = max(data, key=lambda k: int(k) if str(k).isdigit() else -1)
     files = (data.get(latest) or {}).get("files") or {}
     return {
-        rel for rel, rec in files.items()
+        rel
+        for rel, rec in files.items()
         if isinstance(rec, dict) and rec.get("role") == "edit"
     }
 
@@ -262,7 +271,9 @@ def run_verify(root: str, command: str, timeout: float) -> Tuple[int, str]:
     return p.returncode, "\n".join(tail[-20:])
 
 
-def revert(root: str, result, was_dirty: Optional[Set[str]]) -> Tuple[List[str], List[str]]:
+def revert(
+    root: str, result, was_dirty: Optional[Set[str]]
+) -> Tuple[List[str], List[str]]:
     """Undo what we just did. Returns (reverted, declined).
 
     Only files this run touched, and only those that were clean beforehand.
@@ -311,30 +322,57 @@ def build_parser() -> argparse.ArgumentParser:
         help="a patch file, '-' for stdin, or 'current' (default): "
         "the latest session's response",
     )
-    p.add_argument("--session", metavar="ID", help="apply that session's latest response")
+    p.add_argument(
+        "--session", metavar="ID", help="apply that session's latest response"
+    )
 
     s = p.add_argument_group("safety")
-    s.add_argument("--dry-run", action="store_true",
-                   help="report what would be applied and touch nothing")
-    s.add_argument("--dirty-ok", action="store_true",
-                   help="apply even though the worktree has uncommitted changes")
-    s.add_argument("--allow-delete", action="store_true",
-                   help="permit patches that delete files")
-    s.add_argument("--force", action="store_true",
-                   help="overwrite even when the shrink/hallucination guard fires")
-    s.add_argument("--any-file", action="store_true",
-                   help="do not restrict edits to the session's editable set")
+    s.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="report what would be applied and touch nothing",
+    )
+    s.add_argument(
+        "--dirty-ok",
+        action="store_true",
+        help="apply even though the worktree has uncommitted changes",
+    )
+    s.add_argument(
+        "--allow-delete", action="store_true", help="permit patches that delete files"
+    )
+    s.add_argument(
+        "--force",
+        action="store_true",
+        help="overwrite even when the shrink/hallucination guard fires",
+    )
+    s.add_argument(
+        "--any-file",
+        action="store_true",
+        help="do not restrict edits to the session's editable set",
+    )
 
     v = p.add_argument_group("verification")
-    v.add_argument("--verify", metavar="CMD",
-                   help="run this after applying; exit 7 if it fails")
-    v.add_argument("--revert-on-fail", action="store_true",
-                   help="restore the files we touched when --verify fails")
-    v.add_argument("--verify-timeout", type=float, default=1800.0, metavar="SECONDS",
-                   help="cap the verify command (default: 1800)")
+    v.add_argument(
+        "--verify", metavar="CMD", help="run this after applying; exit 7 if it fails"
+    )
+    v.add_argument(
+        "--revert-on-fail",
+        action="store_true",
+        help="restore the files we touched when --verify fails",
+    )
+    v.add_argument(
+        "--verify-timeout",
+        type=float,
+        default=1800.0,
+        metavar="SECONDS",
+        help="cap the verify command (default: 1800)",
+    )
 
-    p.add_argument("--json", action="store_true",
-                   help="stdout becomes a single JSON object (spec §8)")
+    p.add_argument(
+        "--json",
+        action="store_true",
+        help="stdout becomes a single JSON object (spec §8)",
+    )
     return p
 
 
@@ -392,7 +430,9 @@ def _apply(args: argparse.Namespace) -> int:
     was_dirty = dirty_files(root)
     targets = {normalise_path(p["file_path"]) for p in patches}
     blocking = sorted(p for p in (was_dirty or ()) if normalise_path(p) in targets)
-    bystanders = sorted(p for p in (was_dirty or ()) if normalise_path(p) not in targets)
+    bystanders = sorted(
+        p for p in (was_dirty or ()) if normalise_path(p) not in targets
+    )
     if was_dirty is None:
         narrate("kopipasta: not a git repository — there is no undo for this.")
     elif blocking and not (args.dirty_ok or args.dry_run):
@@ -421,7 +461,8 @@ def _apply(args: argparse.Namespace) -> int:
             # make "add a new module" impossible; the guard exists to stop an
             # -r file being edited, and that file exists by definition.
             zone = zone | {
-                p["file_path"] for p in patches
+                p["file_path"]
+                for p in patches
                 if not os.path.exists(os.path.join(root, p["file_path"]))
             }
 
@@ -490,8 +531,7 @@ def _apply(args: argparse.Namespace) -> int:
             EXIT_PATCH_PARTIAL,
             "the patch applied only in part; the worktree is dirty.",
             detail=_explain(result),
-            hint="git diff        # review what landed\n"
-            "git checkout .  # put it back",
+            hint="git diff        # review what landed\ngit checkout .  # put it back",
             **payload,
         )
 

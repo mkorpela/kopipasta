@@ -96,7 +96,9 @@ def server():
                     200,
                     {
                         "model": "claude-opus-5",
-                        "stop_reason": "max_tokens" if state.truncate_next else "end_turn",
+                        "stop_reason": "max_tokens"
+                        if state.truncate_next
+                        else "end_turn",
                         "content": content,
                         # Real numbers from a live cold cached call: a ~20k
                         # prefix reports input_tokens=19.
@@ -136,26 +138,38 @@ def server():
                 if state.status:
                     code, message = state.status
                     state.status = None
-                    return self._send(code, {"error": {"code": code, "message": message}})
+                    return self._send(
+                        code, {"error": {"code": code, "message": message}}
+                    )
                 if state.expire_next and body.get("cachedContent"):
                     state.expire_next = False
                     # The live API answers 403, not 404, and shares that code
                     # with genuine permission errors.
                     return self._send(
-                        403, {"error": {"message": "CachedContent not found (or permission denied)"}}
+                        403,
+                        {
+                            "error": {
+                                "message": "CachedContent not found (or permission denied)"
+                            }
+                        },
                     )
                 finish = "MAX_TOKENS" if state.truncate_next else "STOP"
                 return self._send(
                     200,
                     {
                         "candidates": [
-                            {"finishReason": finish, "content": {"parts": [{"text": ANSWER}]}}
+                            {
+                                "finishReason": finish,
+                                "content": {"parts": [{"text": ANSWER}]},
+                            }
                         ],
                         "usageMetadata": {
                             "promptTokenCount": 16_293,
                             "candidatesTokenCount": 111,
                             "thoughtsTokenCount": 222,
-                            "cachedContentTokenCount": CACHE_TOKENS if body.get("cachedContent") else 0,
+                            "cachedContentTokenCount": CACHE_TOKENS
+                            if body.get("cachedContent")
+                            else 0,
                         },
                     },
                 )
@@ -167,7 +181,9 @@ def server():
                         "model": "gpt-5",
                         "choices": [
                             {
-                                "finish_reason": "length" if state.truncate_next else "stop",
+                                "finish_reason": "length"
+                                if state.truncate_next
+                                else "stop",
                                 "message": {"content": ANSWER},
                             }
                         ],
@@ -273,7 +289,9 @@ def test_anthropic_truncation_is_a_failure_not_a_short_answer(server):
 def gem(server, **kw):
     # base_url replaces the whole base, version path included — the same trap
     # as pointing a compat client at a URL missing its trailing segment.
-    return be.build(cfg("gemini", "gemini-3.7-flash"), base_url=f"{server.url}/v1beta", **kw)
+    return be.build(
+        cfg("gemini", "gemini-3.7-flash"), base_url=f"{server.url}/v1beta", **kw
+    )
 
 
 def test_gemini_does_not_create_a_cache_unless_asked(server):
@@ -415,16 +433,24 @@ def test_an_adopted_handle_says_it_was_adopted(server):
     created.hand_over()
 
     inherited = gem(server)
-    inherited.adopt(name=f"{CACHE_NAME}-1", digest=be.GeminiBackend.digest(PREFIX),
-                    expires_in_s=300, tokens=CACHE_TOKENS)
+    inherited.adopt(
+        name=f"{CACHE_NAME}-1",
+        digest=be.GeminiBackend.digest(PREFIX),
+        expires_in_s=300,
+        tokens=CACHE_TOKENS,
+    )
     inherited.complete(PREFIX, SUFFIX)
     assert inherited.handle()["adopted"] is True
 
 
 def test_gemini_adopts_a_handle_from_an_earlier_process(server):
     b = gem(server)
-    b.adopt(name=f"{CACHE_NAME}-adopted", digest=be.GeminiBackend.digest(PREFIX),
-            expires_in_s=300, tokens=CACHE_TOKENS)
+    b.adopt(
+        name=f"{CACHE_NAME}-adopted",
+        digest=be.GeminiBackend.digest(PREFIX),
+        expires_in_s=300,
+        tokens=CACHE_TOKENS,
+    )
     b.complete(PREFIX, SUFFIX)
     assert server.created == []  # reused, not recreated
     assert server.seen["gemini"][0]["cachedContent"] == f"{CACHE_NAME}-adopted"
@@ -434,8 +460,12 @@ def test_gemini_survives_a_cache_that_expired_under_it(server):
     """A short TTL trades a cost risk for an availability risk. The retry is
     keyed on the message, not the 403, which is shared with auth failures."""
     b = gem(server)
-    b.adopt(name=f"{CACHE_NAME}-stale", digest=be.GeminiBackend.digest(PREFIX),
-            expires_in_s=300, tokens=1)
+    b.adopt(
+        name=f"{CACHE_NAME}-stale",
+        digest=be.GeminiBackend.digest(PREFIX),
+        expires_in_s=300,
+        tokens=1,
+    )
     server.expire_next = True
     out = b.complete(PREFIX, SUFFIX)
     assert out.text == ANSWER  # the turn succeeds rather than surfacing a 403

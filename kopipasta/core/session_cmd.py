@@ -44,7 +44,13 @@ from kopipasta.core.session import (
     remove_session,
     session_dir,
 )
-from kopipasta.output import HelpToStdoutParser, emit, emit_json, narrate, stdout_reserved_for_output
+from kopipasta.output import (
+    HelpToStdoutParser,
+    emit,
+    emit_json,
+    narrate,
+    stdout_reserved_for_output,
+)
 
 #: How much of a question or answer belongs in a listing. Pointers, not
 #: payloads (spec §2) — the full text is one `cat` away, and putting it here
@@ -62,8 +68,11 @@ def build_parser() -> argparse.ArgumentParser:
     # — the shape an agent reaches for when it has forgotten the subcommand —
     # is answered with an error object rather than argparse prose about an
     # unrecognized argument.
-    p.add_argument("--json", action="store_true",
-                   help="stdout becomes a single JSON object (spec §8)")
+    p.add_argument(
+        "--json",
+        action="store_true",
+        help="stdout becomes a single JSON object (spec §8)",
+    )
     subs = p.add_subparsers(dest="sub")
 
     def sub(name: str, help: str) -> argparse.ArgumentParser:
@@ -77,15 +86,24 @@ def build_parser() -> argparse.ArgumentParser:
     sub("ls", "list conversations, newest last")
 
     show = sub("show", "one conversation: turns, usage, artifact paths")
-    show.add_argument("id", nargs="?", default="current", metavar="ID",
-                      help="session id, or 'current' (default)")
+    show.add_argument(
+        "id",
+        nargs="?",
+        default="current",
+        metavar="ID",
+        help="session id, or 'current' (default)",
+    )
 
-    diff = sub("diff", "which files have changed on disk since the context was assembled")
+    diff = sub(
+        "diff", "which files have changed on disk since the context was assembled"
+    )
     diff.add_argument("id", nargs="?", default="current", metavar="ID")
 
     rm = sub("rm", "delete a conversation, handing back what it rents")
     rm.add_argument("id", nargs="?", metavar="ID")
-    rm.add_argument("--all", action="store_true", help="every conversation in this project")
+    rm.add_argument(
+        "--all", action="store_true", help="every conversation in this project"
+    )
 
     reap = sub("reap", "hand back provider caches this project is no longer using")
     reap.add_argument("--dry-run", action="store_true", help="report, delete nothing")
@@ -210,7 +228,9 @@ def _summary(root: str, session_id: str, current: Optional[str]) -> Dict[str, An
         "git_head": meta.get("git_head"),
         "totals": totals,
         "cache": _lease_json(root, session_id),
-        "path": os.path.relpath(session_dir(root, session_id), root).replace(os.sep, "/"),
+        "path": os.path.relpath(session_dir(root, session_id), root).replace(
+            os.sep, "/"
+        ),
     }
 
 
@@ -231,7 +251,9 @@ def _ls(root: str, args: argparse.Namespace) -> int:
         narrate(f"kopipasta: no sessions in {STATE_DIR}/sessions/.")
         return EXIT_OK
 
-    rows = [f"{'':1} {'ID':<18} {'TURNS':>5}  {'UPDATED':<19} {'IN':>9} {'CACHED':>9}  BACKEND"]
+    rows = [
+        f"{'':1} {'ID':<18} {'TURNS':>5}  {'UPDATED':<19} {'IN':>9} {'CACHED':>9}  BACKEND"
+    ]
     for s in sessions:
         totals = s["totals"]
         rows.append(
@@ -279,8 +301,12 @@ def _show(root: str, args: argparse.Namespace) -> int:
         role = str(rec.get("role") or "?")
         roles[role] = roles.get(role, 0) + 1
 
-    payload = {**summary, "ok": True, "context": {"turn": turn_no, "files": len(files), "roles": roles},
-               "turns": turns}
+    payload = {
+        **summary,
+        "ok": True,
+        "context": {"turn": turn_no, "files": len(files), "roles": roles},
+        "turns": turns,
+    }
     if args.json:
         emit_json(payload)
         return EXIT_OK
@@ -340,7 +366,9 @@ def _diff(root: str, args: argparse.Namespace) -> int:
             stale.append({"path": rel, "state": "gone", "role": rec.get("role", "?")})
             continue
         if content_hash(path) != rec.get("hash"):
-            stale.append({"path": rel, "state": "changed", "role": rec.get("role", "?")})
+            stale.append(
+                {"path": rel, "state": "changed", "role": rec.get("role", "?")}
+            )
         else:
             fresh += 1
 
@@ -358,16 +386,16 @@ def _diff(root: str, args: argparse.Namespace) -> int:
 
     if not files:
         emit("")
-        narrate(f"kopipasta: session {session_id} has no recorded selection to compare.")
+        narrate(
+            f"kopipasta: session {session_id} has no recorded selection to compare."
+        )
         return EXIT_OK
     if not stale:
-        emit(f"{session_id}: all {fresh} recorded file(s) are unchanged since turn {turn_no}.")
-        return EXIT_OK
-    emit(
-        "\n".join(
-            [f"{s['state']:<8} {s['path']}  ({s['role']})" for s in stale]
+        emit(
+            f"{session_id}: all {fresh} recorded file(s) are unchanged since turn {turn_no}."
         )
-    )
+        return EXIT_OK
+    emit("\n".join([f"{s['state']:<8} {s['path']}  ({s['role']})" for s in stale]))
     narrate(
         f"kopipasta: {len(stale)} of {len(files)} file(s) have moved since turn {turn_no}. "
         "Answers from this session are about the older copy."
@@ -405,8 +433,11 @@ def _rm(root: str, args: argparse.Namespace) -> int:
         lease = read_lease(root, session_id)
         if lease and not lease["expired"] and _release(lease):
             released.append(
-                {"session": session_id, "provider": lease.get("provider"),
-                 "tokens": lease.get("tokens")}
+                {
+                    "session": session_id,
+                    "provider": lease.get("provider"),
+                    "tokens": lease.get("tokens"),
+                }
             )
         if remove_session(root, session_id):
             removed.append(session_id)
@@ -487,8 +518,10 @@ def _reap(root: str, args: argparse.Namespace) -> int:
         "reaped": reaped,
         "would_reap": len(candidates),
         "held_by_sessions": [
-            {"session": leases[str(it["name"])]["session"],
-             "expires_in_s": leases[str(it["name"])]["expires_in_s"]}
+            {
+                "session": leases[str(it["name"])]["session"],
+                "expires_in_s": leases[str(it["name"])]["expires_in_s"],
+            }
             for it in held
         ],
         "other_projects": len(items) - len(mine),

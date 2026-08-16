@@ -77,7 +77,9 @@ class Completion:
 # --------------------------------------------------------------------------
 # HTTP, and turning a provider's refusal into the right kind of failure
 # --------------------------------------------------------------------------
-def _classify(provider: str, model: str, status: int, body: str, source: str) -> Exception:
+def _classify(
+    provider: str, model: str, status: int, body: str, source: str
+) -> Exception:
     """Map an HTTP failure onto the taxonomy — spec §9.
 
     The provider's own words are always carried through verbatim: paraphrasing
@@ -241,9 +243,13 @@ class ClaudeCliBackend:
     its own ~34k-token system prompt together under cache creation.
     """
 
-    TOOLS_OFF = "Edit,Write,Read,Bash,Glob,Grep,Task,WebFetch,WebSearch,NotebookEdit,TodoWrite"
+    TOOLS_OFF = (
+        "Edit,Write,Read,Bash,Glob,Grep,Task,WebFetch,WebSearch,NotebookEdit,TodoWrite"
+    )
 
-    def __init__(self, model: str = "", *, timeout: float = 900, binary: str = "claude", **_: Any):
+    def __init__(
+        self, model: str = "", *, timeout: float = 900, binary: str = "claude", **_: Any
+    ):
         self.provider = "claude-cli"
         self.model = "" if model in ("", "-") else model
         self.timeout = timeout
@@ -252,7 +258,14 @@ class ClaudeCliBackend:
     def complete(
         self, prefix: str, suffix: str, *, schema: Optional[dict] = None, **_: Any
     ) -> Completion:
-        cmd = [self.binary, "-p", "--output-format", "json", "--disallowedTools", self.TOOLS_OFF]
+        cmd = [
+            self.binary,
+            "-p",
+            "--output-format",
+            "json",
+            "--disallowedTools",
+            self.TOOLS_OFF,
+        ]
         if self.model:
             cmd += ["--model", self.model]
         if schema:
@@ -338,7 +351,9 @@ class AnthropicBackend:
         self.provider = "anthropic"
         self.model = model
         self.base = (
-            base_url or os.environ.get("ANTHROPIC_BASE_URL") or "https://api.anthropic.com"
+            base_url
+            or os.environ.get("ANTHROPIC_BASE_URL")
+            or "https://api.anthropic.com"
         ).rstrip("/")
         self.key = os.environ.get("ANTHROPIC_API_KEY", "")
         self.timeout = timeout
@@ -362,7 +377,11 @@ class AnthropicBackend:
                     "content": [
                         # Everything up to here is the repo payload, cached and
                         # reused verbatim on the next turn of this session.
-                        {"type": "text", "text": prefix, "cache_control": {"type": "ephemeral"}},
+                        {
+                            "type": "text",
+                            "text": prefix,
+                            "cache_control": {"type": "ephemeral"},
+                        },
                         {"type": "text", "text": suffix},
                     ],
                 }
@@ -372,7 +391,11 @@ class AnthropicBackend:
             # Anthropic has no response_format; a single forced tool is the
             # equivalent and is enforced server-side the same way.
             body["tools"] = [
-                {"name": "emit", "description": "Return the result.", "input_schema": schema}
+                {
+                    "name": "emit",
+                    "description": "Return the result.",
+                    "input_schema": schema,
+                }
             ]
             body["tool_choice"] = {"type": "tool", "name": "emit"}
 
@@ -398,7 +421,9 @@ class AnthropicBackend:
                     break
         else:
             text = "".join(
-                b.get("text", "") for b in d.get("content", []) if b.get("type") == "text"
+                b.get("text", "")
+                for b in d.get("content", [])
+                if b.get("type") == "text"
             )
 
         stop = d.get("stop_reason")
@@ -498,8 +523,12 @@ class GeminiBackend:
         # in repo A cannot tell repo B's live lease from its own orphan — and
         # deletes it. See `reap_orphans`.
         self.label = _cache_label(label)
-        self.base = (base_url or os.environ.get("GEMINI_BASE_URL") or self.BASE).rstrip("/")
-        self.key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY", "")
+        self.base = (base_url or os.environ.get("GEMINI_BASE_URL") or self.BASE).rstrip(
+            "/"
+        )
+        self.key = os.environ.get("GEMINI_API_KEY") or os.environ.get(
+            "GOOGLE_API_KEY", ""
+        )
         self.timeout = timeout
         self.source = source
         # Caching is off unless asked for: a one-shot question that will never
@@ -536,7 +565,9 @@ class GeminiBackend:
         label = f"{self.label}-" if self.label else ""
         return f"{CACHE_PREFIX}{label}{digest[:16]}"
 
-    def adopt(self, *, name: str, digest: str, expires_in_s: float, tokens: int = 0) -> None:
+    def adopt(
+        self, *, name: str, digest: str, expires_in_s: float, tokens: int = 0
+    ) -> None:
         """Take over a cache created by an earlier process — spec §7.
 
         This is what makes turn 2 of a session cheap when turn 2 is a separate
@@ -753,7 +784,9 @@ class GeminiBackend:
             }
         else:
             body = {
-                "contents": [{"role": "user", "parts": [{"text": prefix}, {"text": suffix}]}],
+                "contents": [
+                    {"role": "user", "parts": [{"text": prefix}, {"text": suffix}]}
+                ],
                 "generationConfig": gen,
             }
 
@@ -813,7 +846,9 @@ class GeminiBackend:
             input_tokens=u.get("promptTokenCount", 0),
             # Reasoning tokens are billed as output and spend the same budget,
             # so reporting only candidatesTokenCount understates the turn.
-            output_tokens=(u.get("candidatesTokenCount", 0) + u.get("thoughtsTokenCount", 0)),
+            output_tokens=(
+                u.get("candidatesTokenCount", 0) + u.get("thoughtsTokenCount", 0)
+            ),
             cached_tokens=u.get("cachedContentTokenCount", 0),
             cache_creation_tokens=created,
             model=self.model,
@@ -844,7 +879,9 @@ def release_lease(record: Dict[str, Any], *, base_url: Optional[str] = None) -> 
 # --------------------------------------------------------------------------
 # openai: — the widest-reach shape. Gemini also speaks it (see GEMINI_COMPAT).
 # --------------------------------------------------------------------------
-GEMINI_COMPAT = "https://generativelanguage.googleapis.com/v1beta/openai/"  # trailing / matters
+GEMINI_COMPAT = (
+    "https://generativelanguage.googleapis.com/v1beta/openai/"  # trailing / matters
+)
 
 
 class OpenAICompatBackend:
@@ -860,8 +897,14 @@ class OpenAICompatBackend:
     ) -> None:
         self.provider = provider
         self.model = model
-        default = GEMINI_COMPAT if provider == "gemini-compat" else "https://api.openai.com/v1"
-        self.base = (base_url or os.environ.get("OPENAI_BASE_URL") or default).rstrip("/")
+        default = (
+            GEMINI_COMPAT
+            if provider == "gemini-compat"
+            else "https://api.openai.com/v1"
+        )
+        self.base = (base_url or os.environ.get("OPENAI_BASE_URL") or default).rstrip(
+            "/"
+        )
         self.key = os.environ.get("OPENAI_API_KEY", "")
         if provider == "gemini-compat":
             self.key = os.environ.get("GEMINI_API_KEY") or self.key
@@ -886,7 +929,11 @@ class OpenAICompatBackend:
         if schema:
             body["response_format"] = {
                 "type": "json_schema",
-                "json_schema": {"name": "oracle_result", "strict": True, "schema": schema},
+                "json_schema": {
+                    "name": "oracle_result",
+                    "strict": True,
+                    "schema": schema,
+                },
             }
 
         d = _post(
@@ -896,7 +943,10 @@ class OpenAICompatBackend:
             provider=self.provider,
             model=self.model,
             source=self.source,
-            headers={"authorization": f"Bearer {self.key}", "content-type": "application/json"},
+            headers={
+                "authorization": f"Bearer {self.key}",
+                "content-type": "application/json",
+            },
         )
 
         choices = d.get("choices") or []
@@ -909,7 +959,9 @@ class OpenAICompatBackend:
             text=text,
             input_tokens=u.get("prompt_tokens", 0),
             output_tokens=u.get("completion_tokens", 0),
-            cached_tokens=(u.get("prompt_tokens_details") or {}).get("cached_tokens", 0),
+            cached_tokens=(u.get("prompt_tokens_details") or {}).get(
+                "cached_tokens", 0
+            ),
             model=d.get("model", self.model),
             raw=d,
         )
@@ -951,7 +1003,7 @@ def build(
         raise UsageError(
             f"the {provider} backend needs a model.",
             detail=f"Resolved from {cfg.sources.get('provider', 'unknown')}.",
-            hint=f"--backend {provider}:<model>, or set model = \"...\" in the config file.",
+            hint=f'--backend {provider}:<model>, or set model = "..." in the config file.',
         )
     if provider == "anthropic":
         return AnthropicBackend(model, **kwargs)

@@ -80,6 +80,7 @@ def test_the_masking_decision_is_announced(headless, capsys):
 
 def test_no_prompt_is_attempted_at_all(headless, monkeypatch):
     """Not just 'does not hang' — it must never reach the blocking read."""
+
     def explode(*a, **k):
         raise AssertionError("input() was called with no human attached")
 
@@ -97,6 +98,7 @@ def test_an_explicit_human_decision_is_still_honoured(with_human, monkeypatch):
 def test_stdin_dying_mid_prompt_falls_back_to_masking(with_human, monkeypatch):
     """isatty() lied, or the terminal went away between check and read. An
     EOFError inside `while True` must not become a spin or a traceback."""
+
     def eof(*a, **k):
         raise EOFError()
 

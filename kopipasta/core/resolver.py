@@ -170,7 +170,9 @@ def walk_all(ignore: Sequence[str], root: str) -> List[str]:
     out: List[str] = []
     patterns = list(ignore)
     for dirpath, dirs, files in os.walk(root):
-        dirs[:] = [d for d in dirs if not is_ignored(os.path.join(dirpath, d), patterns, root)]
+        dirs[:] = [
+            d for d in dirs if not is_ignored(os.path.join(dirpath, d), patterns, root)
+        ]
         for f in files:
             p = os.path.join(dirpath, f)
             if not is_ignored(p, patterns, root) and not is_binary(p):
@@ -232,7 +234,9 @@ def read_path_list(path: str, root: str) -> List[str]:
             detail=str(exc),
             hint="--from-file takes a file of newline-delimited paths.",
         ) from exc
-    return [ln.strip() for ln in lines if ln.strip() and not ln.lstrip().startswith("#")]
+    return [
+        ln.strip() for ln in lines if ln.strip() and not ln.lstrip().startswith("#")
+    ]
 
 
 def _patterns_for(values: Sequence[str], root: str) -> List[str]:
@@ -277,7 +281,9 @@ def resolve(
         # anything, left the oracle reasoning about signatures, and sent
         # nothing at all for a language with no skeletons to extract.
         # `--budget` is the throttle, and demotion is what it pulls.
-        sel.patterns.append(("--all", "", assign(walk_all(ignore, root), REF, bulk=True)))
+        sel.patterns.append(
+            ("--all", "", assign(walk_all(ignore, root), REF, bulk=True))
+        )
 
     if spec.changed or spec.changed_since:
         flag = "--changed-since" if spec.changed_since else "--changed"
@@ -361,6 +367,9 @@ def _fall_back_from_map(sel: Selection) -> None:
 def _candidates(ignore: Sequence[str], root: str) -> List[str]:
     """Real paths, for "did you mean?". Only ever computed on the error path."""
     try:
-        return [os.path.relpath(p, root).replace(os.sep, "/") for p in walk_all(ignore, root)]
+        return [
+            os.path.relpath(p, root).replace(os.sep, "/")
+            for p in walk_all(ignore, root)
+        ]
     except OSError:  # pragma: no cover - a walk that fails is not worth failing over
         return []

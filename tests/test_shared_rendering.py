@@ -12,7 +12,6 @@ byte-identical, so a change to one surface that does not reach the other fails
 here rather than in someone's chat window.
 """
 
-
 import pytest
 
 from kopipasta.core.context import render_context
@@ -26,8 +25,13 @@ def project(tmp_path, monkeypatch):
     # `.git` so find_project_root lands here, and no provider reachable
     # however the developer's shell is set up.
     (tmp_path / ".git").mkdir()
-    for var in ("KOPIPASTA_BACKEND", "GEMINI_API_KEY", "GOOGLE_API_KEY",
-                "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+    for var in (
+        "KOPIPASTA_BACKEND",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+    ):
         monkeypatch.delenv(var, raising=False)
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "calc.py").write_text(
@@ -39,7 +43,9 @@ def project(tmp_path, monkeypatch):
     (tmp_path / "src" / "util.py").write_text(
         "\n".join(f"# line {i}" for i in range(120)) + "\n"
     )
-    (tmp_path / "src" / "tree.py").write_text('def walk(p):\n    """Walk."""\n    return p\n')
+    (tmp_path / "src" / "tree.py").write_text(
+        'def walk(p):\n    """Walk."""\n    return p\n'
+    )
     (tmp_path / "README.md").write_text("# readme\n")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("KOPIPASTA_NONINTERACTIVE", "1")
@@ -62,7 +68,9 @@ def _tui_selection(project):
     manager = SelectionManager()
     manager.set_state(str(project / "src" / "calc.py"), FileState.DELTA)
     manager.set_state(str(project / "src" / "main.py"), FileState.BASE)
-    manager.set_state(str(project / "src" / "util.py"), FileState.DELTA, is_snippet=True)
+    manager.set_state(
+        str(project / "src" / "util.py"), FileState.DELTA, is_snippet=True
+    )
     manager.set_state(str(project / "src" / "tree.py"), FileState.MAP)
     return manager.to_selection(str(project))
 
@@ -246,7 +254,10 @@ def test_web_content_is_still_its_own_section(project):
         files_to_include=[],
         ignore_patterns=[],
         web_contents={
-            "http://example.com": (("http://example.com", False, None, "html"), "<p>hi</p>")
+            "http://example.com": (
+                ("http://example.com", False, None, "html"),
+                "<p>hi</p>",
+            )
         },
         env_vars={},
         search_paths=[str(project)],
@@ -346,13 +357,20 @@ def _ask_payload(project, capsys, *extra_argv, task="Fix the thing."):
 
     code = askmod.run(
         [
-            "--backend", "none",
-            "-e", "src/calc.py",
-            "-r", "src/main.py",
-            "-s", "src/util.py",
-            "-m", "src/tree.py",
-            "--mode", "patch",
-            "-q", task,
+            "--backend",
+            "none",
+            "-e",
+            "src/calc.py",
+            "-r",
+            "src/main.py",
+            "-s",
+            "src/util.py",
+            "-m",
+            "src/tree.py",
+            "--mode",
+            "patch",
+            "-q",
+            task,
             "--json",
             *extra_argv,
         ]

@@ -31,8 +31,13 @@ def project(tmp_path, monkeypatch):
     (tmp_path / ".gitignore").write_text("__pycache__/\n")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("KOPIPASTA_NONINTERACTIVE", "1")
-    for var in ("KOPIPASTA_BACKEND", "GEMINI_API_KEY", "GOOGLE_API_KEY",
-                "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+    for var in (
+        "KOPIPASTA_BACKEND",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+    ):
         monkeypatch.delenv(var, raising=False)
     from kopipasta import file as filemod
 
@@ -200,7 +205,9 @@ def test_rm_deletes_the_session_and_clears_a_dangling_current(project, capsys):
     assert Session.read_current(str(project)) is None
 
 
-def test_rm_hands_the_rented_cache_back_before_deleting_the_record(project, capsys, monkeypatch):
+def test_rm_hands_the_rented_cache_back_before_deleting_the_record(
+    project, capsys, monkeypatch
+):
     """The name lives only in the directory being deleted, so the other order
     leaves a meter running with nothing on disk to say what it is for."""
     ask("-e", "src/calc.py", "--session", "one", "-q", "a")
@@ -215,7 +222,9 @@ def test_rm_hands_the_rented_cache_back_before_deleting_the_record(project, caps
     assert data["released"][0]["tokens"] == 16329
 
 
-def test_rm_does_not_call_the_provider_about_an_expired_lease(project, capsys, monkeypatch):
+def test_rm_does_not_call_the_provider_about_an_expired_lease(
+    project, capsys, monkeypatch
+):
     ask("-e", "src/calc.py", "--session", "one", "-q", "a")
     lease(project, "one", expires_at=0)
     monkeypatch.setattr(
@@ -250,21 +259,33 @@ def test_reap_keeps_what_a_session_is_renting(project, capsys, monkeypatch):
     mine = key(project)
     monkeypatch.setattr(
         "kopipasta.core.backend.GeminiBackend.list_caches",
-        classmethod(lambda cls, base_url=None: [
-            {"name": "cachedContents/one", "displayName": f"kopipasta-{mine}-aaaa"},
-            {"name": "cachedContents/dead", "displayName": f"kopipasta-{mine}-bbbb"},
-            {"name": "cachedContents/other", "displayName": "kopipasta-elsewhere-cccc"},
-        ]),
+        classmethod(
+            lambda cls, base_url=None: [
+                {"name": "cachedContents/one", "displayName": f"kopipasta-{mine}-aaaa"},
+                {
+                    "name": "cachedContents/dead",
+                    "displayName": f"kopipasta-{mine}-bbbb",
+                },
+                {
+                    "name": "cachedContents/other",
+                    "displayName": "kopipasta-elsewhere-cccc",
+                },
+            ]
+        ),
     )
     swept = {}
     monkeypatch.setattr(
         "kopipasta.core.backend.GeminiBackend.reap_orphans",
-        classmethod(lambda cls, base_url=None, *, keep=(), label=None: swept.update(
-            keep=list(keep), label=label) or 1),
+        classmethod(
+            lambda cls, base_url=None, *, keep=(), label=None: (
+                swept.update(keep=list(keep), label=label) or 1
+            )
+        ),
     )
     data = run_json(capsys, "reap")
-    assert data["held_by_sessions"] == [{"session": "one", "expires_in_s": data[
-        "held_by_sessions"][0]["expires_in_s"]}]
+    assert data["held_by_sessions"] == [
+        {"session": "one", "expires_in_s": data["held_by_sessions"][0]["expires_in_s"]}
+    ]
     # The live lease is named in `keep`, and the sweep is scoped to this project.
     assert swept["keep"] == ["cachedContents/one"]
     assert swept["label"]
@@ -290,7 +311,9 @@ def test_no_invocation_of_reap_can_sweep_another_project(project, capsys, monkey
     seen = []
     monkeypatch.setattr(
         "kopipasta.core.backend.GeminiBackend.reap_orphans",
-        classmethod(lambda cls, base_url=None, *, keep=(), label=None: seen.append(label) or 0),
+        classmethod(
+            lambda cls, base_url=None, *, keep=(), label=None: seen.append(label) or 0
+        ),
     )
     run_json(capsys, "reap")
     assert seen == [key(project)], "the sweep must always carry this project's label"
@@ -312,9 +335,14 @@ def _reap_help() -> str:
 def test_reap_dry_run_deletes_nothing(project, capsys, monkeypatch):
     monkeypatch.setattr(
         "kopipasta.core.backend.GeminiBackend.list_caches",
-        classmethod(lambda cls, base_url=None: [
-            {"name": "cachedContents/dead", "displayName": f"kopipasta-{key(project)}-b"}
-        ]),
+        classmethod(
+            lambda cls, base_url=None: [
+                {
+                    "name": "cachedContents/dead",
+                    "displayName": f"kopipasta-{key(project)}-b",
+                }
+            ]
+        ),
     )
     monkeypatch.setattr(
         "kopipasta.core.backend.GeminiBackend.reap_orphans",

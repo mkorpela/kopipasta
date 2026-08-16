@@ -31,8 +31,10 @@ single sample.
 | One-shot patch (use case B) | **live-verified** | 4 hunks, +32/−17, 119 tests green |
 | `anthropic:` backend | **live-verified** | real API, twice (cold + post-fix) — §2.7 |
 | Raw-API cache behaviour | **ANSWERED: no lag** | §2.7 |
-| `gemini:` backend | **live-verified** | real API; explicit caching works, implicit is a coin flip — §2.9 |
-| Gemini cache lifecycle (TTL/close/reap) | **live-verified** | 99.9% reuse, 0 orphan resources after |
+| `gemini:` backend | **live-verified** | real API; explicit caching works, implicit is a coin flip — §2.9, §2.15 |
+| Gemini cache lifecycle (TTL/close/reap) | **live-verified** | 99.0% reuse at 70k tokens on Windows, 0 orphan resources after — §2.15 |
+| End-to-end Patch + Apply loop | **live-verified** | `ask --mode patch` -> `apply current --dry-run` -> `apply current --verify` (32 tests green) — §2.15 |
+| Two-pass budget demotion | **live-verified** | 401k unbudgeted -> 83 demoted (pass 1) + 6 demoted (pass 2) -> 29,539 under 30k budget — §2.15 |
 | `openai:` backend | **wire format only** | mock; never saw a real response |
 | Gemini 1M context for a real repo | **CONFIRMED** | `inputTokenLimit: 1048576` on `gemini-3.7-flash` |
 | Hosted sandbox (`claude-cli:` only backend) | **live-verified** | floor 34,382 → **7,070** denying all tools; `--json-schema` 2×; sonnet 1M ctx — §2.14 |
@@ -624,6 +626,53 @@ startup, not generation.
 
 Do not read a model price ranking out of single samples here: cache state dominates. A warm
 sonnet call measured $0.0104 while a cold haiku call measured $0.0508.
+
+---
+
+### 2.15 Live Gemini 3.7 Flash end-to-end verification on Windows (70k tokens, 99.0% cache hit, full lifecycle)
+
+Live run on Windows 11 PowerShell against `gemini-3.7-flash` (August 16, 2026):
+
+#### 1. Single-Shot Live Triage
+- Question: *"Which exit codes are reserved for budget violations vs backend errors, and where are they enforced?"*
+- Estimated input: **26,356 tokens** (from 89,611 chars @ 3.4 chars/token).
+- Actual billed input: **23,885 tokens** (estimate was ~10.3% pessimistic — safe headroom).
+- Latency: **4.4s** (1,281 output tokens including reasoning).
+- Outcome: Zero-rent one-shot path held (`cached: 0`, no `cachedContents` created for unnamed one-shot turns). Returned 100% schema-compliant JSON correctly mapping `EXIT_BUDGET=6`, `EXIT_BACKEND=3`, and `EXIT_NO_BACKEND=2`.
+
+#### 2. Multi-Turn 70k-Token Explicit Prefix Caching
+- **Turn 1 (Cold start with `--session live-cache-test`):**
+  - Payload: 260,019 characters (1 edit, 13 ref).
+  - Estimated input: 76,476 tokens.
+  - Actual input billed: **70,270 tokens**.
+  - Cache created: `cachedContents` created with **69,975 tokens** (`cache_creation: 69975`).
+  - Latency: 5.5s.
+- **Turn 2 (Follow-up question with `--session live-cache-test`):**
+  - Payload: 261,557 characters.
+  - Actual input billed: **70,701 tokens**.
+  - Cache read: **69,975 tokens** (**99.0% cache hit** on the 70k prefix).
+  - Only the 726-token question/history suffix was billed as fresh input.
+  - Latency: dropped to **3.6s**.
+
+#### 3. Budget Ladder Two-Pass Convergence
+- Unbudgeted `--all`: 1,003,663 chars -> **401,465 est. tokens** (warned on stderr).
+- Capped `--all --budget 30k`:
+  - **Pass 1 (File size estimate):** Demoted 83 files (saving ~376,000 tokens).
+  - **Pass 2 (Rendered overhead correction):** Detected 6,718 tokens of remaining overhead and demoted 6 map files to `path-only`.
+  - **Final payload:** **29,539 tokens** (cleanly under the 30,000 token limit).
+- Strict budget `--all --budget 30k --strict-budget`:
+  - Exited **6** (`EXIT_BUDGET`) with `"error": "budget_exceeded"`, `"retryable": false`, and listed all 83 files that would have been demoted.
+
+#### 4. Patch Generation, Dry-Run, Apply & Verification Loop
+- **`ask --mode patch`:** Generated a Search/Replace block for `kopipasta/ops.py` (reported `patches: 1`).
+- **`apply current --dry-run --json`:** Resolved pointer, checked editable zone against session record, and matched 1/1 hunks without touching disk.
+- **`apply current --verify "uv run pytest tests/test_apply.py" --revert-on-fail --json`:** Applied patch, ran verification command (32 tests passed in 15.4s), and returned exit 0 with diffstat metadata.
+- **`session diff`:** Successfully compared sha256 content hashes of recorded session files against disk, reporting `changed kopipasta/ops.py (edit)`.
+
+#### 5. Cache Lease Protection & Cleanup
+- **`session reap`:** Inspected live Google `cachedContents`, found `live-cache-test` holding an active lease (267s remaining), and correctly protected it (`handed back 0 cache(s); 1 still leased`).
+- **`session rm live-cache-test --json`:** Successfully called Google API `DELETE` to release the 69,975-token cache resource, purged the session directory, and reported `"released": [{"tokens": 69975}]`.
+- **`session rm live-patch-test --json`:** Released the 10,133-token cache resource and safely cleared the `.kopipasta/current` pointer (`"current_cleared": true`).
 
 ---
 

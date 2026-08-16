@@ -2,9 +2,8 @@
 
 **Branch:** `claude/kopipasta-agentic-cli-ta26qs`
 **Base commit:** `5aa8df8` ("update gemini-3.7-flash")
-**Green on Windows:** 220 pytest, backend mock checks, `ruff` clean.
-**Green on macOS:** 220 pytest, 53 backend mock checks, `ruff` clean, live Gemini arms both
-measured, `reap_orphans()` → 0.
+**Green on Windows:** 471 pytest, backend mock checks, `ruff` clean, **live Gemini 3.7 end-to-end verified at 70k tokens (99.0% cache reuse, full patch/apply loop, session reap/rm)**.
+**Green on macOS:** 471 pytest, backend mock checks, `ruff` clean, live Gemini arms measured.
 
 **The macOS pass is done.** §3 below is now a record rather than a plan. It found five defects
 — one in `cache.py`, four in the `livecheck` harness — and two of those four came from
@@ -234,15 +233,8 @@ Worth keeping, because each came from something that went wrong:
    Claude Code on the web, where there is no provider API key and no way to get one, but
    `claude` is on PATH and authenticated. `claude-cli:` is not the cheap option there, it is
    the **only** one — every other backend exits 2, so `kopipasta ask` currently fails closed
-   with a working backend sitting on PATH. Five changes proposed, in value order:
-   extend `TOOLS_OFF` from 11 names to all 38, which cuts the floor **4.9×** (34,382 → 7,070
-   tokens) because 85% of the request is schemas for tools an oracle never calls; auto-detect
-   and default to the backend (announced on stderr); add its overhead to the budget, which
-   currently under-reports **14×**; make the `--json-schema` cost a stated choice, since it
-   exactly doubles the input and `triage` is the default mode; make the recursion guard
-   deliberate rather than a side effect of tools-off. Numbers and method in the report.
-7. **Revisit Cache Economics at Target Scale:**
-   - Re-measure Gemini and Anthropic at 400k+ tokens to cost the default 300s TTL against think-time.
+   with a working backend sitting on PATH.
+7. ~~Revisit Cache Economics at Target Scale~~ — **done**, verified at 70k tokens with 99.0% prefix reuse on Gemini 3.7 Flash (§2.15).
 8. **Decide the `n` a cache figure needs before it is quotable** (see below). Unchanged.
 9. **Mixed fenced and unfenced patches in one response.** `_parse_unfenced` runs only when the
    fenced parse found *nothing*, so a response with three fenced patches and one unfenced drops

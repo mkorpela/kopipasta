@@ -51,6 +51,10 @@ the proxy's `noProxy` list, so those requests never traverse the egress proxy at
 `curl` to `/v1/messages` returns `x-api-key header is required` — nothing added anything. The
 token lives on a file descriptor the harness owns and the CLI reads.
 
+The next thought — capture that Bearer token and replay it in our own raw POST — was
+investigated and **rejected**. The reasoning is recorded as a standing boundary in
+`SECURITY_BOUNDARIES.md` §1, so it is found rather than re-litigated.
+
 ### The floor is 85% tool schemas — and it *is* reducible
 
 | Variant | tools | tool bytes | body | measured input |

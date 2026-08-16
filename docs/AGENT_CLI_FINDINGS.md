@@ -613,6 +613,8 @@ nothing.
 The tool list is environment-specific — `Workflow`, `Artifact`, `DesignSync` are hosted-surface
 tools a laptop CLI never ships — so ~34k is a `remote_mobile` number, not a universal one.
 
+The capture that produced these numbers also surfaced the live OAuth Bearer token. Replaying it to skip the floor was investigated and rejected — `SECURITY_BOUNDARIES.md` §1.
+
 `triage` is the default mode and the one that wants the schema, so **the default path is the
 expensive one** and nothing currently says so. Against that, `sonnet` and `opus` both report a
 **1,000,000-token context window**, so the frontload case works with no API key at all.

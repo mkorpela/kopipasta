@@ -358,3 +358,4 @@ Python 3.10+.
 - [`docs/HANDOFF.md`](docs/HANDOFF.md) — current state and how to verify it.
 - [`docs/SANDBOX_BACKEND.md`](docs/SANDBOX_BACKEND.md) — running the oracle inside a
   hosted agent, where `claude -p` is the only model access there is.
+- [`docs/SECURITY_BOUNDARIES.md`](docs/SECURITY_BOUNDARIES.md) — capabilities the project declined, and why (e.g. no credential replay).

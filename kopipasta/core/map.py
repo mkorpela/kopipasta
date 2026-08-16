@@ -55,7 +55,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_selection_args(p)
     b = p.add_argument_group("budget")
     b.add_argument("--budget", metavar="SIZE",
-                   help="target size in tokens (400k), or characters with a c suffix")
+                   help="cap the output, e.g. 400k tokens or 40kc characters.\n"
+                        "Unset by default: every selected file is mapped.")
     b.add_argument("--strict-budget", action="store_true",
                    help="exit 6 instead of dropping files to path-only")
     p.add_argument("--json", action="store_true",

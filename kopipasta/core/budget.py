@@ -152,12 +152,19 @@ def selection_chars(selection: Selection) -> int:
     return sum(render_chars(e) for e in selection.entries.values())
 
 
-#: The ladder's stages, as (role, bulk-or-None) filters, in the order of
-#: spec §5: `-e` never; then `-r`; then everything `--all` dragged in; then
-#: explicitly named skeletons, because someone who typed a path meant it.
+#: The ladder's stages, as (role, bulk) filters, in the order of spec §5:
+#: `-e` is never demoted, and everything else falls bulk-before-explicit at
+#: each rung — someone who typed a path meant that path.
+#:
+#: The split by bulk used to apply only to skeletons, because `--all` produced
+#: skeletons and nothing else reached the reference role in bulk. Now that
+#: `--all` sends whole files, an unsplit `(REF, None)` stage would demote a
+#: file the caller named alongside 800 nobody chose, ordered only by size.
 _STAGES: Tuple[Tuple[str, Optional[bool]], ...] = (
-    (REF, None),
-    (SNIPPET, None),
+    (REF, True),
+    (SNIPPET, True),
+    (REF, False),
+    (SNIPPET, False),
     (MAP, True),
     (MAP, False),
 )
@@ -189,7 +196,9 @@ def demote_to_fit(
 
     Mutates `selection`: full-text roles become MAP, and MAP entries drop out
     of the selection entirely (they remain in the structure tree, which is
-    what "path-only" means).
+    what "path-only" means). A file with no skeleton to fall back to skips the
+    middle rung, because for that file MAP and path-only render identically
+    and only one of the two names is true.
 
     Best-effort by construction — it works from file sizes, not from the
     rendered payload, so the project structure blob and the mode instructions
@@ -210,15 +219,21 @@ def demote_to_fit(
             if total <= budget_chars:
                 return collapse(steps)
             before = render_chars(entry)
-            if entry.role in (REF, SNIPPET):
-                after = render_chars(entry, MAP)
+            after = render_chars(entry, MAP) if entry.role in (REF, SNIPPET) else 0
+            if after:
                 steps.append(
                     Demotion(entry.rel, entry.role, MAP, estimate_tokens(before - after, cpt))
                 )
                 entry.role = MAP
                 total -= before - after
             else:
-                steps.append(Demotion(entry.rel, MAP, PATH_ONLY, estimate_tokens(before, cpt)))
+                # Either it is already a skeleton, or it has none to fall back
+                # to — a `.md`, a `.sql`, a file that will not parse. Both land
+                # on the same rung, and calling the second one "-> map" would
+                # report a skeleton for a file that renders to nothing at all.
+                steps.append(
+                    Demotion(entry.rel, entry.role, PATH_ONLY, estimate_tokens(before, cpt))
+                )
                 selection.entries.pop(entry.path, None)
                 total -= before
     return collapse(steps)

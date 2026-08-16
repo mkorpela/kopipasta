@@ -1,7 +1,10 @@
 from enum import Enum, auto
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 import os
-from kopipasta.prompt import get_file_snippet, get_language_for_file
+from kopipasta.core.render import get_file_snippet, get_language_for_file
+
+if TYPE_CHECKING:  # pragma: no cover - import cycle: core.context imports prompt
+    from kopipasta.core.resolver import Selection
 
 
 class FileState(Enum):
@@ -143,6 +146,46 @@ class SelectionManager:
     def get_map_files(self) -> List[str]:
         """Returns paths of files currently in MAP state."""
         return [p for p, (s, _, _) in self._files.items() if s == FileState.MAP]
+
+    def to_selection(self, root: str) -> "Selection":
+        """This selection as the core's role model, for the shared renderer.
+
+        The three-state engine and the CLI's flags are the same idea in two
+        vocabularies, and they line up one to one:
+
+            DELTA  ->  edit      active focus; changes belong here
+            BASE   ->  ref       synced context; read for dependencies
+            MAP    ->  map       skeleton only
+            snippet -> snippet   only the first lines were sent, whatever
+                                 state selected it
+
+        That correspondence was already load-bearing — the Ralph loop hands
+        the agent Delta as editable and Base as read-only — but the prompt
+        flattened it into one undifferentiated list, so the model pasting
+        window never saw the boundary the tool enforces everywhere else.
+        """
+        from kopipasta.core.resolver import EDIT, MAP, REF, SNIPPET, Entry, Selection
+
+        state_role = {FileState.DELTA: EDIT, FileState.BASE: REF, FileState.MAP: MAP}
+        selection = Selection(root=root)
+        for path, (state, is_snippet, chunks) in self._files.items():
+            role = state_role.get(state)
+            if role is None:
+                continue
+            # A partial file belongs in the zone that says so. `-s` is its own
+            # role in the CLI for the same reason: "you have the first 50
+            # lines of this" is the caveat that has to travel with it, and it
+            # outranks which state put it there.
+            if is_snippet and role != MAP:
+                role = SNIPPET
+            selection.entries[path] = Entry(
+                path=path,
+                rel=os.path.relpath(path, root).replace(os.sep, "/"),
+                role=role,
+                bulk=False,
+                chunks=chunks,
+            )
+        return selection
 
     def clear_base(self):
         """Removes all files in BASE state, keeping DELTA."""

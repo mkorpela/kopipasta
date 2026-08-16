@@ -35,7 +35,13 @@ import time
 from typing import Any, Dict, List, Optional, Sequence
 
 from kopipasta.cache import find_project_root, get_project_key
-from kopipasta.config import read_env_file, read_gitignore, read_project_context
+from kopipasta.config import (
+    read_env_file,
+    read_gitignore,
+    read_global_profile,
+    read_project_context,
+    read_session_state,
+)
 from kopipasta.core import budget as budgetmod
 from kopipasta.core import modes as modesmod
 from kopipasta.core.backend import GeminiBackend, build
@@ -59,10 +65,15 @@ from kopipasta.core.errors import (
     SchemaInvalid,
     UsageError,
 )
+from kopipasta.core.resolver import EDIT, MAP, REF, SNIPPET
 from kopipasta.core.resolver import ROLE_ORDER as ALL_ROLES
-from kopipasta.core.resolver import SelectionSpec, resolve, walk_all
+from kopipasta.core.resolver import SelectionSpec, has_skeleton, resolve, walk_all
 from kopipasta.core.session import Session
-from kopipasta.interaction import NoHumanAttached, require_human
+from kopipasta.interaction import (
+    NoHumanAttached,
+    get_task_from_user_interactive,
+    require_human,
+)
 from kopipasta.output import (
     HelpToStdoutParser,
     emit,
@@ -75,6 +86,10 @@ from kopipasta.patcher import find_paths_in_text, parse_llm_output
 #: How many demotions to name in the JSON. The full list is always in the
 #: session's selection.json — this is a summary, not the record.
 DEMOTED_IN_JSON = 20
+
+#: Payload size, in tokens, above which an unbudgeted run says so out loud.
+#: Roughly where a frontloaded repository stops being free to be wrong about.
+LOUD_TOKENS = 100_000
 
 
 # --------------------------------------------------------------------------
@@ -94,7 +109,7 @@ def add_selection_args(parser: argparse.ArgumentParser) -> None:
     g.add_argument("-x", "--exclude", action="append", metavar="PATTERN",
                    help="drop these; applied last, wins over everything")
     g.add_argument("--all", action="store_true",
-                   help="every non-ignored file, as a skeleton (subject to --budget)")
+                   help="every non-ignored file, in full and read-only (use --budget to cap)")
     g.add_argument("--changed", action="store_true",
                    help="git working-tree changes, including untracked, as editable")
     g.add_argument("--changed-since", metavar="REF",
@@ -125,10 +140,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help=f"{', '.join(modesmod.MODE_NAMES)} (default: {modesmod.DEFAULT_MODE})")
     q.add_argument("--no-project-context", action="store_true",
                    help="do not prepend AI_CONTEXT.md")
+    q.add_argument("--no-memory", action="store_true",
+                   help="prepend none of the memory layers: the global profile, "
+                        "AI_CONTEXT.md and AI_SESSION.md")
 
     b = p.add_argument_group("budget and backend")
     b.add_argument("--budget", metavar="SIZE",
-                   help="target payload size in tokens (400k), or characters with a c suffix")
+                   help="cap the payload, e.g. 400k tokens or 40kc characters.\n"
+                        "Unset by default: the whole selection is sent.")
     b.add_argument("--strict-budget", action="store_true",
                    help="exit 6 instead of demoting files down the ladder")
     b.add_argument("--backend", metavar="SPEC",
@@ -342,11 +361,7 @@ def _ask(args: argparse.Namespace) -> int:
         # No safe default exists for "what is the task", so this refuses
         # rather than guesses — naming the flag that avoids the question.
         require_human("A question", "Pass -q/--question, or -q @file.")
-        from rich.console import Console
-
-        from kopipasta.prompt import get_task_from_user_interactive
-
-        question = get_task_from_user_interactive(Console(stderr=True))
+        question = get_task_from_user_interactive()
         if not question.strip():
             raise UsageError(
                 "no question was given.",
@@ -387,6 +402,14 @@ def _ask(args: argparse.Namespace) -> int:
             raise BudgetExceeded(wanted_tokens, budget_tokens or 0, [d.path for d in demotions])
         if demotions:
             narrate(budgetmod.summarise(demotions))
+        if selection.unmappable:
+            # Never silent: -m promised a skeleton and these files got the
+            # first 50 lines instead, because they have no skeleton to give.
+            narrate(
+                f"kopipasta: {len(selection.unmappable)} file(s) named by -m have no "
+                "symbols to extract; sent as snippets instead: "
+                + ", ".join(selection.unmappable[:8])
+            )
         for flag, pattern in selection.unmatched():
             # Not fatal — the rest of the selection stands — but never silent:
             # a typo'd selector that still leaves files selected is the exact
@@ -408,7 +431,15 @@ def _ask(args: argparse.Namespace) -> int:
         # produce is a TypeError three frames deeper.
         if selection is None:  # pragma: no cover - unreachable
             raise UsageError("nothing was selected, so there is nothing to ask about.")
-        project_context = None if args.no_project_context else read_project_context(root)
+        # The same three memory layers the clipboard prompt carries, in the
+        # same order. `ask` used to send only the constitution, so a prompt
+        # tuned against a profile and a live AI_SESSION.md quietly behaved
+        # differently here — on the surface with nobody watching for it.
+        memory = {} if args.no_memory else {
+            "user_profile": read_global_profile(),
+            "project_context": None if args.no_project_context else read_project_context(root),
+            "session_state": read_session_state(root),
+        }
 
         def render() -> str:
             return render_prefix(
@@ -416,7 +447,7 @@ def _ask(args: argparse.Namespace) -> int:
                 ignore=ignore,
                 root=root,
                 env_vars=env_vars,
-                project_context=project_context,
+                **memory,
             )
 
         prefix = render()
@@ -527,6 +558,27 @@ def _ask(args: argparse.Namespace) -> int:
         base["demoted"] = [d.as_json() for d in demotions[:DEMOTED_IN_JSON]]
     if selection is not None and selection.unmatched():
         base["unmatched"] = [{"flag": f, "pattern": p} for f, p in selection.unmatched()]
+    if selection is not None and selection.unmappable:
+        # `sent` already counts these under `snippet` rather than `map`. This
+        # names them, so a caller who asked for a skeleton can see which files
+        # could not give one instead of inferring it from a count that moved.
+        base["unmappable"] = selection.unmappable[:DEMOTED_IN_JSON]
+
+    # What the counts cannot say: whether any of those files put anything in
+    # the payload. A budget too small for even one file leaves a directory
+    # listing with healthy-looking counts beside it, which is the shape that
+    # produces a confident answer about code nobody sent.
+    if not prefix_reused and _sends_no_contents(selection, demotions):
+        base["no_file_contents"] = True
+        narrate(
+            "kopipasta: WARNING — this payload has no file contents in it at all; "
+            f"every selected file appears in the structure tree and nowhere else.\n"
+            f"  The budget of {budget_tokens:,} tokens left no room for even one file.\n"
+            "  --budget 400k   raise the cap\n"
+            "  -e / -r FILE    name the few files the question is actually about"
+            if budget_tokens
+            else "kopipasta: WARNING — this payload has no file contents in it at all."
+        )
 
     # --strict-budget is enforced here as well as on the estimate, because the
     # ladder works from file sizes and cannot see the structure blob or the
@@ -539,6 +591,15 @@ def _ask(args: argparse.Namespace) -> int:
         narrate(
             f"kopipasta: assembled payload is ~{payload.est_tokens:,} tokens, "
             f"over the {budget_tokens:,} budget."
+        )
+    elif not budget_tokens and payload.est_tokens >= LOUD_TOKENS:
+        # `--all` assembles whole files now, so the number that decides the
+        # bill should not have to be dug out of --json. Said once, on stderr,
+        # with the flag that caps it — not a refusal: a caller who asked for
+        # the whole repository in one window is asking on purpose.
+        narrate(
+            f"kopipasta: assembled ~{payload.est_tokens:,} tokens with no budget set. "
+            "--budget 400k caps it; --dry-run prices it first."
         )
 
     # 5. The call.
@@ -561,6 +622,26 @@ def _counts(selection) -> Dict[str, int]:
     if selection is None:
         return {"edit": 0, "ref": 0, "map": 0, "snippet": 0}
     return selection.counts()
+
+
+def _sends_no_contents(selection, demotions) -> bool:
+    """True when the whole payload is a directory listing.
+
+    The shape this tool exists to prevent: a selection that resolved, counts
+    that look healthy, and a model answering from the project structure alone
+    — which reads exactly like an answer from the code.
+
+    `demotions` is what makes the empty case visible. The ladder removes a
+    path-only file from the selection outright, so "the budget took every last
+    one" and "nothing was selected" look identical from the selection alone.
+    """
+    if selection is None:
+        return False
+    if selection.by_role(EDIT, REF, SNIPPET):
+        return False
+    if any(has_skeleton(e.path) for e in selection.by_role(MAP)):
+        return False
+    return bool(len(selection) or demotions)
 
 
 def _call_and_report(

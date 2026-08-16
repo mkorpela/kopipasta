@@ -120,6 +120,10 @@ Note what is **absent** from every line: the model and the provider. Those are c
 Assembling context without calling a model is handled directly by `kopipasta ask --dry-run`
 (or `--backend none`).
 
+`ask` prepends the same three memory layers the TUI does — the global profile, `AI_CONTEXT.md`
+and `AI_SESSION.md` — because the clipboard prompt is the specification (§13). `--no-memory`
+drops all three; `--no-project-context` drops only the constitution.
+
 ### Dispatch
 
 If `argv[1]` is a known subcommand, dispatch to it. Otherwise fall through to legacy behaviour
@@ -151,10 +155,26 @@ the TUI's core concept work headlessly.
 | `-x, --exclude` | — | dropped | Applied last; wins over everything. |
 | `--url` | — | fetched text | With `--url-full` / `--url-snippet` to answer the size question. |
 
+`--all` selects **every non-ignored file in full**, read-only. The product is a large context
+window with the codebase actually inside it, so full content is the default and `--budget` is the
+throttle. Starting every file at the skeleton rung instead spent the ladder's entire range before
+the caller asked for anything, left the oracle reasoning about signatures, and sent *nothing at
+all* for a language with no skeletons to extract — `--all` on a Rust repository was a directory
+listing with `sent: {map: 7}` beside it.
+
 Patterns accept globs (`src/**/*.py`), directories (recursive) and literal paths. `.gitignore`
 and binary filtering always apply. Flags are repeatable and order-independent; the last role
 assigned to a path wins, so `-m '**/*.py' -e kopipasta/patcher.py` means "skeleton the whole tree,
 but give me that one file in full."
+
+**A role a file cannot be rendered in is not a role it keeps.** `-m` is the one role whose
+rendering does not exist for every file: a `.md`, a `.sql`, a file that will not parse and a
+module with no top-level symbols all extract to nothing, and a skeleton of nothing is invisible —
+it reaches the model as `[]` in the structure tree, which the payload's own legend defines as
+"not sent at all". A file *named* by `-m` therefore falls back to the cheapest rendering every
+file has, its first 50 lines, and is reported under `snippet` with the fallback listed in
+`unmappable`. Files dragged in by `--all` keep path-only, because that is what `--all` promises
+and 4KB apiece across a repository is not.
 
 Convenience selectors, because agents think in diffs:
 
@@ -176,9 +196,14 @@ Frontloading a full codebase is not literally possible for real repos, even at 1
 tool already renders a file three ways; that becomes a budget policy.
 
 ```
---budget 400k            # target size in tokens (`c` suffix for literal chars)
+--budget 400k            # cap the payload in tokens (`c` suffix for literal chars)
 --strict-budget          # exit 6 instead of demoting
 ```
+
+**There is no budget unless one is asked for.** No default, no config key — a cap the caller did
+not request is the tool withholding the thing it exists to provide, and withholding it silently,
+since a demotion nobody asked for still reports `ok: true`. The size of a question is a
+per-question decision; §6 puts the *model* in configuration and deliberately leaves this out.
 
 Over budget, files **demote down a ladder** rather than disappear:
 
@@ -186,15 +211,31 @@ Over budget, files **demote down a ladder** rather than disappear:
 full content  ->  AST skeleton  ->  path-only (still present in the structure tree)
 ```
 
-Demotion is deterministic and explainable:
+A file with no skeleton skips the middle rung and goes straight to path-only. For that file the
+two rungs render identically — to nothing — and only one of the two names is true; reporting
+`-> map` would claim a skeleton was sent for a file that left no trace in the payload.
+
+Demotion is deterministic and explainable, and falls **bulk before explicit** at every rung —
+someone who typed a path meant that path:
 
 1. Files named by `-e` are **never** demoted. That is the contract of "editable".
-2. Then `-r`, largest first.
-3. Then everything pulled in by `--all` or directory expansion, largest first.
+2. Then everything `--all` or a directory expansion dragged in, largest first.
+3. Then files named by `-r` and `-s`, largest first.
+4. Then skeletons, bulk before explicit.
+
+With no budget set, a payload over ~100k tokens is reported on stderr with the flag that caps it.
+Not a refusal: a caller who asked for the whole repository in one window is asking on purpose.
 
 Every demotion is reported — on stderr, and in `--json` as `demoted`. Silent truncation is what
 makes an answer confidently wrong, so the caller must always be able to see what the oracle did
 *not* look at.
+
+The same applies to a file that was never demoted and still sent nothing. `extract_symbols` covers
+Python and the TS/JS family, so on a Rust, Go, Java, C or Ruby repository `--all` puts every file
+in a role that renders to nothing, and the payload is a directory listing with healthy-looking
+counts beside it. `--json` therefore carries `path_only` (files that contributed only their name)
+and, when the payload has no source in it at all, `no_file_contents: true` plus a loud stderr
+warning naming `-r`/`-s` as the way out.
 
 **The estimator must be honest.** Token counts drive this whole mechanism, and a heuristic that
 under-counts silently overshoots the window the flag exists to protect. Count with the provider's
@@ -602,7 +643,9 @@ core that never prompts:
 kopipasta/
   interaction.py   # is a human attached, and what to do when not
   output.py        # stdout is the artifact; everything else is stderr
+  prompt.py        # TUI only: the user's template, composed for the clipboard
   core/
+    render.py      # structure tree, snippets, languages, secret masking
     resolver.py    # patterns -> resolved selection (role + render mode)
     budget.py      # the demotion ladder
     context.py     # resolved selection -> rendered (prefix, suffix)
@@ -610,6 +653,59 @@ kopipasta/
     backend.py     # exec / claude-cli / anthropic / gemini / openai
     patchflow.py   # parse -> validate -> apply -> report
 ```
+
+### One prompt, two destinations — which do not mix
+
+The renderer is shared; where its output goes is not. The TUI copies to the clipboard for a human
+to paste. `ask` posts to a provider and bills for it. Those are different acts with different
+failure modes, so the import graph keeps them apart and a test enforces it:
+
+- **`core/**` may not import a surface module** (`main`, `tree_selector`, `clipboard`, `prompt`,
+  `selection`). The dependency runs surface → core, never back.
+- **The agent path may not reach the clipboard or the terminal UI.** Importing `core.ask` must not
+  load `pyperclip`, `prompt_toolkit` or `jinja2` — the clipboard, the task editor and the user's
+  template are all clipboard-side.
+- **The clipboard path may not reach a backend.** Building the TUI's prompt must not be able to
+  call a model; pressing `q` cannot spend money.
+
+`core/render.py` exists because of that first rule. Its four helpers lived in `prompt.py`, so
+`core/context.py` reaching in for them made the headless path import the template engine and the
+interactive editor — 212 modules of terminal UI loaded to post a payload to an API. Nothing broke,
+which is exactly why it needed a test rather than a review.
+
+`rich`, `click` and `pygments` are shared on purpose: they arrive through the patcher, which every
+surface routes through rather than around (§14).
+
+**The clipboard prompt is the specification.** It is the one a human has read, tuned and come to
+trust; `ask` sends the same thing to the same models with nobody there to notice a difference. So
+the TUI's shape is canonical and `ask` conforms to it — never the reverse. Stated as an assertion,
+which is how it is tested:
+
+```
+ask payload == clipboard prompt, with the instruction tail swapped for the --mode tail
+```
+
+Everything above the tail is the same bytes: the three memory layers, the structure tree, the
+legend, the zones. Only the tail may differ, and only because the clipboard has a human who can
+answer a question and `ask` does not. `context.py` renders all of it — `render_memory` for the
+prologue, `render_context` for the body — and the TUI's template composes those two rather than
+rebuilding them.
+
+The TUI's three-state engine and the selection grammar are one model in two vocabularies, and
+they resolve to the same roles:
+
+```
+Delta (green)  ->  edit      active workspace, editable
+Base  (cyan)   ->  ref       synced context, read-only
+Map   (yellow) ->  map       skeleton only
+snippet        ->  snippet   first 50 lines, whichever state selected it
+```
+
+That correspondence was already load-bearing — the Ralph loop hands an agent Delta as editable
+and Base as read-only — but the pasted prompt flattened it into one undifferentiated
+`## File Contents` list, so the model was never shown the boundary the tool enforces everywhere
+else. Two renderers for one prompt is the drift this file exists to prevent; a test asserts the
+shared body is byte-identical from both entry points.
 
 Two rules for anything added here:
 

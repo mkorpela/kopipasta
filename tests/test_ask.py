@@ -17,6 +17,7 @@ import os
 import pytest
 
 from kopipasta.core import ask as askmod
+from kopipasta.core import budget as budgetmod
 from kopipasta.core.errors import EXIT_BUDGET, EXIT_NO_BACKEND, EXIT_OK, EXIT_USAGE
 from kopipasta.interaction import EXIT_NO_HUMAN
 
@@ -153,6 +154,105 @@ def test_gitignored_and_binary_files_never_enter_a_payload(project, capsys):
     assert "binary" not in payload  # the bytes of a binary file are never read
 
 
+# -- the payload contains what it says it contains, spec §6 -----------------
+
+
+def test_the_payload_carries_the_structure_tree_as_json(project, capsys):
+    """The tree is the anti-hallucination device: it is how the model knows
+    which files exist, and therefore which ones it was *not* given."""
+    data = run_json(capsys, "-e", "src/calc.py", "-q", "x")
+    payload = (project / data["request"]).read_text()
+    assert "## Project Structure" in payload
+    start = payload.index("```json", payload.index("## Project Structure")) + len("```json")
+    tree = json.loads(payload[start : payload.index("```", start)].strip())
+    # Every non-ignored file, not just the selected ones.
+    assert sorted(tree["src"]) == ["calc.py", "main.py"]
+    assert "README.md" in tree
+    # A skeleton lives in the tree; a file sent under a zone heading does not
+    # repeat its symbols there.
+    assert tree["src"]["calc.py"] == []
+
+
+def test_a_mapped_file_carries_its_skeleton_in_the_tree(project, capsys):
+    data = run_json(capsys, "-m", "src/calc.py", "-q", "x")
+    payload = (project / data["request"]).read_text()
+    assert "def add(a, b)" in payload
+    assert "Add two numbers." in payload
+
+
+@pytest.mark.parametrize(
+    "name, body",
+    [
+        ("notes.md", "# Notes\n\nWHOLE_POINT_OF_THE_FILE\n"),      # no AST at all
+        ("schema.sql", "CREATE TABLE t (id int); -- WHOLE_POINT_OF_THE_FILE\n"),
+        ("src/broken.py", "def WHOLE_POINT_OF_THE_FILE(:\n"),       # will not parse
+        ("src/consts.py", "WHOLE_POINT_OF_THE_FILE = 1\n"),         # no top-level defs
+    ],
+)
+def test_a_named_file_with_no_skeleton_still_reaches_the_model(
+    project, capsys, name, body
+):
+    """`-m` is the one role whose rendering does not exist for every file.
+
+    A MAP entry with no symbols contributes nothing at all: it shows in the
+    structure tree as `[]`, which the legend defines as "not sent". So this
+    reported `map: 1`, wrote the file into selection.json, and sent the model
+    zero bytes of it — a selected file the caller was told had been sent.
+    """
+    (project / name).write_text(body)
+    data = run_json(capsys, "-m", name, "-q", "x")
+    payload = (project / data["request"]).read_text()
+    assert "WHOLE_POINT_OF_THE_FILE" in payload
+    # Counted as what it actually is, and named rather than left to inference.
+    assert data["sent"]["map"] == 0
+    assert data["sent"]["snippet"] == 1
+    assert data["unmappable"] == [name]
+
+
+def test_every_selected_file_appears_under_a_zone_heading(project, capsys):
+    """The payload's own legend tells the model that a file it cannot find
+    under a zone heading was never sent. That has to be true of every file the
+    report claims to have sent."""
+    (project / "docs").mkdir()
+    (project / "docs" / "spec.md").write_text("# Spec\n")
+    (project / "pyproject.toml").write_text("[project]\nname = 'x'\n")
+    data = run_json(
+        capsys,
+        "-e", "src/calc.py",
+        "-r", "src/main.py",
+        "-m", "docs/spec.md",
+        "-m", "pyproject.toml",
+        "-q", "x",
+    )
+    payload = (project / data["request"]).read_text()
+    blocks = {line.split(":", 1)[1].split("(")[0].strip()
+              for line in payload.splitlines() if line.startswith("# FILE:")}
+    assert blocks == {"src/calc.py", "src/main.py", "docs/spec.md", "pyproject.toml"}
+    # And the counts add up to what is in the payload, so `sent` can be trusted
+    # without opening the request.
+    assert sum(data["sent"][r] for r in ("edit", "ref", "map", "snippet")) == len(blocks)
+
+
+def test_the_state_directory_can_never_join_an_all_selection(project, capsys):
+    """`--all` sends whole files now, so this must not depend on a text file.
+
+    `.kopipasta/` was excluded only by the line kopipasta writes into
+    `.gitignore`. Revert that line, keep it in `.git/info/exclude` instead, or
+    have the write fail, and `--all` would sweep the whole conversation back
+    in as source — every previous prompt and response, in full, growing
+    quadratically, with the model reading its own earlier output as code.
+    While `--all` meant skeletons this was invisible: a `.md` mapped to `[]`.
+    """
+    state = project / ".kopipasta" / "sessions" / "old"
+    state.mkdir(parents=True)
+    (state / "001-response.md").write_text("A PREVIOUS ANSWER FROM THE MODEL\n")
+    (project / ".gitignore").write_text("__pycache__/\n")  # no rule for it
+    data = run_json(capsys, "--all", "-q", "x")
+    payload = (project / data["request"]).read_text()
+    assert "A PREVIOUS ANSWER FROM THE MODEL" not in payload
+    assert "001-response.md" not in payload  # absent even from the tree
+
+
 # -- the budget ladder, spec §5 --------------------------------------------
 
 
@@ -167,6 +267,50 @@ def test_over_budget_files_walk_down_the_ladder_instead_of_vanishing(project, ca
     payload = (project / data["request"]).read_text()
     assert '"big.py"' in payload  # still named in the structure tree, not gone
     assert "def f399" not in payload  # ... but its body is not
+
+
+def test_a_demotion_reports_the_rung_the_file_actually_landed_on(project, capsys):
+    """The middle rung of the ladder does not exist for every file.
+
+    A `.md` has no skeleton, so demoting it to one renders it to nothing while
+    the report says a skeleton was sent. It goes straight to path-only, which
+    is both the truth and the rung that frees the budget the caller asked for.
+    """
+    (project / "big.md").write_text("# Doc\n\n" + "prose prose prose\n" * 400)
+    data = run_json(capsys, "-r", "big.md", "-e", "src/calc.py", "--budget", "1k", "-q", "x")
+    demoted = {d["path"]: d for d in data["demoted"]}
+    assert demoted["big.md"]["to"] == "path-only"
+    payload = (project / data["request"]).read_text()
+    assert '"big.md"' in payload  # still named in the structure tree
+    assert "prose prose prose" not in payload
+
+
+def test_there_is_no_budget_unless_one_is_asked_for(project, capsys):
+    """Unbudgeted is the default, and nothing may quietly install one.
+
+    The whole product is frontloading, so a cap the caller did not ask for is
+    the tool withholding the thing it exists to provide — and withholding it
+    silently, since a demotion nobody requested still reads as `ok: true`.
+    Pinned because the natural way to break it is a config-file default, and
+    argparse would not say a word.
+    """
+    big = "\n".join(f"def f{i}():\n    return {i}" for i in range(4000))
+    (project / "src" / "big.py").write_text(big)
+    data = run_json(capsys, "--all", "-q", "x")
+    assert "demoted" not in data
+    assert data["sent"]["demoted"] == 0
+    assert data["sent"]["map"] == 0  # nothing fell to a skeleton
+    assert "def f3999" in (project / data["request"]).read_text()
+
+
+def test_the_unbudgeted_default_survives_the_config_file(project, capsys, monkeypatch):
+    """A budget is a per-question decision, not an operator setting. Spec §6
+    puts the model in config and leaves the size of the question out of it."""
+    from kopipasta.core import config as cfgmod
+
+    cfg = cfgmod.resolve_backend("ask", flag="none")
+    assert not hasattr(cfg, "budget"), "a config-resolved budget would apply silently"
+    assert askmod.build_parser().get_default("budget") is None
 
 
 def test_strict_budget_refuses_instead_of_demoting(project, capsys):
@@ -806,3 +950,140 @@ def test_changed_selects_the_working_tree(project, capsys):
     # Untracked files count: a file you just created is the file you are
     # working on, and leaving it out answers from a stale tree.
     assert data["sent"]["edit"] == 2
+
+
+# -- a payload with nothing in it, spec §5 ----------------------------------
+
+
+@pytest.fixture
+def rust(project):
+    """A project in a language kopipasta cannot skeleton.
+
+    `extract_symbols` handles Python and the TS/JS family. Rust, Go, Java, C,
+    Ruby and PHP all extract to nothing, and every one of them meets `--all`.
+    """
+    for path in ("src/calc.py", "src/main.py"):
+        (project / path).unlink()
+    (project / "src" / "auth.rs").write_text(
+        "pub fn validate(t: &Token) -> bool {\n    t.expires_at <= now()\n}\n"
+    )
+    (project / "src" / "store.rs").write_text("pub struct Store {}\n")
+    (project / "Cargo.toml").write_text("[package]\nname = 'tokensvc'\n")
+    return project
+
+
+def test_a_budget_with_no_room_for_one_file_says_the_payload_is_empty(rust, capsys):
+    """The remaining route to a payload of pure directory listing.
+
+    `--all` sends whole files now, so the way to end up with nothing is a
+    budget too small for even one of them — and on a language with no
+    skeletons there is no middle rung to land on, so the ladder takes every
+    file straight to path-only and the counts still read as healthy.
+    """
+    data = run_json(capsys, "--all", "--budget", "60", "-q", "which file expires tokens?")
+    assert data["no_file_contents"] is True
+    payload = (rust / data["request"]).read_text()
+    assert "expires_at" not in payload  # the tree names it; nothing shows it
+
+
+def test_the_empty_payload_warning_is_loud_and_names_the_way_out(rust, capsys):
+    run("--all", "--budget", "60", "-q", "x")
+    err = capsys.readouterr().err
+    assert "no file contents" in err
+    assert "--budget 400k" in err  # raise the cap
+    assert "-e / -r FILE" in err  # or ask a narrower question
+
+
+def test_a_payload_with_contents_does_not_cry_wolf(project, capsys):
+    data = run_json(capsys, "--all", "-q", "x")
+    assert "no_file_contents" not in data
+    err = capsys.readouterr().err
+    assert "no file contents" not in err
+
+
+# -- --all means the whole repository, in full ------------------------------
+
+
+def test_all_sends_whole_files_not_skeletons(project, capsys):
+    """The product is a large context window with the codebase inside it.
+
+    `--all` used to start every file at the skeleton rung, which spent the
+    ladder's entire range before the caller asked for anything and left the
+    oracle reasoning about signatures. Full content is the default; `--budget`
+    is the throttle.
+    """
+    data = run_json(capsys, "--all", "-q", "x")
+    assert data["sent"]["ref"] == 4  # every non-ignored file
+    assert data["sent"]["map"] == 0
+    payload = (project / data["request"]).read_text()
+    assert "return a + b" in payload  # the body, not just the signature
+    assert "## Reference Context (Read-Only)" in payload
+
+
+def test_all_reads_a_language_it_cannot_skeleton(rust, capsys):
+    """The Rust case, now answered by sending the code rather than warning
+    that there is none."""
+    data = run_json(capsys, "--all", "-q", "which file expires tokens?")
+    assert data["sent"]["ref"] == 5
+    assert "no_file_contents" not in data
+    assert "path_only" not in data
+    payload = (rust / data["request"]).read_text()
+    assert "t.expires_at <= now()" in payload
+
+
+def test_an_explicit_role_still_beats_all(project, capsys):
+    """`--all -e src/calc.py` is the shape the whole tool is for: the repo as
+    read-only background, one file as the workspace."""
+    data = run_json(capsys, "--all", "-e", "src/calc.py", "-q", "x")
+    assert data["sent"]["edit"] == 1
+    assert data["sent"]["ref"] == 3
+    payload = (project / data["request"]).read_text()
+    assert payload.index("Active Workspace") < payload.index("src/calc.py")
+
+
+def test_the_ladder_demotes_what_all_dragged_in_before_what_you_named(project, capsys):
+    """Someone who typed a path meant that path.
+
+    Now that `--all` produces reference files rather than skeletons, that rule
+    has to hold inside the reference role too: a small file the caller named
+    must outlive a large one nobody chose.
+    """
+    (project / "src" / "bulk.py").write_text("\n".join(f"# bulk {i}" for i in range(4000)))
+    (project / "src" / "named.py").write_text("\n".join(f"# named {i}" for i in range(200)))
+    # Budget chosen so that dropping the bulk file alone is enough: if the
+    # order were wrong, the named file would go first and the bulk one would
+    # survive. A tighter budget exhausts every rung and proves nothing.
+    data = run_json(capsys, "--all", "-r", "src/named.py", "--budget", "2k", "-q", "x")
+    demoted = {d["path"] for d in data["demoted"]}
+    assert "src/bulk.py" in demoted
+    assert "src/named.py" not in demoted
+    assert "# named 199" in (project / data["request"]).read_text()
+
+
+def test_a_budget_still_brings_a_whole_repo_down_to_size(project, capsys):
+    big = "\n".join(f"def f{i}():\n    return {i}" for i in range(400))
+    (project / "src" / "big.py").write_text(big)
+    data = run_json(capsys, "--all", "--budget", "1k", "-q", "x")
+    assert data["demoted"], "nothing demoted despite a budget far under the repo"
+    payload = (project / data["request"]).read_text()
+    assert "def f399" not in payload  # the body is gone
+    assert '"big.py"' in payload  # the name is not
+
+
+def test_a_whole_repo_with_no_budget_says_how_big_it_got(project, capsys):
+    """`--all` now assembles everything, so the one number that decides the
+    bill should not have to be dug out of --json."""
+    # Sized off the threshold rather than a magic number, so tuning the
+    # threshold does not silently turn this test into a no-op.
+    lines = int(askmod.LOUD_TOKENS * budgetmod.CHARS_PER_TOKEN / 6) + 1000
+    (project / "src" / "big.py").write_text("x = 1\n" * lines)
+    run("--all", "-q", "x")
+    err = capsys.readouterr().err
+    assert "--budget" in err
+    assert "no budget" in err.lower()
+
+
+def test_a_payload_under_the_threshold_stays_quiet(project, capsys):
+    """The warning has to be rare enough to mean something."""
+    run("--all", "-q", "x")
+    assert "no budget" not in capsys.readouterr().err.lower()

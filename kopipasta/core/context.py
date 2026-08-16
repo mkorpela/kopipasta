@@ -1,16 +1,29 @@
 """Resolved selection -> the rendered payload, as `(prefix, suffix)` — spec §6.
 
+**This is the only place a prompt's context is rendered.** Both surfaces come
+through `render_context`: the TUI, which wraps it in the user's template and
+puts it on the clipboard, and `ask`, which splits it at the task and posts it
+to a model. There were two renderers here once, and they drifted — the TUI
+sent one flat `## File Contents` list while `ask` sent zones, so the same
+selection produced two different prompts and only one of them told the model
+which files it was allowed to change. A shared renderer is what makes "paste
+this into a chat window" and "send this to the oracle" the same question.
+
 The split is not cosmetic. The repo content is a stable prefix that is reused
 verbatim across the turns of a session; the question is the varying tail. That
 boundary *is* the cache breakpoint — Anthropic places its `cache_control`
 there, Gemini's `cachedContents` resource holds exactly that text — so a
 renderer that interpolated the task into the middle of the payload would
-destroy reuse on every turn. Hence two strings, never one.
+destroy reuse on every turn. Hence two strings, never one. The TUI needs one
+string and joins them at the same point, which is also where its cursor goes.
 
 The prefix is zoned (spec §11.4). "Editable" versus "read-only" has to be
 visible to the model for the same reason it is enforceable by the patcher: a
 patch against a reference-only file is a rejected patch, and the model cannot
-respect a distinction it was never shown.
+respect a distinction it was never shown. The TUI has tracked exactly this
+distinction all along — Delta is the active focus, Base is synced context, and
+the Ralph loop enforces them as editable and read-only — but flattened it away
+at render time, so the model was never told.
 """
 
 from __future__ import annotations
@@ -23,21 +36,57 @@ from kopipasta.core.budget import CHARS_PER_TOKEN, estimate_tokens
 from kopipasta.core.modes import Mode
 from kopipasta.core.resolver import EDIT, MAP, REF, SNIPPET, Entry, Selection
 from kopipasta.file import extract_symbols, read_file_contents
-from kopipasta.prompt import (
+from kopipasta.core.render import (
     get_file_snippet,
     get_language_for_file,
     get_project_structure,
     handle_env_variables,
 )
 
+#: The quad-memory layers, in the order the clipboard prompt has always
+#: emitted them: global kernel, project constitution, working memory
+#: (AI_CONTEXT.md §1). `ask` used to send only the middle one, so a prompt
+#: tuned against a profile and a live session file behaved differently on the
+#: surface with nobody watching for the difference.
+MEMORY_LAYERS: Tuple[Tuple[str, str], ...] = (
+    ("user_profile", "# User Profile & Preferences"),
+    ("project_context", "# Project Constitution (AI_CONTEXT.md)"),
+    ("session_state", "# Current Working Session (AI_SESSION.md)"),
+)
+
+
+def render_memory(
+    *,
+    user_profile: Optional[str] = None,
+    project_context: Optional[str] = None,
+    session_state: Optional[str] = None,
+) -> str:
+    """The memory prologue, byte for byte as the clipboard has always had it.
+
+    Reproduces what the template's three `{% if %}` blocks produced, down to
+    the blank lines, because the clipboard prompt is the specification here —
+    it is the one a human has read, tuned and come to trust. A layer that does
+    not exist contributes nothing at all, not an empty heading announcing it.
+    """
+    values = {
+        "user_profile": user_profile,
+        "project_context": project_context,
+        "session_state": session_state,
+    }
+    return "".join(
+        f"{heading}\n{values[key]}\n\n" for key, heading in MEMORY_LAYERS if values[key]
+    )
+
+
 LEGEND = (
     "The tree below lists every non-ignored file in the project, including "
     "files whose contents were not sent. A file mapped to a list of "
     "signatures was included as a skeleton: those signatures are all you have "
-    "of it. A file mapped to [] was either sent in full under one of the zone "
-    "headings below, or not sent at all — if you cannot find it in a zone, "
-    "you have not seen it. Never infer the contents of a file you were not "
-    "given: name it in missing_context instead."
+    "of it. A file mapped to [] was either sent under one of the zone "
+    "headings below — in full, or as its first lines, whichever that heading "
+    "says — or not sent at all. If you cannot find it in a zone, you have not "
+    "seen it. Never infer the contents of a file you were not given: name it "
+    "in missing_context instead."
 )
 
 
@@ -95,10 +144,15 @@ def _masker(env_vars: Optional[Dict[str, str]]) -> Tuple[Dict[str, str], Dict[st
 
 
 def _block(rel: str, path: str, content: str, note: str = "") -> List[str]:
+    # One trailing newline is dropped because the closing fence supplies the
+    # line break itself. Most files end with one, so keeping it put a blank
+    # line inside every code block in the payload — a line per file, paid for
+    # on every turn. A file that does *not* end with a newline is unaffected:
+    # the join still puts the fence on its own line.
     return [
         f"# FILE: {rel}{note}",
         f"```{get_language_for_file(path)}",
-        content,
+        content[:-1] if content.endswith("\n") else content,
         "```",
         "",
     ]
@@ -129,16 +183,93 @@ def role_note(role: str) -> str:
     return ""
 
 
+def entry_content(entry: Entry) -> str:
+    """What this entry's block contains. Chunks win over the role's render."""
+    if entry.chunks is not None:
+        return "\n".join(entry.chunks)
+    return role_content(entry.path, entry.role)
+
+
+def entry_note(entry: Entry) -> str:
+    """The caveat for this entry, which is the role's unless it is chunked."""
+    if entry.chunks is not None:
+        return "selected patches"
+    return role_note(entry.role)
+
+
+#: The zones, in the order the model reads them: what it may change, what it
+#: may only read, then what it has only part of. One definition, because a
+#: second surface with its own headings is a second prompt.
+ZONES: Tuple[Tuple[str, str, str], ...] = (
+    (
+        EDIT,
+        "Active Workspace (Editable)",
+        "These files are the working set. Changes belong here.",
+    ),
+    (
+        REF,
+        "Reference Context (Read-Only)",
+        "Read these for dependencies and call sites. Do not propose changes to them.",
+    ),
+    (
+        SNIPPET,
+        "Snippets (partial files)",
+        "Only the first lines of each file are shown. Ask for the rest if you need it.",
+    ),
+)
+
+
 def _zone(title: str, note: str, entries: Sequence[Entry], mask) -> List[str]:
     if not entries:
         return []
     out = [f"## {title}", "", note, ""]
     for e in entries:
-        caveat = role_note(e.role)
+        caveat = entry_note(e)
         out += _block(
-            e.rel, e.path, mask(role_content(e.path, e.role)), f" ({caveat})" if caveat else ""
+            e.rel, e.path, mask(entry_content(e)), f" ({caveat})" if caveat else ""
         )
     return out
+
+
+def render_context(
+    selection: Selection,
+    *,
+    ignore: Sequence[str],
+    root: str,
+    env_vars: Optional[Dict[str, str]] = None,
+    search_paths: Optional[Sequence[str]] = None,
+) -> str:
+    """The structure tree and the file zones — the body every prompt shares.
+
+    Called by `render_prefix` for `ask` and by the TUI's template renderer for
+    the clipboard. Both get the same bytes for the same selection, which is
+    the point: a prompt that behaves differently depending on which command
+    produced it is two prompts wearing one name.
+
+    `search_paths` exists for the TUI, which can be pointed at a subset of the
+    tree; `ask` always walks from the project root.
+    """
+    env, decisions = _masker(env_vars)
+
+    def mask(text: str) -> str:
+        return handle_env_variables(text, env, decisions)
+
+    map_paths = [e.path for e in selection.by_role(MAP)]
+    out: List[str] = [
+        "# Project Overview",
+        "",
+        "## Project Structure",
+        "",
+        LEGEND,
+        "",
+        "```json",
+        get_project_structure(list(ignore), list(search_paths or [root]), map_paths),
+        "```",
+        "",
+    ]
+    for role, title, note in ZONES:
+        out += _zone(title, note, selection.by_role(role), mask)
+    return "\n".join(out)
 
 
 def render_prefix(
@@ -148,49 +279,23 @@ def render_prefix(
     root: str,
     env_vars: Optional[Dict[str, str]] = None,
     project_context: Optional[str] = None,
+    user_profile: Optional[str] = None,
+    session_state: Optional[str] = None,
 ) -> str:
-    """The stable half: project rules, the structure tree, and the file zones."""
-    env, decisions = _masker(env_vars)
+    """The stable half: the memory layers, the structure tree, and the zones.
 
-    def mask(text: str) -> str:
-        return handle_env_variables(text, env, decisions)
-
-    out: List[str] = []
-    if project_context:
-        out += ["# Project Constitution (AI_CONTEXT.md)", "", project_context, ""]
-
-    map_paths = [e.path for e in selection.by_role(MAP)]
-    out += [
-        "# Project Overview",
-        "",
-        "## Project Structure",
-        "",
-        LEGEND,
-        "",
-        "```json",
-        get_project_structure(list(ignore), [root], map_paths),
-        "```",
-        "",
-    ]
-    out += _zone(
-        "Active Workspace (Editable)",
-        "These files are the working set. Changes belong here.",
-        selection.by_role(EDIT),
-        mask,
+    Everything above the task, in the order the clipboard prompt puts it. The
+    task and the instruction tail are the suffix, which is the only part the
+    two surfaces are allowed to differ on.
+    """
+    memory = render_memory(
+        user_profile=user_profile,
+        project_context=project_context,
+        session_state=session_state,
     )
-    out += _zone(
-        "Reference Context (Read-Only)",
-        "Read these for dependencies and call sites. Do not propose changes to them.",
-        selection.by_role(REF),
-        mask,
+    return memory + render_context(
+        selection, ignore=ignore, root=root, env_vars=env_vars
     )
-    out += _zone(
-        "Snippets (partial files)",
-        "Only the first lines of each file are shown. Ask for the rest if you need it.",
-        selection.by_role(SNIPPET),
-        mask,
-    )
-    return "\n".join(out)
 
 
 def render_suffix(

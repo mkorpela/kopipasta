@@ -20,6 +20,12 @@ file in full. Detail wins — edit > ref > snippet > map.
 is the most dangerous failure in the tool: the model answers from the project
 structure alone and the answer reads fine. Counting per pattern is what lets
 the caller be told *which* selector was wrong rather than "0 files".
+
+**A role a file cannot be rendered in is not a role it keeps.** `-m` promises
+a skeleton, and `extract_symbols` only has one for Python and the TS/JS
+family. Everything else — a `.md`, a `.sql`, a `.py` that will not parse —
+resolved to a role that renders to nothing at all, so the file left no trace
+in the payload while `sent: {map: N}` counted it. See `_fall_back_from_map`.
 """
 
 from __future__ import annotations
@@ -32,7 +38,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from kopipasta.core.errors import EmptySelection, UsageError
-from kopipasta.file import is_binary, is_ignored
+from kopipasta.file import extract_symbols, is_binary, is_ignored
 
 EDIT = "edit"
 REF = "ref"
@@ -61,6 +67,11 @@ class Entry:
     #: rather than being named. The budget ladder demotes bulk before
     #: explicit: someone who typed a path meant that path.
     bulk: bool = True
+    #: The TUI's "selected patches": specific hunks of a file rather than the
+    #: whole of it. No flag selects this — it exists so the interactive
+    #: selection can be rendered by the same renderer as everything else,
+    #: rather than by a second one that drifts.
+    chunks: Optional[List[str]] = None
 
     @property
     def flag(self) -> str:
@@ -74,6 +85,10 @@ class Selection:
     #: (flag, pattern, matched) in the order the caller wrote them, including
     #: the ones that matched nothing.
     patterns: List[Tuple[str, str, int]] = field(default_factory=list)
+    #: Files named by `-m` that have no skeleton to render, and so were moved
+    #: to the snippet role. Reported, never silent: the caller asked for one
+    #: rendering and got another.
+    unmappable: List[str] = field(default_factory=list)
 
     def by_role(self, *roles: str) -> List[Entry]:
         return sorted(
@@ -256,7 +271,13 @@ def resolve(
     # --all and the git selectors first: they are the background, and anything
     # named explicitly afterwards should be able to override them.
     if spec.all:
-        sel.patterns.append(("--all", "", assign(walk_all(ignore, root), MAP, bulk=True)))
+        # Read-only, and *whole*. The product is a large context window with
+        # the codebase actually inside it; starting every file at the skeleton
+        # rung spent the ladder's entire range before the caller asked for
+        # anything, left the oracle reasoning about signatures, and sent
+        # nothing at all for a language with no skeletons to extract.
+        # `--budget` is the throttle, and demotion is what it pulls.
+        sel.patterns.append(("--all", "", assign(walk_all(ignore, root), REF, bulk=True)))
 
     if spec.changed or spec.changed_since:
         flag = "--changed-since" if spec.changed_since else "--changed"
@@ -295,7 +316,46 @@ def resolve(
 
     if not sel.entries:
         raise EmptySelection(sel.patterns, candidates=_candidates(ignore, root))
+    _fall_back_from_map(sel)
     return sel
+
+
+def has_skeleton(path: str) -> bool:
+    """Can this file be rendered as a skeleton at all?
+
+    `extract_symbols` covers Python and the TS/JS family and returns nothing
+    for everything else, for a file that will not parse, and for one with no
+    top-level symbols. All three are indistinguishable from "not selected"
+    once rendered, which is why this question has to be asked before a role is
+    kept rather than after the payload is built.
+    """
+    try:
+        return bool(extract_symbols(path))
+    except Exception:  # noqa: BLE001 - a file that will not parse has no skeleton
+        return False
+
+
+def _fall_back_from_map(sel: Selection) -> None:
+    """A map role a file cannot be rendered in becomes a snippet.
+
+    The map role is the one role whose rendering does not exist for every
+    file, and a MAP entry with no symbols contributes *nothing* to the
+    payload: it appears in the structure tree as `[]`, which the payload's own
+    legend defines as "not sent at all". So `-m docs/spec.md` reported
+    `map: 1`, recorded the file in `selection.json`, and sent the model zero
+    bytes of it — a selected file the caller was told had been sent.
+
+    Someone who typed a path meant that path, so it falls back to the cheapest
+    rendering every file has: the first 50 lines. Files dragged in by `--all`
+    are left alone, because path-only in the structure tree is exactly what
+    `--all` promises (spec §5) and 4KB apiece across a whole repository is
+    not.
+    """
+    for entry in sel.entries.values():
+        if entry.role == MAP and not entry.bulk and not has_skeleton(entry.path):
+            entry.role = SNIPPET
+            sel.unmappable.append(entry.rel)
+    sel.unmappable.sort()
 
 
 def _candidates(ignore: Sequence[str], root: str) -> List[str]:

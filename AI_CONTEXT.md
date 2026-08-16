@@ -22,6 +22,17 @@ Selection is managed via a three-state engine to distinguish between background 
     - `Space` cycle: `Unselected` -> `Delta` -> `Unselected`. If `Base`, toggles to `Delta`.
     - **Promotion**: Files transition `Delta` -> `Base` during "Extend Context" (`e`), "Patch" (`p`), or "Quit" (`q`) to mark them as synced for the next turn.
 
+### The Clipboard Prompt Is Canonical
+The prompt the TUI copies is **the specification**. It is the one a human has read, tuned and come to trust; `kopipasta ask` sends the same thing to the same models with nobody there to notice a difference. So `ask` conforms to the TUI's shape — never the reverse. As an assertion, which is how it is tested:
+```
+ask payload == clipboard prompt, with the instruction tail swapped for the --mode tail
+```
+*   **Everything above the tail is the same bytes**: the three memory layers, the structure tree, the legend, the zones. Only the tail may differ, and only because the clipboard has a human who can answer a question and `ask` does not.
+*   **`kopipasta/core/context.py` renders all of it**: `render_memory` for the quad-memory prologue, `render_context` for structure tree, legend, zones, secret masking and block format. The template composes those two; it does not rebuild them.
+*   **The state engine and the CLI flags are one model**: `Delta -> edit`, `Base -> ref`, `Map -> map`, and a snippet is `snippet` whichever state selected it. `SelectionManager.to_selection()` is that mapping.
+*   **The prompt is shared; the destination is not.** The TUI copies to the clipboard, `ask` posts to a provider. `kopipasta/core/**` may not import a surface module (`main`, `tree_selector`, `clipboard`, `prompt`, `selection`); the agent path may not load `pyperclip`, `prompt_toolkit` or `jinja2`; the clipboard path may not reach a backend. `kopipasta/core/render.py` holds the primitives both need — structure tree, snippets, languages, secret masking — so that needing one cannot drag in the other's stack. `tests/test_delivery_boundary.py` enforces all of it by import graph, because the failure is silent.
+*   **Never render a prompt section anywhere else.** A second renderer is how the pasted prompt lost its editable/read-only boundary — the states were tracked and enforced (the Ralph loop uses exactly this split) but flattened into one `## File Contents` list on the way to the clipboard — and how `ask` came to send one memory layer where the clipboard sends three. `tests/test_shared_rendering.py` pins the equality above; change the canonical prompt there and it tells you what no longer matches.
+
 ### Ralph Loop (`r` hotkey) — MCP Agent Integration
 The Ralph Loop enables an external AI agent (e.g. Claude Desktop) to iteratively patch and test code via MCP until a verification command passes.
 *   **Decoupled Architecture**: The `kopipasta` TUI and the MCP Server (`kopipasta/mcp_server.py`) run as separate processes. They communicate implicitly via the filesystem (`.ralph.json`, project files).
@@ -50,6 +61,15 @@ The `p` (Process) command acts as a universal intake for LLM output:
 ### Git Operations
 *   **Session Exclusion**: `AI_SESSION.md` is strictly ephemeral. Git operations (add/commit) must ensure it is never committed.
 *   **Pathspec Safety**: When programmatic git commands exclude files (e.g., `git add . :!AI_SESSION.md`), code must first verify the file is NOT already ignored by `.gitignore`. Git throws errors if you try to exclude a path that is already ignored.
+
+### Context Budget
+*   `--all` sends **every non-ignored file in full**, read-only. The product is a large context window with the code inside it; `--budget` is the throttle, and the demotion ladder (full -> skeleton -> path-only) is what it pulls. Do not make `--all` cheaper by lowering its starting rung — that is how it came to send nothing at all on a Rust repo.
+*   Demotion falls **bulk before explicit** at every rung. A file the caller named must outlive one that `--all` dragged in, whatever their sizes.
+*   `.kopipasta/` is in the **default** ignore list, not only in the `.gitignore` line the tool writes. With `--all` sending whole files, one reverted line would otherwise feed every previous prompt and response back in as source.
+
+### Patch Safety: the undo defines the guard
+*   `kopipasta apply` refuses a dirty worktree **only for the files the patch would write**. The undo is `git checkout` of those paths, so uncommitted work elsewhere cannot be harmed and blocking over it costs a run for nothing. Unrelated changes are narrated and left alone; `revert` still declines to touch anything that was already dirty.
+*   This is not cosmetic: `ask` appends `.kopipasta/` to `.gitignore` on first use, so a whole-worktree check meant the tool dirtied the tree and then refused to apply because the tree was dirty — the documented two-step failed on its own first run.
 
 ### Filesystem Safety
 *   **Heuristic Overwrite Protection**: The patcher must guard against "snippet hallucinations" (where an LLM outputs a snippet instead of the full file).
@@ -80,4 +100,6 @@ The `p` (Process) command acts as a universal intake for LLM output:
 
 ## 3. Anti-Patterns (Do Not Do)
 *   Do not hardcode directory trees in documentation; `kopipasta` generates them dynamically in the prompt.
-*   Do not duplicate prompt instructions (e.g., "How to patch") in this file; they belong in `prompt_template.j2`.
+*   Do not duplicate prompt instructions (e.g., "How to patch") in this file; they belong in `prompt_template.j2` (clipboard) or `kopipasta/core/modes.py` (`ask`).
+*   Do not render a memory heading, a file block, a zone heading or the structure tree outside `kopipasta/core/context.py`. A second renderer drifts, and the drift is invisible until a model acts on the wrong prompt.
+*   Do not change `ask`'s prompt shape to suit `ask`. Change the canonical clipboard prompt, and let `ask` follow.

@@ -77,3 +77,55 @@ def use_default_without_human(what: str, default_desc: str) -> bool:
         return False
     print(f"kopipasta: {what} needs a human; {default_desc} instead.", file=sys.stderr)
     return True
+
+
+def get_task_from_user_interactive(console=None, default_text: str = "") -> str:
+    """Ask the human for a multiline task description.
+
+    Lives here, next to the guard it depends on, rather than in the TUI's
+    module: both surfaces need to ask a human for a task when one is present,
+    and `core/ask.py` reaching up into `kopipasta.prompt` for it made the
+    headless path depend on the interactive one (spec §13).
+
+    `prompt_toolkit` and `rich` are imported inside the function, so a run
+    that never asks never loads them — which is what keeps the agent CLI's
+    import graph clear of the terminal UI.
+    """
+    # Checked before the first console.print, so nothing is drawn into a pipe.
+    # No safe default exists here: an empty task silently produces a useless
+    # prompt, and guessing one is worse than refusing.
+    require_human(
+        "Entering a task description",
+        "Pass -t/--task instead, or set KOPIPASTA_NONINTERACTIVE=1 to make this explicit.",
+    )
+
+    from prompt_toolkit import prompt as prompt_toolkit_prompt
+    from prompt_toolkit.styles import Style
+    from rich.console import Console
+
+    # Narration, so stderr — the artifact on stdout is the prompt itself.
+    console = console or Console(stderr=True)
+
+    console.print("\n[bold cyan]📝 Please enter your task instructions.[/bold cyan]")
+    if default_text:
+        console.print(
+            "   [dim](Pre-filled from previous session. Edit or clear as needed.)[/dim]"
+        )
+    console.print(
+        "   - Press [bold]Meta+Enter[/bold] or [bold]Esc[/bold] then [bold]Enter[/bold] to submit."
+    )
+    console.print("   - Press [bold]Ctrl-C[/bold] to abort.")
+
+    style = Style.from_dict({"": "#00ff00"})
+
+    try:
+        task = prompt_toolkit_prompt(
+            "> ",
+            multiline=True,
+            prompt_continuation="  ",
+            style=style,
+            default=default_text,
+        )
+        return task.strip()
+    except KeyboardInterrupt:
+        return ""

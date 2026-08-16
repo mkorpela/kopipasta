@@ -35,7 +35,7 @@ single sample.
 | Gemini cache lifecycle (TTL/close/reap) | **live-verified** | 99.9% reuse, 0 orphan resources after |
 | `openai:` backend | **wire format only** | mock; never saw a real response |
 | Gemini 1M context for a real repo | **CONFIRMED** | `inputTokenLimit: 1048576` on `gemini-3.7-flash` |
-| Hosted sandbox (`claude-cli:` only backend) | **live-verified** | ~34k floor, `--json-schema` 2×, sonnet 1M ctx — §2.14 |
+| Hosted sandbox (`claude-cli:` only backend) | **live-verified** | floor 34,382 → **7,070** denying all tools; `--json-schema` 2×; sonnet 1M ctx — §2.14 |
 
 The question this document was originally built around — does the raw API share the CLI's cache
 write-visibility lag? — **is answered. It does not.** See §2.7; it changes the phasing.

@@ -33,6 +33,12 @@ def read_gitignore() -> List[str]:
     """Reads .gitignore and returns a list of patterns."""
     default_ignore_patterns = [
         ".git",
+        # Our own conversation state. It is written into `.gitignore` on first
+        # use too, but that is a text file a user can revert and `--all` sends
+        # whole files: without this, one edit turns every previous prompt and
+        # response back into "source", growing quadratically while the model
+        # reads its own earlier output as code.
+        ".kopipasta",
         "node_modules",
         "venv",
         ".venv",

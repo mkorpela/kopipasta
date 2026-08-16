@@ -152,12 +152,19 @@ def selection_chars(selection: Selection) -> int:
     return sum(render_chars(e) for e in selection.entries.values())
 
 
-#: The ladder's stages, as (role, bulk-or-None) filters, in the order of
-#: spec §5: `-e` never; then `-r`; then everything `--all` dragged in; then
-#: explicitly named skeletons, because someone who typed a path meant it.
+#: The ladder's stages, as (role, bulk) filters, in the order of spec §5:
+#: `-e` is never demoted, and everything else falls bulk-before-explicit at
+#: each rung — someone who typed a path meant that path.
+#:
+#: The split by bulk used to apply only to skeletons, because `--all` produced
+#: skeletons and nothing else reached the reference role in bulk. Now that
+#: `--all` sends whole files, an unsplit `(REF, None)` stage would demote a
+#: file the caller named alongside 800 nobody chose, ordered only by size.
 _STAGES: Tuple[Tuple[str, Optional[bool]], ...] = (
-    (REF, None),
-    (SNIPPET, None),
+    (REF, True),
+    (SNIPPET, True),
+    (REF, False),
+    (SNIPPET, False),
     (MAP, True),
     (MAP, False),
 )

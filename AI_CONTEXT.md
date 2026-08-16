@@ -62,6 +62,11 @@ The `p` (Process) command acts as a universal intake for LLM output:
 *   **Session Exclusion**: `AI_SESSION.md` is strictly ephemeral. Git operations (add/commit) must ensure it is never committed.
 *   **Pathspec Safety**: When programmatic git commands exclude files (e.g., `git add . :!AI_SESSION.md`), code must first verify the file is NOT already ignored by `.gitignore`. Git throws errors if you try to exclude a path that is already ignored.
 
+### Context Budget
+*   `--all` sends **every non-ignored file in full**, read-only. The product is a large context window with the code inside it; `--budget` is the throttle, and the demotion ladder (full -> skeleton -> path-only) is what it pulls. Do not make `--all` cheaper by lowering its starting rung — that is how it came to send nothing at all on a Rust repo.
+*   Demotion falls **bulk before explicit** at every rung. A file the caller named must outlive one that `--all` dragged in, whatever their sizes.
+*   `.kopipasta/` is in the **default** ignore list, not only in the `.gitignore` line the tool writes. With `--all` sending whole files, one reverted line would otherwise feed every previous prompt and response back in as source.
+
 ### Patch Safety: the undo defines the guard
 *   `kopipasta apply` refuses a dirty worktree **only for the files the patch would write**. The undo is `git checkout` of those paths, so uncommitted work elsewhere cannot be harmed and blocking over it costs a run for nothing. Unrelated changes are narrated and left alone; `revert` still declines to touch anything that was already dirty.
 *   This is not cosmetic: `ask` appends `.kopipasta/` to `.gitignore` on first use, so a whole-worktree check meant the tool dirtied the tree and then refused to apply because the tree was dirty — the documented two-step failed on its own first run.

@@ -271,7 +271,13 @@ def resolve(
     # --all and the git selectors first: they are the background, and anything
     # named explicitly afterwards should be able to override them.
     if spec.all:
-        sel.patterns.append(("--all", "", assign(walk_all(ignore, root), MAP, bulk=True)))
+        # Read-only, and *whole*. The product is a large context window with
+        # the codebase actually inside it; starting every file at the skeleton
+        # rung spent the ladder's entire range before the caller asked for
+        # anything, left the oracle reasoning about signatures, and sent
+        # nothing at all for a language with no skeletons to extract.
+        # `--budget` is the throttle, and demotion is what it pulls.
+        sel.patterns.append(("--all", "", assign(walk_all(ignore, root), REF, bulk=True)))
 
     if spec.changed or spec.changed_since:
         flag = "--changed-since" if spec.changed_since else "--changed"

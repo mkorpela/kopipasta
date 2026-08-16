@@ -87,6 +87,10 @@ from kopipasta.patcher import find_paths_in_text, parse_llm_output
 #: session's selection.json — this is a summary, not the record.
 DEMOTED_IN_JSON = 20
 
+#: Payload size, in tokens, above which an unbudgeted run says so out loud.
+#: Roughly where a frontloaded repository stops being free to be wrong about.
+LOUD_TOKENS = 100_000
+
 
 # --------------------------------------------------------------------------
 # argument surface
@@ -105,7 +109,7 @@ def add_selection_args(parser: argparse.ArgumentParser) -> None:
     g.add_argument("-x", "--exclude", action="append", metavar="PATTERN",
                    help="drop these; applied last, wins over everything")
     g.add_argument("--all", action="store_true",
-                   help="every non-ignored file, as a skeleton (subject to --budget)")
+                   help="every non-ignored file, in full and read-only (use --budget to cap)")
     g.add_argument("--changed", action="store_true",
                    help="git working-tree changes, including untracked, as editable")
     g.add_argument("--changed-since", metavar="REF",
@@ -559,22 +563,20 @@ def _ask(args: argparse.Namespace) -> int:
         # could not give one instead of inferring it from a count that moved.
         base["unmappable"] = selection.unmappable[:DEMOTED_IN_JSON]
 
-    # What the counts cannot say: which of those files put anything in the
-    # payload. `sent: {map: 7}` is true and still describes a payload with no
-    # source in it, so the shortfall is named rather than left to be inferred.
-    path_only = [] if prefix_reused else _path_only(selection)
-    if path_only:
-        base["path_only"] = path_only[:DEMOTED_IN_JSON]
-    if not prefix_reused and _sends_no_contents(selection):
+    # What the counts cannot say: whether any of those files put anything in
+    # the payload. A budget too small for even one file leaves a directory
+    # listing with healthy-looking counts beside it, which is the shape that
+    # produces a confident answer about code nobody sent.
+    if not prefix_reused and _sends_no_contents(selection, demotions):
         base["no_file_contents"] = True
         narrate(
-            "kopipasta: WARNING — this payload has no file contents in it at all. "
-            f"All {len(path_only)} selected file(s) appear in the structure tree and "
-            "nowhere else.\n"
-            "  Skeletons are extracted from Python and TypeScript/JavaScript only, so "
-            "-m — and --all, which maps everything — renders nothing for this project.\n"
-            "  -r 'src/**'   send those files in full\n"
-            "  -s 'src/**'   send the first 50 lines of each"
+            "kopipasta: WARNING — this payload has no file contents in it at all; "
+            f"every selected file appears in the structure tree and nowhere else.\n"
+            f"  The budget of {budget_tokens:,} tokens left no room for even one file.\n"
+            "  --budget 400k   raise the cap\n"
+            "  -e / -r FILE    name the few files the question is actually about"
+            if budget_tokens
+            else "kopipasta: WARNING — this payload has no file contents in it at all."
         )
 
     # --strict-budget is enforced here as well as on the estimate, because the
@@ -588,6 +590,15 @@ def _ask(args: argparse.Namespace) -> int:
         narrate(
             f"kopipasta: assembled payload is ~{payload.est_tokens:,} tokens, "
             f"over the {budget_tokens:,} budget."
+        )
+    elif not budget_tokens and payload.est_tokens >= LOUD_TOKENS:
+        # `--all` assembles whole files now, so the number that decides the
+        # bill should not have to be dug out of --json. Said once, on stderr,
+        # with the flag that caps it — not a refusal: a caller who asked for
+        # the whole repository in one window is asking on purpose.
+        narrate(
+            f"kopipasta: assembled ~{payload.est_tokens:,} tokens with no budget set. "
+            "--budget 400k caps it; --dry-run prices it first."
         )
 
     # 5. The call.
@@ -612,32 +623,24 @@ def _counts(selection) -> Dict[str, int]:
     return selection.counts()
 
 
-def _path_only(selection) -> List[str]:
-    """Selected files that contribute nothing to the payload but their name.
-
-    A map entry renders to its symbols, and a file with no symbols renders to
-    nothing at all: it shows in the structure tree as `[]`, which the
-    payload's own legend defines as "not sent". `--all` puts every file in the
-    map role, so on a repository in a language `extract_symbols` does not
-    cover — Rust, Go, Java, C, Ruby, PHP — every single file lands here.
-    """
-    if selection is None:
-        return []
-    return sorted(e.rel for e in selection.by_role(MAP) if not has_skeleton(e.path))
-
-
-def _sends_no_contents(selection) -> bool:
+def _sends_no_contents(selection, demotions) -> bool:
     """True when the whole payload is a directory listing.
 
     The shape this tool exists to prevent: a selection that resolved, counts
     that look healthy, and a model answering from the project structure alone
     — which reads exactly like an answer from the code.
+
+    `demotions` is what makes the empty case visible. The ladder removes a
+    path-only file from the selection outright, so "the budget took every last
+    one" and "nothing was selected" look identical from the selection alone.
     """
-    if selection is None or not len(selection):
+    if selection is None:
         return False
     if selection.by_role(EDIT, REF, SNIPPET):
         return False
-    return not any(has_skeleton(e.path) for e in selection.by_role(MAP))
+    if any(has_skeleton(e.path) for e in selection.by_role(MAP)):
+        return False
+    return bool(len(selection) or demotions)
 
 
 def _call_and_report(

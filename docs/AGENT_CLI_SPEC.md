@@ -155,6 +155,13 @@ the TUI's core concept work headlessly.
 | `-x, --exclude` | — | dropped | Applied last; wins over everything. |
 | `--url` | — | fetched text | With `--url-full` / `--url-snippet` to answer the size question. |
 
+`--all` selects **every non-ignored file in full**, read-only. The product is a large context
+window with the codebase actually inside it, so full content is the default and `--budget` is the
+throttle. Starting every file at the skeleton rung instead spent the ladder's entire range before
+the caller asked for anything, left the oracle reasoning about signatures, and sent *nothing at
+all* for a language with no skeletons to extract — `--all` on a Rust repository was a directory
+listing with `sent: {map: 7}` beside it.
+
 Patterns accept globs (`src/**/*.py`), directories (recursive) and literal paths. `.gitignore`
 and binary filtering always apply. Flags are repeatable and order-independent; the last role
 assigned to a path wins, so `-m '**/*.py' -e kopipasta/patcher.py` means "skeleton the whole tree,
@@ -203,11 +210,16 @@ A file with no skeleton skips the middle rung and goes straight to path-only. Fo
 two rungs render identically — to nothing — and only one of the two names is true; reporting
 `-> map` would claim a skeleton was sent for a file that left no trace in the payload.
 
-Demotion is deterministic and explainable:
+Demotion is deterministic and explainable, and falls **bulk before explicit** at every rung —
+someone who typed a path meant that path:
 
 1. Files named by `-e` are **never** demoted. That is the contract of "editable".
-2. Then `-r`, largest first.
-3. Then everything pulled in by `--all` or directory expansion, largest first.
+2. Then everything `--all` or a directory expansion dragged in, largest first.
+3. Then files named by `-r` and `-s`, largest first.
+4. Then skeletons, bulk before explicit.
+
+With no budget set, a payload over ~100k tokens is reported on stderr with the flag that caps it.
+Not a refusal: a caller who asked for the whole repository in one window is asking on purpose.
 
 Every demotion is reported — on stderr, and in `--json` as `demoted`. Silent truncation is what
 makes an answer confidently wrong, so the caller must always be able to see what the oracle did

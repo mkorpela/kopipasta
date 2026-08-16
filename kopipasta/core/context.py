@@ -36,7 +36,7 @@ from kopipasta.core.budget import CHARS_PER_TOKEN, estimate_tokens
 from kopipasta.core.modes import Mode
 from kopipasta.core.resolver import EDIT, MAP, REF, SNIPPET, Entry, Selection
 from kopipasta.file import extract_symbols, read_file_contents
-from kopipasta.prompt import (
+from kopipasta.core.render import (
     get_file_snippet,
     get_language_for_file,
     get_project_structure,

@@ -18,7 +18,7 @@ from kopipasta.file import (
     get_human_readable_size,
     read_file_contents,
 )
-from kopipasta.prompt import get_file_snippet
+from kopipasta.core.render import get_file_snippet
 from kopipasta.prompt import generate_extension_prompt
 from kopipasta.clipboard import copy_to_clipboard, ClipboardError
 from kopipasta.cache import load_selection_from_cache, clear_cache, save_task_to_cache

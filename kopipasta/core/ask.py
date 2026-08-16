@@ -68,7 +68,11 @@ from kopipasta.core.errors import (
 from kopipasta.core.resolver import ROLE_ORDER as ALL_ROLES
 from kopipasta.core.resolver import SelectionSpec, resolve, walk_all
 from kopipasta.core.session import Session
-from kopipasta.interaction import NoHumanAttached, require_human
+from kopipasta.interaction import (
+    NoHumanAttached,
+    get_task_from_user_interactive,
+    require_human,
+)
 from kopipasta.output import (
     HelpToStdoutParser,
     emit,
@@ -351,11 +355,7 @@ def _ask(args: argparse.Namespace) -> int:
         # No safe default exists for "what is the task", so this refuses
         # rather than guesses — naming the flag that avoids the question.
         require_human("A question", "Pass -q/--question, or -q @file.")
-        from rich.console import Console
-
-        from kopipasta.prompt import get_task_from_user_interactive
-
-        question = get_task_from_user_interactive(Console(stderr=True))
+        question = get_task_from_user_interactive()
         if not question.strip():
             raise UsageError(
                 "no question was given.",

@@ -1,7 +1,7 @@
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 import os
-from kopipasta.prompt import get_file_snippet, get_language_for_file
+from kopipasta.core.render import get_file_snippet, get_language_for_file
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle: core.context imports prompt
     from kopipasta.core.resolver import Selection

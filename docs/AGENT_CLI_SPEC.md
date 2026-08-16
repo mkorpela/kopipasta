@@ -619,7 +619,9 @@ core that never prompts:
 kopipasta/
   interaction.py   # is a human attached, and what to do when not
   output.py        # stdout is the artifact; everything else is stderr
+  prompt.py        # TUI only: the user's template, composed for the clipboard
   core/
+    render.py      # structure tree, snippets, languages, secret masking
     resolver.py    # patterns -> resolved selection (role + render mode)
     budget.py      # the demotion ladder
     context.py     # resolved selection -> rendered (prefix, suffix)
@@ -627,6 +629,28 @@ kopipasta/
     backend.py     # exec / claude-cli / anthropic / gemini / openai
     patchflow.py   # parse -> validate -> apply -> report
 ```
+
+### One prompt, two destinations — which do not mix
+
+The renderer is shared; where its output goes is not. The TUI copies to the clipboard for a human
+to paste. `ask` posts to a provider and bills for it. Those are different acts with different
+failure modes, so the import graph keeps them apart and a test enforces it:
+
+- **`core/**` may not import a surface module** (`main`, `tree_selector`, `clipboard`, `prompt`,
+  `selection`). The dependency runs surface → core, never back.
+- **The agent path may not reach the clipboard or the terminal UI.** Importing `core.ask` must not
+  load `pyperclip`, `prompt_toolkit` or `jinja2` — the clipboard, the task editor and the user's
+  template are all clipboard-side.
+- **The clipboard path may not reach a backend.** Building the TUI's prompt must not be able to
+  call a model; pressing `q` cannot spend money.
+
+`core/render.py` exists because of that first rule. Its four helpers lived in `prompt.py`, so
+`core/context.py` reaching in for them made the headless path import the template engine and the
+interactive editor — 212 modules of terminal UI loaded to post a payload to an API. Nothing broke,
+which is exactly why it needed a test rather than a review.
+
+`rich`, `click` and `pygments` are shared on purpose: they arrive through the patcher, which every
+surface routes through rather than around (§14).
 
 **The clipboard prompt is the specification.** It is the one a human has read, tuned and come to
 trust; `ask` sends the same thing to the same models with nobody there to notice a difference. So

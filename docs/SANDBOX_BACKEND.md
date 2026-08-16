@@ -52,8 +52,7 @@ the proxy's `noProxy` list, so those requests never traverse the egress proxy at
 token lives on a file descriptor the harness owns and the CLI reads.
 
 The next thought — capture that Bearer token and replay it in our own raw POST — was
-investigated and **rejected**. The reasoning is recorded as a standing boundary in
-`SECURITY_BOUNDARIES.md` §1, so it is found rather than re-litigated.
+investigated and **rejected** (replaying a client-scoped OAuth credential to bypass metered billing is out of bounds; raw API access requires a standard user-provided API key).
 
 ### The floor is 85% tool schemas — and it *is* reducible
 

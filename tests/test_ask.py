@@ -285,6 +285,34 @@ def test_a_demotion_reports_the_rung_the_file_actually_landed_on(project, capsys
     assert "prose prose prose" not in payload
 
 
+def test_there_is_no_budget_unless_one_is_asked_for(project, capsys):
+    """Unbudgeted is the default, and nothing may quietly install one.
+
+    The whole product is frontloading, so a cap the caller did not ask for is
+    the tool withholding the thing it exists to provide — and withholding it
+    silently, since a demotion nobody requested still reads as `ok: true`.
+    Pinned because the natural way to break it is a config-file default, and
+    argparse would not say a word.
+    """
+    big = "\n".join(f"def f{i}():\n    return {i}" for i in range(4000))
+    (project / "src" / "big.py").write_text(big)
+    data = run_json(capsys, "--all", "-q", "x")
+    assert "demoted" not in data
+    assert data["sent"]["demoted"] == 0
+    assert data["sent"]["map"] == 0  # nothing fell to a skeleton
+    assert "def f3999" in (project / data["request"]).read_text()
+
+
+def test_the_unbudgeted_default_survives_the_config_file(project, capsys, monkeypatch):
+    """A budget is a per-question decision, not an operator setting. Spec §6
+    puts the model in config and leaves the size of the question out of it."""
+    from kopipasta.core import config as cfgmod
+
+    cfg = cfgmod.resolve_backend("ask", flag="none")
+    assert not hasattr(cfg, "budget"), "a config-resolved budget would apply silently"
+    assert askmod.build_parser().get_default("budget") is None
+
+
 def test_strict_budget_refuses_instead_of_demoting(project, capsys):
     big = "\n".join(f"def f{i}():\n    return {i}" for i in range(400))
     (project / "src" / "big.py").write_text(big)

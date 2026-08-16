@@ -196,9 +196,14 @@ Frontloading a full codebase is not literally possible for real repos, even at 1
 tool already renders a file three ways; that becomes a budget policy.
 
 ```
---budget 400k            # target size in tokens (`c` suffix for literal chars)
+--budget 400k            # cap the payload in tokens (`c` suffix for literal chars)
 --strict-budget          # exit 6 instead of demoting
 ```
+
+**There is no budget unless one is asked for.** No default, no config key — a cap the caller did
+not request is the tool withholding the thing it exists to provide, and withholding it silently,
+since a demotion nobody asked for still reports `ok: true`. The size of a question is a
+per-question decision; §6 puts the *model* in configuration and deliberately leaves this out.
 
 Over budget, files **demote down a ladder** rather than disappear:
 

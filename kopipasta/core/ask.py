@@ -146,7 +146,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     b = p.add_argument_group("budget and backend")
     b.add_argument("--budget", metavar="SIZE",
-                   help="target payload size in tokens (400k), or characters with a c suffix")
+                   help="cap the payload, e.g. 400k tokens or 40kc characters.\n"
+                        "Unset by default: the whole selection is sent.")
     b.add_argument("--strict-budget", action="store_true",
                    help="exit 6 instead of demoting files down the ladder")
     b.add_argument("--backend", metavar="SPEC",

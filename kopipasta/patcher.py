@@ -73,7 +73,7 @@ class PatchResult(List[str]):
     """The list of modified paths, plus what the list alone cannot say.
 
     Subclasses `list` deliberately. `tree_selector._handle_apply_patches` and
-    `spike/oracle` both treat the return value as a list of modified files, and
+    `core.apply` both treat the return value as a list of modified files, and
     neither should have to change to gain access to the failures. Iteration,
     equality and `len()` behave exactly as before.
 

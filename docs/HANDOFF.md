@@ -63,9 +63,9 @@ Two constraints that shaped the patcher work and will bite anyone who refactors 
 - **`--allow-delete` / `force` must not suppress the prompt when a human *is* present.** The
   flag means "this run may delete", not "delete without telling me".
 
-### Gemini explicit caching (spike/)
+### Gemini explicit caching
 
-`spike/backends.py` `GeminiBackend` creates/reuses/deletes `cachedContents` explicitly, with
+`kopipasta/core/backend.py` `GeminiBackend` creates/reuses/deletes `cachedContents` explicitly, with
 TTL clamped to `[1s, 3600s]` (default 300s), `close()`, delete-superseded, an `atexit` sweep,
 and `reap_orphans()`. Measured live: **99.9% reuse** vs **0.0%** for implicit caching on the
 "same prefix, new question" pattern that actually matters. Implicit caching only ever hit on
@@ -134,7 +134,7 @@ Command translations from the Windows session:
 
 | Windows PowerShell | macOS zsh |
 | --- | --- |
-| `uv run python -u spike/oracle.py ...` | same (`-u` still worth it) |
+| `uv run python -u spike/oracle.py ...` | now just `kopipasta ask ...` |
 | `Select-String -Path x -Pattern y` | `ag y x` or `rg y x` |
 | `$env:GEMINI_API_KEY="..."` | `export GEMINI_API_KEY=...` |
 | `Get-ChildItem "$env:USERPROFILE\.cache\kopipasta" -Recurse` | `find ~/.cache/kopipasta` |
@@ -144,24 +144,28 @@ Command translations from the Windows session:
 ## 4. How to verify the branch
 
 ```sh
-uv run pytest -q                              # 220, Windows and macOS
-uv run ruff check kopipasta spike tests
-uv run python spike/check_backends.py         # 53 checks, no API key needed, spins a local HTTP mock
+uv run pytest -q                    # 471, Windows / macOS / Linux
+uv run ruff check kopipasta tests
 ```
+
+The backend wire checks are now part of the suite (`tests/test_core_backend.py`), spinning the
+same local HTTP mock — no API key needed.
 
 Live checks (needs `GEMINI_API_KEY`, costs a few cents):
 
 ```sh
-uv run python -u spike/livecheck.py gemini gemini-implicit
-uv run python -c "import sys; sys.path.insert(0,'spike'); import backends; print(backends.GeminiBackend.reap_orphans())"
+kopipasta ask --backend gemini:gemini-3.7-flash --all -q "..." --json   # read `usage`
+kopipasta ask --continue -q "a different question" --json               # turn 2: expect cached
+kopipasta session reap                                                  # must report 0
 ```
 
-**Expect 99.9% on the explicit arm, every run. Do not expect a fixed number on the implicit
-arm** — it was 0% on Windows and 74.3% on 6 of 8 macOS runs with nothing changed on our side,
+`spike/livecheck.py` measured this directly and is gone (findings §4); the two-turn `ask`
+above is the nearest equivalent. **Expect 99.9% reuse on turn 2, every run. Do not expect a
+fixed number from implicit caching** — it was 0% on Windows and 74.3% on 6 of 8 macOS runs with nothing changed on our side,
 which is the finding, not noise to be averaged away (§2.9 of the findings doc). A single
 implicit run tells you nothing; if you need to quote it, run it five times.
 
-`reap_orphans()` must print `0`. A non-zero number means cached content was left rented on
+`kopipasta session reap` must report `0`. A non-zero number means cached content was left rented on
 Google's side — the caches are billed per token-hour until their TTL expires, so orphans cost
 money silently. Checked after ~12 cache creations across the runs above: `0`.
 
@@ -169,7 +173,7 @@ money silently. Checked after ~12 cache creations across the runs above: `0`.
 
 ```sh
 export KOPIPASTA_NONINTERACTIVE=1
-uv run python -u spike/oracle.py ask --mode triage --backend gemini:gemini-3.7-flash --json \
+kopipasta ask --mode triage --backend gemini:gemini-3.7-flash --json \
   -e kopipasta/cache.py -e kopipasta/main.py \
   -q "Concrete defects only, with file and line. ... If a category is clean, say none."
 ```
@@ -269,7 +273,7 @@ kopipasta/core/
 ```
 
 Verify: `uv run pytest -q` (362), `uv run ruff check kopipasta spike tests`,
-`uv run python spike/check_backends.py` (53).
+`uv run pytest -q` (471).
 
 Three decisions that are load-bearing and not obvious from the spec:
 
@@ -328,7 +332,7 @@ kopipasta/patcher.py        PatchResult / FileOutcome — what the bare list cou
 ```
 
 Verify: `uv run pytest -q` (421), `uv run ruff check kopipasta spike tests`,
-`uv run python spike/check_backends.py` (53).
+`uv run pytest -q` (471).
 
 Three things that are load-bearing and not obvious from the spec:
 

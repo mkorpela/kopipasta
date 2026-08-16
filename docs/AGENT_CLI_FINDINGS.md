@@ -712,30 +712,30 @@ Ordered by how much time each cost.
 
 ---
 
-## 4. What is in `spike/`
+## 4. Where the spike went
 
-Throwaway. **Not** the Phase 1 implementation — no core package, no refactor, no TUI changes.
-It exists to prove the pipeline and to make the measurements above reproducible. Delete it once
-Phase 1 lands, or keep `livecheck.py`, which stays useful.
+`spike/` is **deleted**. It existed to prove the pipeline and make the measurements above
+reproducible; the real implementation now does both, so keeping a second copy of the same
+logic would only let the two drift apart.
 
-| File | What |
+| Was | Is now |
 |---|---|
-| `oracle.py` | `pack` / `ask` / `patch`, selection, budget ladder, sessions, JSON envelope |
-| `backends.py` | `exec:`, `claude-cli:`, `anthropic:`, `gemini:`, `openai:` |
-| `check_backends.py` | 21 assertions against a mock speaking all three wire shapes; no keys needed |
-| `livecheck.py` | Real-provider cache measurement; skips providers without credentials |
+| `spike/oracle.py` | `kopipasta/core/ask.py`, `apply.py`, `map.py` — the real verbs |
+| `spike/backends.py` | `kopipasta/core/backend.py` |
+| `spike/check_backends.py` | `tests/test_core_backend.py` — 29 tests against the same local HTTP mock |
+| `spike/livecheck.py` | **nothing** — see below |
 
-```bash
-uv run python spike/check_backends.py                     # offline, always runnable
-uv run python spike/oracle.py pack --all --budget 40k --json
-uv run python spike/oracle.py ask --all --mode triage -q "..." --json \
-    --backend 'claude-cli:-'
-uv run python spike/livecheck.py                          # needs a key for raw providers
-```
+**One capability went with it: live cache measurement.** `livecheck.py` sent the same prefix
+twice with different suffixes, against a real provider, and reported whether turn 2 had to
+re-write the prefix. That is how §2.4, §2.7 and §2.9 were measured, and no unit test can
+replace it — the whole point was to observe a real provider rather than a mock.
 
-The spike reuses the real modules for everything that matters — `file.is_ignored`,
-`file.extract_symbols`, `prompt.get_project_structure`, `patcher.parse_llm_output` /
-`apply_patches`. That is deliberate: it tests the actual components, not stand-ins.
+`kopipasta session reap` covers the orphan check it also did. If the cache-economics questions
+in §5 are worth re-opening, the harness is in git history — `git show "$(git log --diff-filter=D --format=%H -1 -- spike/livecheck.py)^:spike/livecheck.py"` — and it is better
+reborn as a marked live test than restored as a spike.
+
+References to `spike/…` further up this document are **historical**: they record how a
+measurement was taken, not a command you can still run.
 
 ---
 
@@ -751,7 +751,7 @@ measured — and measured more than once, since the Gemini figure moved between 
 
 ```bash
 export OPENAI_API_KEY=...           # shell env; adapters never write keys to session files
-uv run python spike/livecheck.py openai
+kopipasta ask --backend openai:gpt-5 --all -q "..." --json   # and read `usage` in the envelope
 ```
 
 **What the Gemini explicit cache actually costs at target scale.** §2.9 proves the mechanism at

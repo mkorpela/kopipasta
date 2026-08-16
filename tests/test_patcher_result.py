@@ -11,7 +11,7 @@ applied — worktree dirty, inspect `failed`") on, and its absence meant
 already computed — `_apply_diff_patch` prints "(1/2 hunks applied)" — and then
 thrown away at the return.
 
-`PatchResult` subclasses `list` on purpose: `tree_selector` and `spike/oracle`
+`PatchResult` subclasses `list` on purpose: `tree_selector` and `core.apply`
 both use the old return value as a list of modified paths, and neither should
 have to change to learn something new is available.
 """
@@ -173,7 +173,7 @@ def test_allowed_files_normalises_separators_and_dot_slash(project: Path):
 
 
 def test_result_is_still_a_list_of_modified_paths(project: Path):
-    """tree_selector.py and spike/oracle.py use it as a plain list."""
+    """tree_selector.py and core/apply.py use it as a plain list."""
     result = apply_patches(parse_llm_output(NOTHING_MATCHES))
     assert result == []
 

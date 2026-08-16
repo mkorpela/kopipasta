@@ -62,6 +62,10 @@ The `p` (Process) command acts as a universal intake for LLM output:
 *   **Session Exclusion**: `AI_SESSION.md` is strictly ephemeral. Git operations (add/commit) must ensure it is never committed.
 *   **Pathspec Safety**: When programmatic git commands exclude files (e.g., `git add . :!AI_SESSION.md`), code must first verify the file is NOT already ignored by `.gitignore`. Git throws errors if you try to exclude a path that is already ignored.
 
+### Patch Safety: the undo defines the guard
+*   `kopipasta apply` refuses a dirty worktree **only for the files the patch would write**. The undo is `git checkout` of those paths, so uncommitted work elsewhere cannot be harmed and blocking over it costs a run for nothing. Unrelated changes are narrated and left alone; `revert` still declines to touch anything that was already dirty.
+*   This is not cosmetic: `ask` appends `.kopipasta/` to `.gitignore` on first use, so a whole-worktree check meant the tool dirtied the tree and then refused to apply because the tree was dirty — the documented two-step failed on its own first run.
+
 ### Filesystem Safety
 *   **Heuristic Overwrite Protection**: The patcher must guard against "snippet hallucinations" (where an LLM outputs a snippet instead of the full file).
 *   **Trigger Conditions**: A safety check (user confirmation `y/N`) is mandatory for "Full File" overwrites if:

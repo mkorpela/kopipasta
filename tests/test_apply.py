@@ -485,3 +485,76 @@ def _write_session(repo, session_id, editable):
     )
     (d / "001-response.md").write_text("")
     return d
+
+
+# -- the guard protects the undo, not the tidiness of the tree --------------
+
+
+@needs_git
+def test_dirt_the_patch_does_not_touch_does_not_block(repo, capsys):
+    """The undo is `git checkout` of the files the patch wrote.
+
+    An uncommitted change to a file the patch never touches cannot be harmed
+    by that, so refusing over it costs the caller a run and protects nothing.
+    """
+    (repo / "ref.py").write_text("REFERENCE = 999\n")
+    data = run_json(capsys, write_patch(repo, CLEAN_PATCH))
+    assert data["ok"] is True
+    assert "return 100" in (repo / "app.py").read_text()
+    # ...and the bystander is left exactly as it was.
+    assert (repo / "ref.py").read_text() == "REFERENCE = 999\n"
+
+
+@needs_git
+def test_dirt_the_patch_does_touch_still_blocks(repo, capsys):
+    """The case the guard is actually for: reverting this would destroy
+    uncommitted work."""
+    (repo / "app.py").write_text(ORIGINAL + "# my uncommitted work\n")
+    data = run_json(capsys, write_patch(repo, CLEAN_PATCH), expect=EXIT_USAGE)
+    assert data["error"] == "dirty_worktree"
+    assert data["files"] == ["app.py"]
+    assert "# my uncommitted work" in (repo / "app.py").read_text()
+
+
+@needs_git
+def test_unrelated_dirt_is_still_said_out_loud(repo, capsys):
+    """Not blocking is not the same as not mentioning. Applying into a tree
+    that already had changes is worth knowing about."""
+    (repo / "ref.py").write_text("REFERENCE = 999\n")
+    run(write_patch(repo, CLEAN_PATCH))
+    err = capsys.readouterr().err
+    assert "ref.py" in err
+    assert "not touched by this patch" in err
+
+
+@needs_git
+def test_ask_then_apply_works_on_the_first_run_in_a_clean_repo(repo, capsys, tmp_path):
+    """The flagship two-step, from a clean tree, with nothing done in between.
+
+    `ask` writes `.kopipasta/` and appends it to `.gitignore` on first use —
+    so the tool dirtied the worktree and then refused to apply because the
+    worktree was dirty. The documented workflow failed on its own first run,
+    and the suggested fix (`git stash`) would have stashed kopipasta's own
+    bookkeeping.
+    """
+    from kopipasta.core import ask as askmod
+
+    # The fixture pre-seeds the ignore rule; a real project has not heard of
+    # kopipasta yet, and that first write is the whole point of this test.
+    (repo / ".gitignore").write_text("__pycache__/\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "no kopipasta rule yet")
+
+    canned = tmp_path / "canned-patch.md"
+    canned.write_text(CLEAN_PATCH)
+    assert askmod.run(
+        ["--backend", f"none:{canned}", "-e", "app.py", "--mode", "patch",
+         "-q", "make a() return 100", "--json"]
+    ) == EXIT_OK
+    capsys.readouterr()
+
+    assert ".kopipasta/" in (repo / ".gitignore").read_text()
+    data = run_json(capsys, "current")
+    assert data["ok"] is True
+    assert data["applied"] == ["app.py"]
+    assert "return 100" in (repo / "app.py").read_text()

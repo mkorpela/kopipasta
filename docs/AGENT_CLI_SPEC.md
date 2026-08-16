@@ -213,6 +213,13 @@ Every demotion is reported — on stderr, and in `--json` as `demoted`. Silent t
 makes an answer confidently wrong, so the caller must always be able to see what the oracle did
 *not* look at.
 
+The same applies to a file that was never demoted and still sent nothing. `extract_symbols` covers
+Python and the TS/JS family, so on a Rust, Go, Java, C or Ruby repository `--all` puts every file
+in a role that renders to nothing, and the payload is a directory listing with healthy-looking
+counts beside it. `--json` therefore carries `path_only` (files that contributed only their name)
+and, when the payload has no source in it at all, `no_file_contents: true` plus a loud stderr
+warning naming `-r`/`-s` as the way out.
+
 **The estimator must be honest.** Token counts drive this whole mechanism, and a heuristic that
 under-counts silently overshoots the window the flag exists to protect. Count with the provider's
 `count_tokens` or a real tokenizer; if a heuristic is used, calibrate it against measured payloads

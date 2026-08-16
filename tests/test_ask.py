@@ -914,3 +914,65 @@ def test_changed_selects_the_working_tree(project, capsys):
     # Untracked files count: a file you just created is the file you are
     # working on, and leaving it out answers from a stale tree.
     assert data["sent"]["edit"] == 2
+
+
+# -- a payload with nothing in it, spec §5 ----------------------------------
+
+
+@pytest.fixture
+def rust(project):
+    """A project in a language kopipasta cannot skeleton.
+
+    `extract_symbols` handles Python and the TS/JS family. Rust, Go, Java, C,
+    Ruby and PHP all extract to nothing, and every one of them meets `--all`.
+    """
+    for path in ("src/calc.py", "src/main.py"):
+        (project / path).unlink()
+    (project / "src" / "auth.rs").write_text(
+        "pub fn validate(t: &Token) -> bool {\n    t.expires_at <= now()\n}\n"
+    )
+    (project / "src" / "store.rs").write_text("pub struct Store {}\n")
+    (project / "Cargo.toml").write_text("[package]\nname = 'tokensvc'\n")
+    return project
+
+
+def test_all_on_a_language_with_no_skeletons_says_the_payload_is_empty(rust, capsys):
+    """The flagship command, on a Rust repo, sent the file tree and nothing.
+
+    `--all` starts every file in the map role, and a map of a `.rs` file is
+    nothing at all — so `sent: {map: 5}` described a payload containing zero
+    bytes of source. The model is told (truthfully) that it has seen no code;
+    the caller is told `ok: true` and gets a confident-looking answer built
+    from a directory listing.
+    """
+    data = run_json(capsys, "--all", "-q", "which file expires tokens?")
+    assert data["no_file_contents"] is True
+    assert sorted(data["path_only"]) == [
+        ".gitignore", "Cargo.toml", "README.md", "src/auth.rs", "src/store.rs",
+    ]
+    payload = (rust / data["request"]).read_text()
+    assert "expires_at" not in payload  # the tree names it; nothing shows it
+
+
+def test_the_empty_payload_warning_is_loud_and_names_the_way_out(rust, capsys):
+    run("--all", "-q", "x")
+    err = capsys.readouterr().err
+    assert "no file contents" in err
+    assert "-r" in err and "-s" in err  # the flags that do send content
+
+
+def test_files_that_contributed_only_their_name_are_counted(rust, capsys):
+    """Half a payload is not the empty case, but it is still worth saying:
+    two of these files are readable and three are just names."""
+    data = run_json(capsys, "--all", "-r", "src/auth.rs", "-q", "x")
+    assert "no_file_contents" not in data
+    assert "src/auth.rs" not in data["path_only"]
+    assert "src/store.rs" in data["path_only"]
+    assert "path_only" in data and len(data["path_only"]) == 4
+
+
+def test_a_payload_with_contents_does_not_cry_wolf(project, capsys):
+    data = run_json(capsys, "--all", "-q", "x")
+    assert "no_file_contents" not in data
+    err = capsys.readouterr().err
+    assert "no file contents" not in err

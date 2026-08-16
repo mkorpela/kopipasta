@@ -52,7 +52,12 @@ from kopipasta.patcher import apply_patches, normalise_path, parse_llm_output
 # failures
 # --------------------------------------------------------------------------
 class DirtyWorktree(KopipastaError):
-    """The undo is a clean worktree, so we decline to remove it.
+    """A file this patch would write already has uncommitted changes.
+
+    The undo is `git checkout` of the patched files, so applying over
+    uncommitted work in one of them puts that work one failed `--verify` away
+    from being destroyed. Only the files the patch targets can be harmed that
+    way; the rest of the worktree is none of this guard's business.
 
     Not retryable: nothing about running it again changes the answer. The
     caller has to commit, stash, or accept the risk with --dirty-ok.
@@ -64,7 +69,7 @@ class DirtyWorktree(KopipastaError):
     def __init__(self, files: Sequence[str]) -> None:
         shown = ", ".join(files[:5]) + (" …" if len(files) > 5 else "")
         super().__init__(
-            f"the worktree has {len(files)} uncommitted change(s).",
+            f"{len(files)} file(s) this patch would write have uncommitted changes.",
             detail=f"Modified: {shown}",
             hint="git stash            # then re-run\n"
             "kopipasta apply … --dirty-ok   # apply anyway, with no clean undo",
@@ -376,11 +381,30 @@ def _apply(args: argparse.Namespace) -> int:
         )
 
     # 1. The undo, before anything is touched.
+    #
+    #    Scoped to the files this patch will write, because that is the whole
+    #    extent of the undo: reverting is `git checkout` of those paths, and a
+    #    file the patch never touches cannot be harmed by it. Refusing over
+    #    unrelated dirt cost a run and protected nothing — most visibly on the
+    #    documented two-step, where `ask` appends `.kopipasta/` to .gitignore
+    #    on first use and `apply` then refused because the worktree was dirty.
+    #    The tool dirtied the tree and blocked itself, on a clean first run.
     was_dirty = dirty_files(root)
+    targets = {normalise_path(p["file_path"]) for p in patches}
+    blocking = sorted(p for p in (was_dirty or ()) if normalise_path(p) in targets)
+    bystanders = sorted(p for p in (was_dirty or ()) if normalise_path(p) not in targets)
     if was_dirty is None:
         narrate("kopipasta: not a git repository — there is no undo for this.")
-    elif was_dirty and not (args.dirty_ok or args.dry_run):
-        raise DirtyWorktree(sorted(was_dirty))
+    elif blocking and not (args.dirty_ok or args.dry_run):
+        raise DirtyWorktree(blocking)
+    if bystanders:
+        # Not blocking is not the same as not mentioning. `revert` still
+        # declines to touch any of these, so uncommitted work stays safe
+        # whichever way the run ends.
+        narrate(
+            f"kopipasta: {len(bystanders)} uncommitted change(s) not touched by this "
+            "patch, and left alone: " + ", ".join(bystanders[:8])
+        )
 
     # 2. The editable zone, when we know it.
     zone: Optional[Set[str]] = None

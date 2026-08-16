@@ -65,8 +65,9 @@ from kopipasta.core.errors import (
     SchemaInvalid,
     UsageError,
 )
+from kopipasta.core.resolver import EDIT, MAP, REF, SNIPPET
 from kopipasta.core.resolver import ROLE_ORDER as ALL_ROLES
-from kopipasta.core.resolver import SelectionSpec, resolve, walk_all
+from kopipasta.core.resolver import SelectionSpec, has_skeleton, resolve, walk_all
 from kopipasta.core.session import Session
 from kopipasta.interaction import (
     NoHumanAttached,
@@ -558,6 +559,24 @@ def _ask(args: argparse.Namespace) -> int:
         # could not give one instead of inferring it from a count that moved.
         base["unmappable"] = selection.unmappable[:DEMOTED_IN_JSON]
 
+    # What the counts cannot say: which of those files put anything in the
+    # payload. `sent: {map: 7}` is true and still describes a payload with no
+    # source in it, so the shortfall is named rather than left to be inferred.
+    path_only = [] if prefix_reused else _path_only(selection)
+    if path_only:
+        base["path_only"] = path_only[:DEMOTED_IN_JSON]
+    if not prefix_reused and _sends_no_contents(selection):
+        base["no_file_contents"] = True
+        narrate(
+            "kopipasta: WARNING — this payload has no file contents in it at all. "
+            f"All {len(path_only)} selected file(s) appear in the structure tree and "
+            "nowhere else.\n"
+            "  Skeletons are extracted from Python and TypeScript/JavaScript only, so "
+            "-m — and --all, which maps everything — renders nothing for this project.\n"
+            "  -r 'src/**'   send those files in full\n"
+            "  -s 'src/**'   send the first 50 lines of each"
+        )
+
     # --strict-budget is enforced here as well as on the estimate, because the
     # ladder works from file sizes and cannot see the structure blob or the
     # mode instructions. An underestimate must not become a silent overshoot.
@@ -591,6 +610,34 @@ def _counts(selection) -> Dict[str, int]:
     if selection is None:
         return {"edit": 0, "ref": 0, "map": 0, "snippet": 0}
     return selection.counts()
+
+
+def _path_only(selection) -> List[str]:
+    """Selected files that contribute nothing to the payload but their name.
+
+    A map entry renders to its symbols, and a file with no symbols renders to
+    nothing at all: it shows in the structure tree as `[]`, which the
+    payload's own legend defines as "not sent". `--all` puts every file in the
+    map role, so on a repository in a language `extract_symbols` does not
+    cover — Rust, Go, Java, C, Ruby, PHP — every single file lands here.
+    """
+    if selection is None:
+        return []
+    return sorted(e.rel for e in selection.by_role(MAP) if not has_skeleton(e.path))
+
+
+def _sends_no_contents(selection) -> bool:
+    """True when the whole payload is a directory listing.
+
+    The shape this tool exists to prevent: a selection that resolved, counts
+    that look healthy, and a model answering from the project structure alone
+    — which reads exactly like an answer from the code.
+    """
+    if selection is None or not len(selection):
+        return False
+    if selection.by_role(EDIT, REF, SNIPPET):
+        return False
+    return not any(has_skeleton(e.path) for e in selection.by_role(MAP))
 
 
 def _call_and_report(

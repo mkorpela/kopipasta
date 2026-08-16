@@ -153,6 +153,98 @@ def test_gitignored_and_binary_files_never_enter_a_payload(project, capsys):
     assert "binary" not in payload  # the bytes of a binary file are never read
 
 
+# -- the payload contains what it says it contains, spec §6 -----------------
+
+
+def test_the_payload_carries_the_structure_tree_as_json(project, capsys):
+    """The tree is the anti-hallucination device: it is how the model knows
+    which files exist, and therefore which ones it was *not* given."""
+    data = run_json(capsys, "-e", "src/calc.py", "-q", "x")
+    payload = (project / data["request"]).read_text()
+    assert "## Project Structure" in payload
+    start = payload.index("```json", payload.index("## Project Structure")) + len("```json")
+    tree = json.loads(payload[start : payload.index("```", start)].strip())
+    # Every non-ignored file, not just the selected ones.
+    assert sorted(tree["src"]) == ["calc.py", "main.py"]
+    assert "README.md" in tree
+    # A skeleton lives in the tree; a file sent under a zone heading does not
+    # repeat its symbols there.
+    assert tree["src"]["calc.py"] == []
+
+
+def test_a_mapped_file_carries_its_skeleton_in_the_tree(project, capsys):
+    data = run_json(capsys, "-m", "src/calc.py", "-q", "x")
+    payload = (project / data["request"]).read_text()
+    assert "def add(a, b)" in payload
+    assert "Add two numbers." in payload
+
+
+@pytest.mark.parametrize(
+    "name, body",
+    [
+        ("notes.md", "# Notes\n\nWHOLE_POINT_OF_THE_FILE\n"),      # no AST at all
+        ("schema.sql", "CREATE TABLE t (id int); -- WHOLE_POINT_OF_THE_FILE\n"),
+        ("src/broken.py", "def WHOLE_POINT_OF_THE_FILE(:\n"),       # will not parse
+        ("src/consts.py", "WHOLE_POINT_OF_THE_FILE = 1\n"),         # no top-level defs
+    ],
+)
+def test_a_named_file_with_no_skeleton_still_reaches_the_model(
+    project, capsys, name, body
+):
+    """`-m` is the one role whose rendering does not exist for every file.
+
+    A MAP entry with no symbols contributes nothing at all: it shows in the
+    structure tree as `[]`, which the legend defines as "not sent". So this
+    reported `map: 1`, wrote the file into selection.json, and sent the model
+    zero bytes of it — a selected file the caller was told had been sent.
+    """
+    (project / name).write_text(body)
+    data = run_json(capsys, "-m", name, "-q", "x")
+    payload = (project / data["request"]).read_text()
+    assert "WHOLE_POINT_OF_THE_FILE" in payload
+    # Counted as what it actually is, and named rather than left to inference.
+    assert data["sent"]["map"] == 0
+    assert data["sent"]["snippet"] == 1
+    assert data["unmappable"] == [name]
+
+
+def test_every_selected_file_appears_under_a_zone_heading(project, capsys):
+    """The payload's own legend tells the model that a file it cannot find
+    under a zone heading was never sent. That has to be true of every file the
+    report claims to have sent."""
+    (project / "docs").mkdir()
+    (project / "docs" / "spec.md").write_text("# Spec\n")
+    (project / "pyproject.toml").write_text("[project]\nname = 'x'\n")
+    data = run_json(
+        capsys,
+        "-e", "src/calc.py",
+        "-r", "src/main.py",
+        "-m", "docs/spec.md",
+        "-m", "pyproject.toml",
+        "-q", "x",
+    )
+    payload = (project / data["request"]).read_text()
+    blocks = {line.split(":", 1)[1].split("(")[0].strip()
+              for line in payload.splitlines() if line.startswith("# FILE:")}
+    assert blocks == {"src/calc.py", "src/main.py", "docs/spec.md", "pyproject.toml"}
+    # And the counts add up to what is in the payload, so `sent` can be trusted
+    # without opening the request.
+    assert sum(data["sent"][r] for r in ("edit", "ref", "map", "snippet")) == len(blocks)
+
+
+def test_all_leaves_an_unmappable_file_path_only_rather_than_paying_for_it(
+    project, capsys
+):
+    """The fallback is for a file someone *named*. `--all` promises path-only
+    in the structure tree, and 4KB apiece across a repository is not that."""
+    (project / "notes.md").write_text("# Notes\n\nNOT_WORTH_4KB\n")
+    data = run_json(capsys, "--all", "-q", "x")
+    payload = (project / data["request"]).read_text()
+    assert '"notes.md"' in payload  # named in the tree
+    assert "NOT_WORTH_4KB" not in payload  # but not paid for
+    assert "unmappable" not in data
+
+
 # -- the budget ladder, spec §5 --------------------------------------------
 
 
@@ -167,6 +259,22 @@ def test_over_budget_files_walk_down_the_ladder_instead_of_vanishing(project, ca
     payload = (project / data["request"]).read_text()
     assert '"big.py"' in payload  # still named in the structure tree, not gone
     assert "def f399" not in payload  # ... but its body is not
+
+
+def test_a_demotion_reports_the_rung_the_file_actually_landed_on(project, capsys):
+    """The middle rung of the ladder does not exist for every file.
+
+    A `.md` has no skeleton, so demoting it to one renders it to nothing while
+    the report says a skeleton was sent. It goes straight to path-only, which
+    is both the truth and the rung that frees the budget the caller asked for.
+    """
+    (project / "big.md").write_text("# Doc\n\n" + "prose prose prose\n" * 400)
+    data = run_json(capsys, "-r", "big.md", "-e", "src/calc.py", "--budget", "1k", "-q", "x")
+    demoted = {d["path"]: d for d in data["demoted"]}
+    assert demoted["big.md"]["to"] == "path-only"
+    payload = (project / data["request"]).read_text()
+    assert '"big.md"' in payload  # still named in the structure tree
+    assert "prose prose prose" not in payload
 
 
 def test_strict_budget_refuses_instead_of_demoting(project, capsys):

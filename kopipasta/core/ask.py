@@ -387,6 +387,14 @@ def _ask(args: argparse.Namespace) -> int:
             raise BudgetExceeded(wanted_tokens, budget_tokens or 0, [d.path for d in demotions])
         if demotions:
             narrate(budgetmod.summarise(demotions))
+        if selection.unmappable:
+            # Never silent: -m promised a skeleton and these files got the
+            # first 50 lines instead, because they have no skeleton to give.
+            narrate(
+                f"kopipasta: {len(selection.unmappable)} file(s) named by -m have no "
+                "symbols to extract; sent as snippets instead: "
+                + ", ".join(selection.unmappable[:8])
+            )
         for flag, pattern in selection.unmatched():
             # Not fatal — the rest of the selection stands — but never silent:
             # a typo'd selector that still leaves files selected is the exact
@@ -527,6 +535,11 @@ def _ask(args: argparse.Namespace) -> int:
         base["demoted"] = [d.as_json() for d in demotions[:DEMOTED_IN_JSON]]
     if selection is not None and selection.unmatched():
         base["unmatched"] = [{"flag": f, "pattern": p} for f, p in selection.unmatched()]
+    if selection is not None and selection.unmappable:
+        # `sent` already counts these under `snippet` rather than `map`. This
+        # names them, so a caller who asked for a skeleton can see which files
+        # could not give one instead of inferring it from a count that moved.
+        base["unmappable"] = selection.unmappable[:DEMOTED_IN_JSON]
 
     # --strict-budget is enforced here as well as on the estimate, because the
     # ladder works from file sizes and cannot see the structure blob or the

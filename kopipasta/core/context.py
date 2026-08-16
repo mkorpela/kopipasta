@@ -34,10 +34,11 @@ LEGEND = (
     "The tree below lists every non-ignored file in the project, including "
     "files whose contents were not sent. A file mapped to a list of "
     "signatures was included as a skeleton: those signatures are all you have "
-    "of it. A file mapped to [] was either sent in full under one of the zone "
-    "headings below, or not sent at all — if you cannot find it in a zone, "
-    "you have not seen it. Never infer the contents of a file you were not "
-    "given: name it in missing_context instead."
+    "of it. A file mapped to [] was either sent under one of the zone "
+    "headings below — in full, or as its first lines, whichever that heading "
+    "says — or not sent at all. If you cannot find it in a zone, you have not "
+    "seen it. Never infer the contents of a file you were not given: name it "
+    "in missing_context instead."
 )
 
 

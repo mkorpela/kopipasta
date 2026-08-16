@@ -156,6 +156,15 @@ and binary filtering always apply. Flags are repeatable and order-independent; t
 assigned to a path wins, so `-m '**/*.py' -e kopipasta/patcher.py` means "skeleton the whole tree,
 but give me that one file in full."
 
+**A role a file cannot be rendered in is not a role it keeps.** `-m` is the one role whose
+rendering does not exist for every file: a `.md`, a `.sql`, a file that will not parse and a
+module with no top-level symbols all extract to nothing, and a skeleton of nothing is invisible —
+it reaches the model as `[]` in the structure tree, which the payload's own legend defines as
+"not sent at all". A file *named* by `-m` therefore falls back to the cheapest rendering every
+file has, its first 50 lines, and is reported under `snippet` with the fallback listed in
+`unmappable`. Files dragged in by `--all` keep path-only, because that is what `--all` promises
+and 4KB apiece across a repository is not.
+
 Convenience selectors, because agents think in diffs:
 
 ```
@@ -185,6 +194,10 @@ Over budget, files **demote down a ladder** rather than disappear:
 ```
 full content  ->  AST skeleton  ->  path-only (still present in the structure tree)
 ```
+
+A file with no skeleton skips the middle rung and goes straight to path-only. For that file the
+two rungs render identically — to nothing — and only one of the two names is true; reporting
+`-> map` would claim a skeleton was sent for a file that left no trace in the payload.
 
 Demotion is deterministic and explainable:
 

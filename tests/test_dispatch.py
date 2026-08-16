@@ -117,14 +117,22 @@ def test_tui_still_forwards_its_paths(tmp_path, monkeypatch):
 
 def test_specced_but_unimplemented_verbs_say_so(tmp_path, monkeypatch):
     """A verb that is specced and unbuilt says so. "Not yet" and "no such
-    thing" send the caller to different places, and neither is a filename."""
+    thing" send the caller to different places, and neither is a filename.
+
+    Every verb in spec §3 is now built, so this drives the rule with a name
+    that is only half-added — which is exactly the state the next verb passes
+    through, and the state in which a bare word would otherwise be read as a
+    filename and open the TUI.
+    """
     monkeypatch.chdir(tmp_path)
-    for verb in ("map", "session"):
-        with pytest.raises(UsageError, match="not implemented yet"):
-            _parse([verb])
+    monkeypatch.setattr(
+        KopipastaApp, "SUBCOMMANDS", KopipastaApp.SUBCOMMANDS + ("summarise",)
+    )
+    with pytest.raises(UsageError, match="not implemented yet"):
+        _parse(["summarise"])
 
 
-@pytest.mark.parametrize("verb", ["ask", "apply", "config"])
+@pytest.mark.parametrize("verb", ["ask", "apply", "map", "config"])
 def test_implemented_verbs_are_dispatched_before_the_legacy_parser(verb, tmp_path, monkeypatch):
     """`ask -e file -q "..."` is not a command line the TUI's parser can be
     taught. It has to be intercepted before argparse sees it, or every verb

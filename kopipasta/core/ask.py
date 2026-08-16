@@ -34,7 +34,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Sequence
 
-from kopipasta.cache import find_project_root
+from kopipasta.cache import find_project_root, get_project_key
 from kopipasta.config import read_env_file, read_gitignore, read_project_context
 from kopipasta.core import budget as budgetmod
 from kopipasta.core import modes as modesmod
@@ -282,6 +282,22 @@ def _looks_like_a_patch(text: str) -> bool:
     return bool(_PATCH_MARKERS.search(text or ""))
 
 
+def _planned_backend(args: argparse.Namespace):
+    """Which backend would answer, whether or not one is going to.
+
+    A dry run must not fail because no backend is configured — assembling a
+    payload needs no key. But it should still size that payload for the
+    provider that would have read it, so this returns None rather than raising
+    and the estimator falls back to the pessimistic default.
+    """
+    try:
+        return resolve_backend("ask", flag=args.backend)
+    except KopipastaError:
+        if not args.dry_run:
+            raise
+        return None
+
+
 def _ask(args: argparse.Namespace) -> int:
     started = time.monotonic()
     root = str(find_project_root())
@@ -297,10 +313,15 @@ def _ask(args: argparse.Namespace) -> int:
 
     # 1. Backend first: it is instant, and a missing key should not be
     #    discovered after a 40-second walk of a large repository.
-    cfg = resolve_backend(
-        "ask", flag="none" if args.dry_run else args.backend
-    )
+    #
+    #    Resolved twice under --dry-run, deliberately. The run calls no model,
+    #    but "how big is this payload" is the whole question a dry run exists
+    #    to answer, and the answer differs by ~50% between tokenizers. So the
+    #    *planned* provider sets the estimator even when `none` does the work.
+    planned = _planned_backend(args)
+    cfg = resolve_backend("ask", flag="none") if args.dry_run else planned
     cfg.require_api_key()
+    cpt = budgetmod.chars_per_token(planned.provider if planned else None)
     mode = modesmod.get(args.mode)
     question = _text_arg(args.question, root, "-q") or ""
 
@@ -355,13 +376,13 @@ def _ask(args: argparse.Namespace) -> int:
             "--all        everything, subject to --budget",
         )
 
-    budget_tokens = budgetmod.parse_budget(args.budget)
+    budget_tokens = budgetmod.parse_budget(args.budget, cpt)
     selection = None
     demotions: List[budgetmod.Demotion] = []
     if not spec.is_empty():
         selection = resolve(spec, ignore, root)
-        wanted_tokens = budgetmod.estimate_tokens(budgetmod.selection_chars(selection))
-        demotions = budgetmod.demote_to_fit(selection, budget_tokens)
+        wanted_tokens = budgetmod.estimate_tokens(budgetmod.selection_chars(selection), cpt)
+        demotions = budgetmod.demote_to_fit(selection, budget_tokens, cpt)
         if demotions and args.strict_budget:
             raise BudgetExceeded(wanted_tokens, budget_tokens or 0, [d.path for d in demotions])
         if demotions:
@@ -407,8 +428,8 @@ def _ask(args: argparse.Namespace) -> int:
             # budget that is merely reported as exceeded.
             tail = len(render_suffix(question, mode))
             overhead = len(prefix) + tail - budgetmod.selection_chars(selection)
-            room = budget_tokens - budgetmod.estimate_tokens(overhead)
-            extra = budgetmod.demote_to_fit(selection, max(1, room))
+            room = budget_tokens - budgetmod.estimate_tokens(overhead, cpt)
+            extra = budgetmod.demote_to_fit(selection, max(1, room), cpt)
             if extra and args.strict_budget:
                 # `--strict-budget` means "exit 6 instead of demoting", and a
                 # second place that demotes is a second place that has to obey
@@ -416,7 +437,7 @@ def _ask(args: argparse.Namespace) -> int:
                 # this one silently did not, so a strict run under the estimate
                 # but over the rendered size demoted anyway and exited 0.
                 raise BudgetExceeded(
-                    budgetmod.estimate_tokens(len(prefix) + tail),
+                    budgetmod.estimate_tokens(len(prefix) + tail, cpt),
                     budget_tokens,
                     [d.path for d in demotions + extra],
                 )
@@ -470,7 +491,7 @@ def _ask(args: argparse.Namespace) -> int:
         updates=updates,
         env_vars=env_vars,
     )
-    payload = Payload(prefix, suffix)
+    payload = Payload(prefix, suffix, cpt)
     request_path = session.write_request(prefix, suffix, prefix_reused=prefix_reused)
     # What this turn's context actually contains: the prefix it inherited, with
     # anything selected this turn laid over the top. `hashes` alone is only the
@@ -523,7 +544,7 @@ def _ask(args: argparse.Namespace) -> int:
     # 5. The call.
     try:
         return _call_and_report(args, cfg, mode, session, payload, base, question, ignore,
-                                root, check_deadline)
+                                root, check_deadline, budget_tokens)
     except KopipastaError as exc:
         # §15: when the oracle is wrong the caller inherits the answer with
         # none of the evidence. Failures carry what was sent, so the caller can
@@ -553,6 +574,7 @@ def _call_and_report(
     ignore: Sequence[str],
     root: str,
     check_deadline,
+    budget_tokens: Optional[int] = None,
 ) -> int:
     # A rented cache is only worth creating when a turn 2 is actually intended.
     # A one-shot question would pay storage for nothing, so caching follows the
@@ -569,7 +591,30 @@ def _call_and_report(
         timeout=timeout,
         cache=wants_cache,
         cache_ttl_s=args.cache_ttl,
+        # Which project is renting, stamped into the provider-side display
+        # name. One API key serves every repo on the machine and the cache
+        # list is per key, so this is what lets `session reap` sweep here
+        # without deleting a lease another repo is still paying for.
+        label=get_project_key(root),
     )
+    # The last check before the payload is sent: `--strict-budget` promised
+    # the caller it would refuse rather than overshoot, and only the
+    # provider's own tokenizer can keep that promise (spec §5). Elsewhere the
+    # heuristic merely decides what to demote, which its calibration covers.
+    #
+    # This catches overshoot only. The earlier strict check fires before the
+    # payload is rendered, so there is nothing to count yet, and a run refused
+    # there is refused on the estimate. That direction is the safe one — the
+    # ratio is deliberately the lowest measured — and buying back the last
+    # percent would mean rendering before deciding, which is a worse trade
+    # than the percent is worth.
+    if budget_tokens and args.strict_budget:
+        counted = _count_tokens(backend, payload)
+        if counted:
+            base["input_tokens_counted"] = counted
+            if counted > budget_tokens:
+                raise BudgetExceeded(counted, budget_tokens, [])
+
     digest = GeminiBackend.digest(payload.prefix)
     adopted = None
     if wants_cache and isinstance(backend, GeminiBackend):
@@ -651,6 +696,16 @@ def _call_and_report(
 
     _emit(args, base, result, mode, completion.text, session)
     return EXIT_OK
+
+
+def _count_tokens(backend, payload: Payload) -> Optional[int]:
+    """The provider's real count, when it has one to give.
+
+    Optional by design: a backend that cannot count is not a backend that
+    cannot run, and the estimate it falls back to is pessimistic.
+    """
+    counter = getattr(backend, "count_tokens", None)
+    return counter(payload.text) if callable(counter) else None
 
 
 def _release_cache(

@@ -582,8 +582,16 @@ def _extract_frontend_symbols(path: str) -> List[str]:
 def extract_symbols(path: str) -> List[str]:
     """Extract top-level class and function symbols from supported files.
 
-    Private names (starting with '_') are omitted; dunder names are kept
-    and normalized (e.g. __init__ -> init).
+    Private names are included, dunders normalized (`__init__` -> `init`).
+
+    Hiding `_`-prefixed names is the right instinct for API documentation and
+    the wrong one here: the reader is a model about to change the code, and
+    the helpers are where the code lives. 37% of this repo's symbols are
+    private — `map.py` would show 2 of its 7 functions — and a skeleton that
+    omits them does not read as partial, it reads as complete. The model then
+    writes a helper that already exists, or asks for the whole file and gives
+    back the saving. Measured cost of including them: +18% on a full map, in a
+    role that is already an order of magnitude cheaper than file content.
 
     Returns a list of symbol strings:
       - "class ClassName(Base) [method1, method2]  # Docstring" for classes
@@ -609,7 +617,6 @@ def extract_symbols(path: str) -> List[str]:
                 _normalize_method_name(child.name)
                 for child in ast.iter_child_nodes(node)
                 if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and not _is_private(child.name)
             ]
             sig = _get_signature(node)
             doc = _get_docstring_suffix(node)
@@ -618,9 +625,8 @@ def extract_symbols(path: str) -> List[str]:
             else:
                 symbols.append(f"{sig}{doc}")
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if not _is_private(node.name):
-                sig = _get_signature(node)
-                doc = _get_docstring_suffix(node)
-                symbols.append(f"{sig}{doc}")
+            sig = _get_signature(node)
+            doc = _get_docstring_suffix(node)
+            symbols.append(f"{sig}{doc}")
 
     return symbols

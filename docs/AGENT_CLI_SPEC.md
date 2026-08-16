@@ -110,7 +110,7 @@ kopipasta tui                        # the same, named explicitly
 kopipasta ask     [selectors] -q ... # assemble context + ask model + record turn
 kopipasta apply   [file|-|current]   # apply patches, check worktree, verify & diffstat
 kopipasta map     [selectors]        # symbol skeleton only (cheap whole-repo map)
-kopipasta session {new|ls|show|end}  # manage on-disk conversations
+kopipasta session {ls|show|diff|rm|reap}  # manage on-disk conversations
 kopipasta config  --show             # resolved configuration and where each value came from
 ```
 
@@ -201,6 +201,17 @@ under-counts silently overshoots the window the flag exists to protect. Count wi
 `count_tokens` or a real tokenizer; if a heuristic is used, calibrate it against measured payloads
 and bias it pessimistic. (Findings §2.5: the original 3.6 chars/token assumption measured 44% low
 on real input.)
+
+**And it must be honest per provider.** One global ratio cannot serve two tokenizers that differ
+by nearly 50%: Anthropic measures 2.50 chars/token on this repo's payloads and Gemini 3.42–3.87.
+A single pessimistic constant is not a safe compromise — it demoted about a third of what would
+have fit on Gemini, in a tool whose product is frontloading. So the ratio comes from the planned
+provider (including under `--dry-run`, whose entire job is sizing), an unmeasured provider gets
+the pessimistic default, and within a provider the ratio is the lowest measured rather than the
+mean. Measured end to end after calibration: 21,854 estimated against 21,772 billed.
+
+`--strict-budget` promises to refuse rather than overshoot, and no heuristic can keep that
+promise, so the payload is counted with the provider's own tokenizer before it is sent.
 
 `kopipasta ask --budget 400k --dry-run --json` shows the size and shape of a payload before any money is
 spent on it.
@@ -345,6 +356,20 @@ To continue a conversation:
 The `current` pointer is written on every run as a convenient handle for inspection and
 tooling (e.g. `kopipasta apply current`), but `ask` will not resume it unless `--continue`
 or `--session` is explicitly specified.
+
+`kopipasta session` follows the same asymmetry. Its reporting subcommands — `ls`, `show`,
+`diff` — default to `current` when given no id, because reading is cheap and a stale pointer
+costs nothing. **`rm` does not**: "delete the thing I did not name" is not a default anything
+should have. Ids are validated against a character whitelist as well as the usual `..` and
+absolute-path checks, since `rm` is the one path in the package that removes a tree.
+
+`session reap` hands back provider caches this project rented that no live session is holding,
+and is **scoped to the current project with no flag to widen it**. A lease lives in the project
+that took it, so a machine-wide sweep could read one project's leases and delete another's live
+cache — the §7 money bug, one scope up. The asymmetry decides it: an abandoned cache costs
+storage rent bounded by its TTL, a destroyed live one costs a full re-creation on every
+following turn. Crash recovery does not need the wider scope, because the leases are still on
+disk in the project that took them.
 
 ---
 
@@ -516,7 +541,11 @@ A large patch landing unattended needs the guarantees a human review would have 
  The shrink/hallucination guard declines suspicious overwrites by default; `--force` overrides.
 - The shrink/hallucination guard declines the file by default; `--force` overrides.
 - `--verify 'pytest -q'` runs after applying, with `--revert-on-fail` to restore via git.
-- `--commit [msg]` returns a revertable SHA in the JSON.
+- ~~`--commit [msg]` returns a revertable SHA in the JSON.~~ **Cancelled.** A tool that assembles
+  context does not need to write git history, and `apply && git commit` is one line the caller
+  already knows how to write. Everything it would need is in place — `PatchResult` names exactly
+  the files this run touched, so it could stage those and never `git add -A` — so this is a
+  scope decision, not a difficulty one.
 
 Two constraints any implementation must honour:
 
@@ -598,9 +627,16 @@ Two rules for anything added here:
 
 - Bare `kopipasta` is the TUI. The human loop keeps working.
 - `.gitignore` respect, binary filtering, secret masking, hallucination guards.
-- The patcher's format tolerance — unified diff, search/replace, full file, delete, `<<<RESET>>>`.
-  This is the asset that makes one-shot large patches land at all, and every new surface routes
-  through it rather than around it.
+- The patcher's format tolerance — unified diff, search/replace, full file, delete, `<<<RESET>>>`,
+  and a block the model never fenced. This is the asset that makes one-shot large patches land at
+  all, and every new surface routes through it rather than around it. Tightening a prompt to
+  avoid a parse failure is the opposite move: it asks the model to be careful instead of making
+  the tool tolerant, and it only holds until the next model.
+
+  The unfenced case marks the edge of that tolerance, though. With no closing fence there is no
+  end marker, so it accepts only text carrying an unmistakable patch marker and never a
+  whole-file replacement — `# FILE: x` followed by a model explaining itself must not overwrite
+  `x` with the explanation.
 - Explicit context control. The selection is still yours; it just comes from argv instead of arrow
   keys.
 

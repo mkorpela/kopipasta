@@ -123,6 +123,14 @@ def _dispatch_verb(verb: str, argv: List[str]) -> int:
         from kopipasta.core import apply as apply_verb
 
         return apply_verb.run(argv)
+    if verb == "map":
+        from kopipasta.core import map as map_verb
+
+        return map_verb.run(argv)
+    if verb == "session":
+        from kopipasta.core import session_cmd
+
+        return session_cmd.run(argv)
     if verb == "config":
         return _config_verb(argv)
     raise UsageError(f"'{verb}' has no handler.")  # pragma: no cover
@@ -186,7 +194,7 @@ def _config_verb(argv: List[str]) -> int:
 #: The verbs that exist today, dispatched before the legacy argument parser.
 #: Everything else in SUBCOMMANDS is recognised only so it can say "not yet"
 #: instead of being mistaken for a filename.
-VERBS = ("ask", "apply", "config")
+VERBS = ("ask", "apply", "map", "session", "config")
 
 
 class KopipastaApp:

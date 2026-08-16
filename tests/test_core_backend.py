@@ -49,6 +49,11 @@ class State:
         self.expire_next = False
         self.truncate_next = False
         self.status = None  # (code, body) forced on the next generate call
+        self.count_status = None  # HTTP code forced on the next countTokens
+        #: What GET /cachedContents answers with. Rented resources are the one
+        #: thing this tool can leak money on, so the sweep is tested against a
+        #: list it does not own as well as one it does.
+        self.caches = []
 
 
 @pytest.fixture
@@ -71,6 +76,11 @@ def server():
             # only way to test that a cache was not left billing silently.
             state.deleted.append(self.path)
             self._send(200, {})
+
+        def do_GET(self):
+            if self.path == "/v1beta/cachedContents":
+                return self._send(200, {"cachedContents": state.caches})
+            self._send(404, {"error": {"message": "no such route"}})
 
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["content-length"])))
@@ -109,6 +119,18 @@ def server():
                         "usageMetadata": {"totalTokenCount": CACHE_TOKENS},
                     },
                 )
+            if re.fullmatch(r"/v1beta/models/[^:/]+:countTokens", path):
+                state.seen["gemini_count"] = (body, dict(self.headers))
+                if state.count_status:
+                    code = state.count_status
+                    state.count_status = None
+                    return self._send(code, {"error": {"code": code, "message": "no"}})
+                text = "".join(
+                    p.get("text", "")
+                    for c in body.get("contents", [])
+                    for p in c.get("parts", [])
+                )
+                return self._send(200, {"totalTokens": len(text) // 4})
             if re.fullmatch(r"/v1beta/models/[^:/]+:generateContent", path):
                 state.seen["gemini"] = (body, dict(self.headers))
                 if state.status:
@@ -268,7 +290,73 @@ def test_gemini_cache_carries_an_explicit_ttl_and_an_identifiable_name(server):
     assert body["displayName"].startswith("kopipasta-")
 
 
-def test_gemini_ttl_is_clamped_at_both_ends(server):
+def test_the_display_name_says_which_project_rented_it(server):
+    """One API key serves every repo on the machine and the cache list is per
+    key, so without this a sweep in repo A cannot tell repo B's live lease from
+    its own orphan."""
+    gem(server, cache=True, label="myrepo-abc123").complete(PREFIX, SUFFIX)
+    assert server.created[0]["displayName"].startswith("kopipasta-myrepo-abc123-")
+
+
+def test_the_sweep_leaves_a_cache_a_session_is_still_renting(server, monkeypatch):
+    """The money bug, from the other side.
+
+    A named session deliberately leaves its cache alive so turn 2 can reuse
+    it, so "a cache exists that no process is using" is the expected state.
+    An unfiltered sweep deleted those, and every following turn silently paid
+    full price — measured live at 16,329 tokens re-created per turn.
+    """
+    monkeypatch.setenv("GEMINI_BASE_URL", f"{server.url}/v1beta")
+    server.caches = [
+        {"name": "cachedContents/leased", "displayName": "kopipasta-proj-aaaa"},
+        {"name": "cachedContents/orphan", "displayName": "kopipasta-proj-bbbb"},
+    ]
+    assert be.GeminiBackend.reap_orphans(keep=["cachedContents/leased"]) == 1
+    assert server.deleted == ["/v1beta/cachedContents/orphan"]
+
+
+def test_the_sweep_leaves_another_project_alone(server, monkeypatch):
+    monkeypatch.setenv("GEMINI_BASE_URL", f"{server.url}/v1beta")
+    server.caches = [
+        {"name": "cachedContents/mine", "displayName": "kopipasta-proj_a-aaaa"},
+        {"name": "cachedContents/theirs", "displayName": "kopipasta-proj_b-bbbb"},
+        {"name": "cachedContents/notours", "displayName": "something-else"},
+    ]
+    assert be.GeminiBackend.reap_orphans(label="proj_a") == 1
+    assert server.deleted == ["/v1beta/cachedContents/mine"]
+    # Without a label the sweep is machine-wide, which is what you want after
+    # a crash and nowhere else.
+    server.deleted.clear()
+    assert be.GeminiBackend.reap_orphans() == 2
+
+
+def test_a_session_lease_is_handed_back_by_name(server, monkeypatch):
+    """`session rm` deletes the only record of the resource name, so the
+    release has to happen first or the meter runs with nothing to read it."""
+    monkeypatch.setenv("GEMINI_BASE_URL", f"{server.url}/v1beta")
+    assert be.release_lease({"provider": "gemini", "name": "cachedContents/x"}) is True
+    assert server.deleted == ["/v1beta/cachedContents/x"]
+    # Providers whose caches cost nothing to abandon have no rental to return.
+    assert be.release_lease({"provider": "anthropic", "name": "whatever"}) is False
+
+
+def test_the_provider_counts_its_own_tokens(server):
+    """spec §5. The estimator is calibrated per provider and still ~8% out;
+    countTokens is free and exact, and `--strict-budget` decides between
+    running and refusing, which is not a decision to make on a guess."""
+    assert gem(server).count_tokens("x" * 400) == 100
+    body, _ = server.seen["gemini_count"]
+    assert body["contents"][0]["parts"][0]["text"] == "x" * 400
+
+
+def test_a_provider_that_will_not_count_does_not_stop_the_run(server):
+    """An exact number is an improvement on the estimate, never a
+    precondition for running. Anything genuinely wrong with the credentials
+    fails again immediately, with a real error, on the call itself."""
+    server.count_status = 429
+    assert gem(server).count_tokens("hello") is None
+    # ... and the backend is still perfectly usable afterwards.
+    assert gem(server).complete(PREFIX, SUFFIX).text == ANSWER
     gem(server, cache=True, cache_ttl_s=99999).complete(PREFIX, SUFFIX)
     assert server.created[0]["ttl"] == f"{be.GeminiBackend.MAX_TTL_S}s"
     server.created.clear()

@@ -13,12 +13,24 @@ structure, and every demotion is reported — on stderr and in `--json`. Silent
 truncation is what makes an answer confidently wrong, so the caller must
 always be able to see what the oracle did *not* look at.
 
-**The estimator is pessimistic on purpose.** `ops.estimate_tokens` assumes 3.6
-chars/token; a real 46,102-char payload from this repo measured 18,474 tokens,
-i.e. 2.50 chars/token — the estimator was 44% low (findings §2.5). Under-
-counting is the dangerous direction: it silently overshoots the very window
-`--budget` exists to protect. Dense code plus a minified JSON structure blob
-tokenise far worse than prose, and this payload is mostly both.
+**The estimator is pessimistic, and per provider.** One global constant cannot
+serve two tokenizers that differ by nearly 50%. Measured on real payloads from
+this repo:
+
+    provider     chars/token   measured on
+    anthropic    2.50          46,102 chars -> 18,474 tokens (findings §2.5)
+    gemini       3.42 - 3.87   4 payloads, 379k chars, via the free countTokens
+
+A single 2.5 shipped ~273k real tokens for a `--budget 400k` run on Gemini —
+the ladder demoted about a third of what would have fit, in a tool whose whole
+product is frontloading. So the ratio comes from `chars_per_token(provider)`,
+and an unmeasured provider gets the pessimistic default rather than a guess:
+under-counting is the dangerous direction, because it silently overshoots the
+very window `--budget` exists to protect.
+
+Within a provider the ratio is the *lowest* measured, not the mean, for the
+same reason. Gemini's skeleton-plus-minified-JSON payload tokenises worst
+(3.42) and prose best (3.87); 3.4 is the one that cannot overshoot.
 """
 
 from __future__ import annotations
@@ -31,8 +43,25 @@ from kopipasta.core.errors import UsageError
 from kopipasta.core.resolver import MAP, REF, SNIPPET, Entry, Selection
 from kopipasta.file import extract_symbols
 
-#: Measured against real payloads from this repo, not assumed. See §2.5.
+#: The default for a provider nobody has measured. Anthropic's number, which
+#: is the most pessimistic of the two that have been.
 CHARS_PER_TOKEN = 2.5
+
+#: Measured against real payloads from this repo, not assumed. A provider
+#: missing from this table is estimated with the default above — a wrong-but-
+#: pessimistic ratio wastes budget, a wrong-but-optimistic one overflows the
+#: window.
+PROVIDER_CHARS_PER_TOKEN = {
+    "anthropic": 2.5,   # findings §2.5, via claude-cli cache_creation deltas
+    "claude-cli": 2.5,  # the same tokenizer
+    "gemini": 3.4,      # 4 payloads, 379k chars, via countTokens: 3.42-3.87
+    "gemini-compat": 3.4,
+}
+
+
+def chars_per_token(provider: Optional[str]) -> float:
+    """The ratio for this provider, pessimistic where nothing was measured."""
+    return PROVIDER_CHARS_PER_TOKEN.get((provider or "").strip().lower(), CHARS_PER_TOKEN)
 
 #: `# FILE: path` + fenced block + blank lines.
 FRAME_CHARS = 40
@@ -43,12 +72,12 @@ SNIPPET_CHARS = 4096
 PATH_ONLY = "path-only"
 
 
-def estimate_tokens(chars: int) -> int:
+def estimate_tokens(chars: int, cpt: float = CHARS_PER_TOKEN) -> int:
     """Chars -> tokens, biased pessimistic. Never used to *report* real usage."""
-    return int(chars / CHARS_PER_TOKEN)
+    return int(chars / (cpt or CHARS_PER_TOKEN))
 
 
-def parse_budget(text: Optional[str]) -> Optional[int]:
+def parse_budget(text: Optional[str], cpt: float = CHARS_PER_TOKEN) -> Optional[int]:
     """`400k` tokens, `1.5m` tokens, `40kc` literal characters -> tokens.
 
     Bare numbers are tokens because that is the unit the limit is expressed in
@@ -80,7 +109,7 @@ def parse_budget(text: Optional[str]) -> Optional[int]:
             f"--budget must be positive, got {text!r}.",
             hint="Drop the flag entirely to run without a budget.",
         )
-    return int(value / CHARS_PER_TOKEN) if as_chars else int(value)
+    return estimate_tokens(int(value), cpt) if as_chars else int(value)
 
 
 @dataclass
@@ -151,7 +180,11 @@ def _stage_entries(selection: Selection, role: str, bulk: Optional[bool]) -> Lis
     return sorted(chosen, key=render_chars, reverse=True)
 
 
-def demote_to_fit(selection: Selection, budget_tokens: Optional[int]) -> List[Demotion]:
+def demote_to_fit(
+    selection: Selection,
+    budget_tokens: Optional[int],
+    cpt: float = CHARS_PER_TOKEN,
+) -> List[Demotion]:
     """Walk the ladder until the selection fits, and report every step.
 
     Mutates `selection`: full-text roles become MAP, and MAP entries drop out
@@ -166,7 +199,7 @@ def demote_to_fit(selection: Selection, budget_tokens: Optional[int]) -> List[De
     """
     if not budget_tokens:
         return []
-    budget_chars = int(budget_tokens * CHARS_PER_TOKEN)
+    budget_chars = int(budget_tokens * (cpt or CHARS_PER_TOKEN))
     total = selection_chars(selection)
     if total <= budget_chars:
         return []
@@ -180,12 +213,12 @@ def demote_to_fit(selection: Selection, budget_tokens: Optional[int]) -> List[De
             if entry.role in (REF, SNIPPET):
                 after = render_chars(entry, MAP)
                 steps.append(
-                    Demotion(entry.rel, entry.role, MAP, estimate_tokens(before - after))
+                    Demotion(entry.rel, entry.role, MAP, estimate_tokens(before - after, cpt))
                 )
                 entry.role = MAP
                 total -= before - after
             else:
-                steps.append(Demotion(entry.rel, MAP, PATH_ONLY, estimate_tokens(before)))
+                steps.append(Demotion(entry.rel, MAP, PATH_ONLY, estimate_tokens(before, cpt)))
                 selection.entries.pop(entry.path, None)
                 total -= before
     return collapse(steps)
@@ -226,6 +259,8 @@ def summarise(demotions: Sequence[Demotion], limit: int = 8, label: str = "over 
 
 __all__ = [
     "CHARS_PER_TOKEN",
+    "PROVIDER_CHARS_PER_TOKEN",
+    "chars_per_token",
     "Demotion",
     "collapse",
     "PATH_ONLY",

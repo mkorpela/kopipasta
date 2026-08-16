@@ -38,10 +38,11 @@ import atexit
 import hashlib
 import json
 import os
+import re
 import subprocess
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import requests
 
@@ -50,6 +51,7 @@ from kopipasta.core.errors import (
     AuthRejected,
     BackendError,
     BackendTimeout,
+    KopipastaError,
     ModelRejected,
     RateLimited,
     ResponseTruncated,
@@ -432,6 +434,16 @@ class AnthropicBackend:
 #: rental. atexit is the last line of defence, not the intended path.
 _LIVE_GEMINI_CACHES: "set[Tuple[str, str, str]]" = set()
 
+#: Every cache this tool creates is named `kopipasta-<label>-<digest>`, so an
+#: orphan is identifiable at a glance in the provider's console — and so a
+#: sweep can tell one project's caches from another's.
+CACHE_PREFIX = "kopipasta-"
+
+
+def _cache_label(label: str) -> str:
+    """The project part of a display name, made safe to put in one."""
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", str(label or ""))[:48]
+
 
 def _delete_gemini_cache(base: str, key: str, name: str) -> None:
     try:
@@ -476,10 +488,16 @@ class GeminiBackend:
         cache: bool = False,
         cache_ttl_s: int = DEFAULT_TTL_S,
         source: str = "",
+        label: str = "",
         **_: Any,
     ) -> None:
         self.provider = "gemini"
         self.model = model
+        # Which project rented it. One API key serves every repo on the
+        # machine, and the cache list is per key, so without this a sweep run
+        # in repo A cannot tell repo B's live lease from its own orphan — and
+        # deletes it. See `reap_orphans`.
+        self.label = _cache_label(label)
         self.base = (base_url or os.environ.get("GEMINI_BASE_URL") or self.BASE).rstrip("/")
         self.key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY", "")
         self.timeout = timeout
@@ -513,6 +531,10 @@ class GeminiBackend:
     @staticmethod
     def digest(prefix: str) -> str:
         return hashlib.sha256(prefix.encode("utf-8")).hexdigest()[:32]
+
+    def display_name(self, digest: str) -> str:
+        label = f"{self.label}-" if self.label else ""
+        return f"{CACHE_PREFIX}{label}{digest[:16]}"
 
     def adopt(self, *, name: str, digest: str, expires_in_s: float, tokens: int = 0) -> None:
         """Take over a cache created by an earlier process — spec §7.
@@ -582,7 +604,7 @@ class GeminiBackend:
             "model": f"models/{self.model}",
             "contents": [{"role": "user", "parts": [{"text": prefix}]}],
             "ttl": f"{self.cache_ttl_s}s",  # ALWAYS set. This is the leak stop.
-            "displayName": f"kopipasta-{digest[:16]}",
+            "displayName": self.display_name(digest),
         }
         try:
             d = _post(
@@ -619,24 +641,83 @@ class GeminiBackend:
         self._forget_cache()
 
     @classmethod
-    def reap_orphans(cls, base_url: Optional[str] = None) -> int:
-        """Delete every cache this tool left behind, for cleanup after a crash."""
-        base = (base_url or os.environ.get("GEMINI_BASE_URL") or cls.BASE).rstrip("/")
-        key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY", "")
+    def list_caches(cls, base_url: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Every cachedContents resource this key can see. Ours are prefixed."""
+        base, key = cls._endpoint(base_url)
         try:
             r = requests.get(
                 f"{base}/cachedContents", timeout=60, headers={"x-goog-api-key": key}
             )
             r.raise_for_status()
-            items = r.json().get("cachedContents") or []
+            return list(r.json().get("cachedContents") or [])
         except (requests.RequestException, ValueError):
-            return 0
+            return []
+
+    @classmethod
+    def reap_orphans(
+        cls,
+        base_url: Optional[str] = None,
+        *,
+        keep: Iterable[str] = (),
+        label: Optional[str] = None,
+    ) -> int:
+        """Hand back every cache this tool left rented and nobody is using.
+
+        Two filters, and both exist because of something that actually
+        happened. `keep` is the set of resource names a live session is
+        renting: a named session deliberately leaves its cache alive so turn 2
+        can reuse it, so an unattended sweep deleted live leases and each
+        following turn silently paid full price. `label` scopes the sweep to
+        one project: the cache list is per API key, not per repo, so without it
+        a sweep run in repo A cannot distinguish repo B's live lease from its
+        own orphan.
+
+        `label=None` means every project, which is what you want after a crash
+        and nowhere else.
+        """
+        base, key = cls._endpoint(base_url)
+        protected = {str(k) for k in keep}
+        wanted = f"{CACHE_PREFIX}{_cache_label(label)}-" if label else CACHE_PREFIX
         n = 0
-        for it in items:
-            if str(it.get("displayName", "")).startswith("kopipasta-"):
-                _delete_gemini_cache(base, key, it.get("name", ""))
-                n += 1
+        for it in cls.list_caches(base_url):
+            name = str(it.get("name", ""))
+            if not str(it.get("displayName", "")).startswith(wanted):
+                continue
+            if name in protected:
+                continue
+            _delete_gemini_cache(base, key, name)
+            n += 1
         return n
+
+    @classmethod
+    def _endpoint(cls, base_url: Optional[str] = None) -> Tuple[str, str]:
+        base = (base_url or os.environ.get("GEMINI_BASE_URL") or cls.BASE).rstrip("/")
+        key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY", "")
+        return base, key
+
+    def count_tokens(self, text: str) -> Optional[int]:
+        """The provider's own count — spec §5. Free, and the only exact answer.
+
+        A heuristic calibrated on this repo's payloads is within ~8%, which is
+        fine for deciding what to demote and not fine for deciding to refuse a
+        run outright. Returns None when the endpoint will not answer: an exact
+        number is an improvement on the estimate, never a precondition for
+        running, and anything genuinely wrong with the credentials or the model
+        will fail again immediately with a proper error.
+        """
+        try:
+            d = _post(
+                f"{self.base}/models/{self.model}:countTokens",
+                {"contents": [{"role": "user", "parts": [{"text": text}]}]},
+                timeout=min(self.timeout, 120.0),
+                provider=self.provider,
+                model=self.model,
+                source=self.source,
+                headers=self.headers,
+            )
+        except (KopipastaError, _CacheGone):
+            return None
+        return int(d.get("totalTokens") or 0) or None
 
     def complete(
         self,
@@ -740,6 +821,26 @@ class GeminiBackend:
         )
 
 
+def release_lease(record: Dict[str, Any], *, base_url: Optional[str] = None) -> bool:
+    """Hand back the cache a session's `cache.json` is renting. Spec §6.
+
+    Called when a session is deleted. Without it the only record of the
+    resource name goes with the directory, and the meter keeps running until
+    the TTL expires with nothing on disk to say what is being paid for.
+
+    Returns True when we asked the provider to release something. Providers
+    whose caches cost nothing to abandon return False: there is no rental.
+    """
+    if not isinstance(record, dict) or record.get("provider") != "gemini":
+        return False
+    name = str(record.get("name") or "")
+    if not name:
+        return False
+    base, key = GeminiBackend._endpoint(base_url)
+    _delete_gemini_cache(base, key, name)
+    return True
+
+
 # --------------------------------------------------------------------------
 # openai: — the widest-reach shape. Gemini also speaks it (see GEMINI_COMPAT).
 # --------------------------------------------------------------------------
@@ -825,6 +926,7 @@ def build(
     timeout: Optional[float] = None,
     cache: bool = False,
     cache_ttl_s: Optional[int] = None,
+    label: str = "",
 ):
     """Config -> a live backend. The only place a provider name becomes code."""
     kwargs: Dict[str, Any] = {
@@ -858,6 +960,7 @@ def build(
             model,
             cache=cache,
             cache_ttl_s=cfg.cache_ttl_s if cache_ttl_s is None else cache_ttl_s,
+            label=label,
             **kwargs,
         )
     if provider in ("openai", "openai-compat", "gemini-compat"):

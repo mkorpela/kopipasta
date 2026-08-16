@@ -209,8 +209,8 @@ Worth keeping, because each came from something that went wrong:
 
 ## 6. What is not done & Active TODO
 
-**`ask`, `apply` and `config` are built** (`kopipasta/core/`, see §8 and §9 below).
-**`map` and `session` CLI verbs are pending.**
+**Every verb in spec §3 is built**: `ask`, `apply`, `map`, `session`, `config`
+(`kopipasta/core/`, see §8, §9 and §11 below). 472 tests pass, `ruff` clean.
 
 ### Key Design Refinements Agreed:
 1. **Decouple `apply` from `ask`:** `ask` is strictly a context oracle (read-only reasoning) that reports `patches: <count>` and saves the response artifact. `kopipasta apply [file|-|current]` is a standalone verb handling worktree checks, patch application, `--verify`, and `--revert-on-fail`.
@@ -218,31 +218,32 @@ Worth keeping, because each came from something that went wrong:
 
 ### TODO List:
 
-1. **Build `kopipasta map` (`kopipasta/core/map.py`):**
-   - Fast, symbol-skeleton-only tree generator without invoking an LLM.
-2. **Build `kopipasta session` CLI helpers (`kopipasta/core/session_cmd.py`):**
-   - Subcommands: `ls`, `show [id|current]`, `diff [id]`, `rm [id|--all]`.
-3. **`--commit` for `apply`.** Deliberately deferred, not forgotten: spec §11 lists it, and it
-   is the one flag that writes history. Everything it needs is in place — `PatchResult` knows
-   exactly which files this run touched, so it can stage those and never `git add -A`.
-4. **The estimator is calibrated to the wrong tokenizer** — see §10. This is the largest
-   remaining correctness gap and it affects every `--budget` run.
-5. **Make the parser tolerate an unfenced patch block** (`patcher.py`). §10 covers why: the
-   template now demands a fence, which fixed the observed failure, but relying on the model to
-   comply is the opposite of the format-tolerance this tool sells.
+1. ~~Build `kopipasta map`~~ — **done**, §11.
+2. ~~Build `kopipasta session` CLI helpers~~ — **done**, §11.
+3. **`--commit` for `apply`: cancelled, not deferred.** Everything it needs is in place —
+   `PatchResult` knows exactly which files this run touched — but a tool whose job is assembling
+   context does not need to write git history, and `apply && git commit` is one line the caller
+   already knows how to write. Reinstating it needs a reason beyond "spec §11 listed it".
+4. ~~The estimator is calibrated to the wrong tokenizer~~ — **done**, §11.
+5. ~~Make the parser tolerate an unfenced patch block~~ — **done**, §11.
 6. **Revisit Cache Economics at Target Scale:**
    - Re-measure Gemini and Anthropic at 400k+ tokens to cost the default 300s TTL against think-time.
+7. **Decide the `n` a cache figure needs before it is quotable** (see below). Unchanged.
+8. **Mixed fenced and unfenced patches in one response.** `_parse_unfenced` runs only when the
+   fenced parse found *nothing*, so a response with three fenced patches and one unfenced drops
+   the fourth and reports `patches: 3`. Detecting it means tracking which byte ranges the fenced
+   parse consumed. Left alone deliberately: guessing at partial application is worse than the
+   corner case, and no live run has produced this shape.
 
 One addition to that list, from the §3 pass: **the implicit-caching number moved between two
 machines.** Before the 400k re-measurement is worth anything, decide what `n` a cache figure
 needs to be quotable. The explicit arm was stable across every run on both machines; the
 implicit arm was not stable across runs on *one* machine.
 
-**`reap_orphans()` no longer means what §4 says it means.** A named session deliberately leaves
-its cache rented so turn 2 can reuse it, so a non-zero count is now the expected result of any
-`ask --session` run rather than a leak. Worse, running the sweep *deletes live session leases* —
-this was discovered by doing it. Either teach the sweep to skip caches named in a session's
-`cache.json`, or stop describing a non-zero count as a defect.
+**`reap_orphans()` no longer means what §4 says it means** — fixed in §11. Its signature is now
+`reap_orphans(base_url=None, *, keep=(), label=None)`: `keep` is the list of live lease resource
+names, `label` scopes the sweep to one project. A non-zero count is the expected result of any
+`ask --session` run and is not a leak.
 
 ---
 
@@ -346,9 +347,11 @@ Three things that are load-bearing and not obvious from the spec:
 
 ### Not built, deliberately
 
-`--commit`. Spec §11 lists it, and `PatchResult` already knows exactly which files to stage.
-Left out because it is the only flag that writes history and the verb was new; it should be
-the first thing added once `apply` has some mileage.
+`--commit`. Spec §11 listed it, and `PatchResult` already knows exactly which files to stage —
+so this was never a difficulty question. **Now cancelled outright** rather than deferred: a tool
+that assembles context does not need to write git history, and `apply && git commit` is one line
+the caller already knows how to write. Reinstating it needs a reason beyond the spec having
+mentioned it.
 
 ---
 
@@ -409,9 +412,9 @@ looks:
   the patch count and need opposite responses, and sending a caller to reconfigure a backend
   that behaved correctly costs it the one thing it cannot get back.
 
-**Still open:** the parser should tolerate an unfenced block. Making the template stricter fixed
-the observed failure by asking the model to be careful, which is the opposite of the format
-tolerance §14 calls the asset.
+**Now fixed** (§11): `_parse_unfenced` reads the block the model did not fence. Making the
+template stricter fixed the observed failure by asking the model to be careful, which is the
+opposite of the format tolerance §14 calls the asset.
 
 ### The estimator is calibrated against the wrong tokenizer
 
@@ -434,5 +437,104 @@ product is frontloading. Note also that §2.5's "dense code tokenises far worse 
 directionally right and nearly worthless in magnitude here: 3.49 vs 3.77 is an 8% spread.
 
 The real finding is structural: **one global constant cannot serve two providers that differ by
-~46%.** Spec §5 already names the fix — count with the provider's `count_tokens`. Gemini's
-`countTokens` is a free endpoint and is called nowhere in the tree.
+~46%.** Spec §5 already names the fix — count with the provider's `count_tokens`. **Both landed
+in §11**, and the corrected estimate was verified end to end against a live call: 21,854
+estimated against 21,772 actually billed, 0.4% high and still on the safe side.
+
+---
+
+## 11. Finishing the spec: `map`, `session`, and four defects dogfooding found
+
+Every verb in spec §3 now exists. 472 tests, `ruff` clean.
+
+### `kopipasta map` (`core/map.py`)
+
+A skeleton of the selection, with no model, no session and no network. It reuses the whole
+selection grammar (`-e/-r/-m/--all/--changed`, positional paths) and the budget ladder, and
+writes nothing to `.kopipasta/` — a verb that only reads should leave no trace, and a test pins
+that it does not.
+
+Two decisions worth keeping:
+
+- **Every selected file is rendered as a skeleton, whatever role flag it arrived with.** `map`
+  answers "what is in here", and a caller who wrote `-e` did not mean "and please hide it".
+- **A demoted file stays listed, with an empty symbol list.** Dropping it would make the map say
+  the file does not exist. `--json` separates the two cases: `path_only` names the demotions,
+  and a file with genuinely no symbols (`LICENSE`, `.gitignore`) is simply empty in `map`.
+
+The budget needs a corrective pass here for the same reason `ask` does: the ladder works from
+file sizes and cannot see the per-file path lines the renderer adds. `--strict-budget` reports
+the *pre-demotion* size, because `demote_to_fit` mutates the selection it is handed.
+
+### `kopipasta session` (`core/session_cmd.py`)
+
+`ls`, `show`, `diff`, `rm`, `reap`. Reporting subcommands follow `current` when given no id —
+reading is cheap and racy-safe. **`rm` never defaults to `current`**, because "delete the thing
+I did not name" is not a default anything should have. Ids are validated against
+`^[A-Za-z0-9._-]+$` on top of the existing `.`/`..`/separator/absolute checks, which matters
+because `rm` is the one operation in the package that calls `shutil.rmtree`.
+
+`--json` is accepted at both levels (`session --json ls` and `session ls --json`); the
+subparser's copy uses `argparse.SUPPRESS` so it cannot clobber the outer one with a default.
+
+### The four defects, and how each was found
+
+**1. Deleting a session leaked its rented cache.** `session rm` removed the only record of the
+resource name while the cache stayed rented on the provider. Fixed with `release_lease()`,
+called before the directory is removed — order matters, since afterwards nothing knows what to
+release. Proven live: `released: [{session: leasetest, tokens: 16329}]`.
+
+**2. The sweep deleted live leases.** `reap_orphans()` is now
+`reap_orphans(base_url=None, *, keep=(), label=None)`. Cache display names became
+`kopipasta-<projectlabel>-<digest16>` so a sweep in repo A cannot delete repo B's lease. The
+money bug was reproduced live before the fix: with `keep`, turn 2 read 16,329 cached tokens;
+after an unfiltered sweep, turn 3 reported `cache_creation: 16329` — paying twice for the same
+prefix, silently.
+
+**3. `session reap --all-projects` reintroduced that bug one scope up.** Found by pointing
+`ask --mode review` at `session_cmd.py` an hour after writing it — the §4 loop working exactly
+as advertised, on code that already had 20 passing tests. A lease lives in the project that took
+it, so a machine-wide sweep can read *this* project's leases and no others; it would delete a
+cache another repo was holding mid-conversation. **The flag is gone**, and the guard is on the
+primitive rather than the flag: no command-line path may produce `label=None`. The asymmetry
+decides it — an abandoned cache costs storage rent bounded by a TTL of at most an hour, a
+destroyed live one costs a full re-creation every following turn. Crash recovery never needed
+the wider scope anyway: the leases are still on disk, so `reap` inside that project is correct.
+
+**4. Skeletons hid 37% of every file.** `extract_symbols` dropped single-underscore names — an
+API-documentation instinct in a tool whose reader is a model about to change the code.
+`core/map.py` showed 2 of its 7 functions. A skeleton that omits them does not read as partial,
+it reads as complete, so the model writes a helper that already exists or asks for the whole
+file and gives back the saving. Measured cost of including them: **+18%** on a full map (623 →
+733 symbols), in a role already an order of magnitude cheaper than file content.
+
+### The estimator, resolved
+
+`chars_per_token(provider)` replaces the global constant; `CHARS_PER_TOKEN = 2.5` is now only
+the default for a provider nobody has measured. Gemini is 3.4 — the *lowest* of four fresh
+measurements (3.42–3.87 over 379k chars), not the mean, because within a provider the
+under-counting direction is the dangerous one. `Payload` carries the ratio, and `--dry-run`
+resolves the *planned* backend purely to size the payload for the provider that would have read
+it, while still running without a key.
+
+`GeminiBackend.count_tokens()` implements spec §5's exact count. It is called in exactly one
+place: the final check before sending, under `--strict-budget`. That flag promises to refuse
+rather than overshoot, and no heuristic can keep that promise. It catches overshoot only — the
+earlier strict check fires before the payload is rendered, so there is nothing to count yet, and
+a refusal there rests on the estimate. That is the safe direction, and buying back the last
+percent would mean rendering before deciding.
+
+End-to-end verification against a live billed call: **21,854 estimated, 21,772 actual.** The old
+constant would have said 29,721.
+
+### Unfenced patches
+
+`_parse_unfenced` runs only when the fenced parse found nothing, and it is deliberately narrow.
+Without a closing fence there is no end marker, so it requires an unmistakable patch marker and
+**never accepts a whole-file replacement** — `# FILE: x` followed by two paragraphs of a model
+explaining itself would otherwise overwrite `x` with the prose.
+
+This changed an existing test's subject. `unparseable_patch` (5) versus `backend_not_a_completion`
+(3) is still the distinction that matters, but an unfenced patch is no longer an example of
+either: it applies. The slug split is now pinned with markers that carry no path, which is a
+model that tried and got the format wrong.

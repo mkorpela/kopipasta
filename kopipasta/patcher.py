@@ -430,9 +430,44 @@ class PatchParser:
             )
 
 
+#: Markers that make a run of text unambiguously a patch rather than prose.
+#: Deliberately stricter than the ones `_parse_search_replace_block` accepts:
+#: inside a fence the edges are known and a loose match is cheap, outside one
+#: a false positive is a file rewritten from a paragraph.
+_PATCH_BODY_MARKERS = re.compile(
+    r"^(?:<{3,}\s*SEARCH|@@\s+-\d|<<<DELETE>>>)", re.MULTILINE
+)
+
+
 def parse_llm_output(content: str, console: Optional[Console] = None) -> List[Patch]:
     parser = PatchParser(content, console)
-    return parser.parse()
+    patches = parser.parse()
+    return patches or _parse_unfenced(content, console)
+
+
+def _parse_unfenced(content: str, console: Optional[Console] = None) -> List[Patch]:
+    """A patch the model never fenced — spec §14: tolerance lives in the parser.
+
+    A live Gemini run returned a *correct* search/replace patch with no ```
+    fence, and the parser, which only ever looks inside fences, saw nothing at
+    all. The template was tightened to demand the fence and that fixed the
+    observed failure by asking the model to be careful, which is the opposite
+    of the format tolerance that makes this tool work.
+
+    Two limits, both about the missing closing fence. Without one there is no
+    trustworthy end marker, so:
+
+    - the content must carry an unmistakable patch marker, and
+    - a whole-file replacement is never accepted here. `# FILE: x` followed by
+      prose would otherwise overwrite x with the prose. A diff hunk and a
+      `<<<DELETE>>>` carry their own bounds; "everything after this line" does
+      not.
+    """
+    if not _PATCH_BODY_MARKERS.search(content):
+        return []
+    parser = PatchParser(content, console)
+    parser._parse_block_content(content.splitlines(), None, False, "")
+    return [p for p in parser.patches if p["type"] != "full"]
 
 
 def find_paths_in_text(text: str, valid_paths: List[str]) -> List[str]:

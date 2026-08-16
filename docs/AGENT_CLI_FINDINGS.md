@@ -100,7 +100,10 @@ So *"turn 1 pays for the repo, turns 2..n pay for a question"* is **true across 
 lifetime and false within a rapid burst** — which is exactly the pattern an agentic harness
 naturally produces. Do not promise per-turn savings in `--json` output.
 
-### 2.5 `estimate_tokens` is 44% low
+### 2.5 `estimate_tokens` is 44% low — and the ratio is per provider
+
+> **Resolved.** See §2.12 for the Gemini measurements and the per-provider fix that landed.
+
 
 `ops.estimate_tokens` assumes **3.6 chars/token**. A real 46,102-char payload from this repo
 measured **~18,474 tokens — 2.50 chars/token**. The estimator said 12,806.
@@ -519,6 +522,63 @@ Generalised: **after a suite that touches user state passes, go and look at the 
 
 ---
 
+### 2.12 The estimator, measured per provider and then verified against a bill
+
+§2.5 measured 2.50 chars/token and the constant was set there. That measurement came from
+`cache_creation` deltas through `claude-cli` — **Claude's tokenizer** — while the configured
+provider in this repo is Gemini. Four fresh payloads through Gemini's free `countTokens`:
+
+| payload | chars | real tokens | chars/token |
+|---|---|---|---|
+| `--all`, skeletons + structure blob | 73,035 | 21,384 | 3.42 |
+| dense code (`core/ask.py`, `patcher.py`) | 99,608 | 25,728 | 3.87 |
+| mixed (code + spec + skeletons) | 93,839 | 24,919 | 3.77 |
+| prose (three design docs) | 112,426 | 30,053 | 3.74 |
+| **total** | **378,908** | **102,084** | **3.71** |
+
+The constant was therefore ~48% pessimistic on Gemini: `--budget 400k` shipped ~273k real
+tokens, and the ladder demoted about a third of what would have fit.
+
+Two things worth keeping from this:
+
+- **The spread within a provider is small; the spread between providers is not.** 3.42 to 3.87
+  across every content mix, against 2.50 versus 3.71 between tokenizers. §2.5's "dense code
+  tokenises far worse than prose" is directionally right and nearly worthless in magnitude —
+  and it is *backwards* here, since the worst-tokenising payload is the one full of skeletons
+  and minified JSON, not the one full of code.
+- **Pick the lowest measured ratio, not the mean.** Within a provider the two directions are not
+  symmetric: over-counting wastes budget, under-counting overshoots the window the flag exists
+  to protect. Gemini is set to 3.4, below all four measurements.
+
+**Verified against a real bill, which is the only check that counts.** After calibration, a live
+`--all` run estimated **21,854** input tokens and was billed **21,772** — 0.4% high, still on the
+safe side. The old constant would have said 29,721.
+
+The general lesson is not about tokenizers. A measurement is scoped to the thing it was measured
+on, and §2.5 recorded the number without recording that scope, so a correct measurement became a
+wrong constant the moment the default provider changed. Cite the tokenizer, not just the ratio.
+
+### 2.13 Dogfooding round four: the oracle beat 20 passing tests, then said nothing
+
+`session_cmd.py` was written with 20 tests, all green, and reviewed by hand. Pointing
+`ask --mode review` at it an hour later returned one finding, `confidence: 0.95`, and it was
+right: `session reap --all-projects` passed *this* project's live leases as the keep-list for a
+**machine-wide** delete, destroying caches other repos were holding mid-conversation. That is the
+same money bug the keep-list was written to prevent, one scope up — and no test could have caught
+it, because every test runs in one project.
+
+The second pass is the part worth recording. The fixed code, plus the estimator and patcher
+changes, went back with the same instructions and came back with `findings: []` and "safe to
+ship". That is **not** evidence of correctness. Reviewing my own wiring immediately afterwards
+found a real asymmetry the model had missed: the `countTokens` call can only catch overshoot,
+never a false refusal, because the earlier `--strict-budget` check fires before the payload is
+rendered and therefore has nothing to count. Defensible, but not what the comment claimed.
+
+So the loop's value is asymmetric, and worth stating plainly: **a finding from the oracle is
+cheap and often excellent; an empty finding list means nothing at all.** Round two (§2.11)
+produced a confident falsehood, round four produced a confident silence. Both cost the same to
+check and only one looks like a problem.
+
 ## 3. Traps
 
 Ordered by how much time each cost.
@@ -713,7 +773,8 @@ unless `claude-cli:` stays in the design.
 
 ## 6. Next actions, in order
 
-1. Fix `estimate_tokens` (§2.5) — the budget ladder is blocked on it.
+1. ~~Fix `estimate_tokens` (§2.5)~~ — done, §2.12: per-provider ratios, Gemini's `countTokens`
+   under `--strict-budget`, verified against a live bill.
 2. Phase 0 from the spec: injectable policies, `--json` plumbing and the stdout/stderr
    contract, `.kopipasta/` layout, per-project cache fix.
 3. Phase 1: `pack` / `apply` / selection grammar / budget ladder / sessions — **and

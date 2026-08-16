@@ -224,6 +224,89 @@ def test_a_bad_budget_string_says_what_it_wanted(project, capsys):
     assert "--budget" in data["summary"]
 
 
+def test_the_estimate_follows_the_provider_that_will_read_it(project, capsys, monkeypatch):
+    """One global chars/token cannot serve two tokenizers 50% apart.
+
+    Measured on this repo: Anthropic 2.50 chars/token, Gemini 3.42-3.87. With
+    a single pessimistic constant a `--budget 400k` Gemini run shipped ~273k
+    real tokens — the ladder demoted about a third of what would have fit, in
+    a tool whose entire product is frontloading.
+    """
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+
+    claude = run_json(capsys, "--all", "-q", "x", "--dry-run", "--backend", "anthropic")
+    gemini = run_json(capsys, "--all", "-q", "x", "--dry-run", "--backend", "gemini")
+
+    # Compared as chars-per-token so the assertion survives the two prompt
+    # templates being different lengths — the ratio is the thing under test.
+    assert claude["payload_chars"] / claude["est_input_tokens"] == pytest.approx(2.5, abs=0.02)
+    assert gemini["payload_chars"] / gemini["est_input_tokens"] == pytest.approx(3.4, abs=0.02)
+
+
+def test_a_dry_run_sizes_for_the_real_provider_with_no_backend_configured(
+    project, capsys, monkeypatch
+):
+    """--dry-run must not need a key, and must still answer the question.
+
+    Sizing the payload is the whole point of a dry run, so resolving the
+    planned provider cannot be allowed to fail the run — but when it does
+    resolve, its tokenizer is the one that matters.
+    """
+    for var in ("GEMINI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    data = run_json(capsys, "--all", "-q", "x", "--dry-run")
+    assert data["est_input_tokens"] > 0
+
+
+def test_strict_budget_refuses_on_a_counted_number_not_a_guess(project, capsys, monkeypatch):
+    """The one decision worth a round trip (spec §5).
+
+    Everywhere else the estimate only chooses what to demote. Under
+    --strict-budget it chooses between running and exiting 6, and the flag's
+    whole promise is "refuse rather than overshoot" — a promise no heuristic
+    can keep, whatever its calibration.
+
+    Overshoot only: a run refused before the payload is rendered is refused on
+    the estimate, because there is nothing to count yet. The ratio is the
+    lowest measured for that reason.
+    """
+    real_build = askmod.build
+    counted = {}
+
+    def fake_build(cfg, **kw):
+        backend = real_build(cfg, **kw)
+        # A provider whose tokenizer disagrees with the heuristic, loudly.
+        backend.count_tokens = lambda text: counted.setdefault("n", 999_999)
+        return backend
+
+    monkeypatch.setattr(askmod, "build", fake_build)
+
+    # An estimate far under the budget; the real count far over it.
+    data = run_json(capsys, "-r", "src/calc.py", "--budget", "500k", "--strict-budget",
+                    "-q", "x", expect=EXIT_BUDGET)
+    assert counted["n"] == 999_999, "the count was never asked for"
+    assert data["error"] == "budget_exceeded"
+    assert data["wanted_tokens"] == 999_999  # the measured number, not the guess
+
+
+def test_a_backend_that_cannot_count_still_honours_strict_budget(project, capsys):
+    """`none` has no tokenizer. The estimate is pessimistic, so falling back
+    to it can only refuse early, never overshoot."""
+    data = run_json(capsys, "-r", "src/calc.py", "--budget", "500k", "--strict-budget",
+                    "-q", "x")
+    assert data["ok"] is True
+
+
+def test_the_budget_is_read_in_the_same_currency_as_the_payload(project, capsys, monkeypatch):
+    """`--budget 40kc` is a char budget: both sides convert with one ratio."""
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    data = run_json(capsys, "--all", "-q", "x", "--dry-run", "--backend", "gemini",
+                    "--budget", "1000kc")
+    assert data["sent"]["demoted"] == 0
+    assert data["est_input_tokens"] == int(data["payload_chars"] / 3.4)
+
+
 # -- the session, spec §7 ---------------------------------------------------
 
 
@@ -444,18 +527,38 @@ def test_a_response_with_no_patch_content_blames_the_backend(project, capsys):
     assert data["error"] == "backend_not_a_completion"
 
 
-def test_an_unfenced_patch_is_a_format_problem_not_a_misconfigured_backend(project, capsys):
+def test_an_unfenced_patch_is_applied_rather_than_rejected(project, capsys):
     """Found by dogfooding: gemini returned a perfectly good search/replace
     patch with no ``` fence, and was told to disable its file and shell tools.
 
-    It has none — it is a raw API call. Following that hint cannot help, and
-    the response was not an agent's refusal but exactly what was asked for in
-    a format the parser could not find the edges of. The two need different
-    slugs because they send the caller to different places.
+    It has none — it is a raw API call. The response was not a refusal, it was
+    exactly what was asked for in a format the parser could not find the edges
+    of. Demanding the fence in the template fixed the symptom by asking the
+    model to be careful; the parser reading it is the fix (spec §14).
     """
     backend = _canned(
         project,
         "# FILE: src/calc.py\n"
+        "<<<<<<< SEARCH\n    return a + b\n=======\n    return a + b + 0\n"
+        ">>>>>>> REPLACE\n",
+    )
+    data = run_json(capsys, "-e", "src/calc.py", "--mode", "patch", "-q", "x",
+                    backend=backend)
+    assert data["patches"] == 1
+
+
+def test_a_response_with_no_patch_is_a_format_problem_not_a_misconfigured_backend(
+    project, capsys
+):
+    """"It never tried" and "it tried and the format was wrong" are
+    indistinguishable from a patch count of zero and need opposite responses.
+    Sending a caller to reconfigure a backend that behaved correctly costs it
+    the one thing it cannot get back."""
+    # Markers, but no path to apply them to — the model described the change
+    # and never said which file it belongs in. It tried; the format is wrong.
+    backend = _canned(
+        project,
+        "Here is the fix:\n\n"
         "<<<<<<< SEARCH\n    return a + b\n=======\n    return a + b + 0\n"
         ">>>>>>> REPLACE\n",
     )

@@ -25,12 +25,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from kopipasta.core.context import Turn
 from kopipasta.core.errors import UsageError
@@ -72,12 +73,21 @@ def _write_text(path: str, text: str) -> None:
         fh.write(text)
 
 
+#: What a session id may contain. Deliberately a whitelist: the id becomes a
+#: directory name, and `session rm` deletes that directory recursively, so the
+#: cost of being wrong here is asymmetric. `C:sessions` is not absolute on
+#: POSIX and contains no slash, but on Windows it is drive-relative and lands
+#: outside the tree entirely — the separator checks below cannot see that, and
+#: this does.
+_ID_CHARS = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
 def _check_id(session_id: str) -> None:
     """A session id becomes a directory name, so it must not be a path.
 
     `--session ../../etc` is not a conversation, and an id that escapes the
     sessions directory would write session artifacts anywhere the process can
-    reach.
+    reach — or, once `rm` exists, delete anything the process can reach.
     """
     if (
         not session_id
@@ -85,10 +95,12 @@ def _check_id(session_id: str) -> None:
         or "/" in session_id
         or "\\" in session_id
         or os.path.isabs(session_id)
+        or not _ID_CHARS.match(session_id)
     ):
         raise UsageError(
             f"{session_id!r} is not a usable session id.",
-            detail="It becomes a directory under .kopipasta/sessions/, so it cannot be a path.",
+            detail="It becomes a directory under .kopipasta/sessions/, so it cannot be a "
+            "path. Letters, digits, dot, dash and underscore only.",
             hint="Use a plain name: --session refactor-auth",
         )
 
@@ -411,3 +423,115 @@ class Session:
             os.remove(self.path(CACHE_FILE))
         except OSError:
             pass
+
+
+# --------------------------------------------------------------------------
+# reading the record from outside a run — what `kopipasta session` reports on
+#
+# These are here rather than in the verb because they are knowledge of the
+# on-disk layout, and a second module that knows where `meta.json` lives is a
+# second module to fix when it moves.
+# --------------------------------------------------------------------------
+def session_dir(root: str, session_id: str) -> str:
+    _check_id(session_id)
+    return os.path.join(root, SESSIONS_DIR, session_id)
+
+
+def list_sessions(root: str) -> List[str]:
+    """Every session id on disk, oldest first — ids start with the date."""
+    try:
+        names = os.listdir(os.path.join(root, SESSIONS_DIR))
+    except OSError:
+        return []
+    return sorted(
+        n for n in names if os.path.isdir(os.path.join(root, SESSIONS_DIR, n))
+    )
+
+
+def read_meta(root: str, session_id: str) -> Dict[str, Any]:
+    return _read_json(os.path.join(session_dir(root, session_id), META), {})
+
+
+def read_turns(root: str, session_id: str) -> List[Dict[str, Any]]:
+    """The transcript, oldest first. Malformed lines are skipped, not fatal."""
+    out: List[Dict[str, Any]] = []
+    try:
+        with open(os.path.join(session_dir(root, session_id), TRANSCRIPT), "r", encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return out
+    for line in lines:
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(rec, dict):
+            out.append(rec)
+    return out
+
+
+def read_selection(root: str, session_id: str) -> Tuple[int, Dict[str, Dict[str, str]]]:
+    """(turn, files) for the latest recorded turn. `(0, {})` when there is none.
+
+    The *latest* turn, because that is the context the next thing to touch this
+    session inherits — the same record `apply` reads to enforce the editable
+    zone.
+    """
+    data = _read_json(os.path.join(session_dir(root, session_id), SELECTION), {})
+    if not isinstance(data, dict) or not data:
+        return 0, {}
+    latest = max(data, key=lambda k: int(k) if str(k).isdigit() else -1)
+    files = (data.get(latest) or {}).get("files") or {}
+    turn = int(latest) if str(latest).isdigit() else 0
+    return turn, {k: v for k, v in files.items() if isinstance(v, dict)}
+
+
+def read_lease(root: str, session_id: str) -> Optional[Dict[str, Any]]:
+    """The provider-side cache this session is renting, if any.
+
+    Returned whether or not it has expired, with `expired` and `expires_in_s`
+    filled in — because the two callers want opposite things. A sweep must not
+    delete a live one; a report must not claim an expired one is still costing
+    money.
+    """
+    rec = _read_json(os.path.join(session_dir(root, session_id), CACHE_FILE), None)
+    if not isinstance(rec, dict) or not rec.get("name"):
+        return None
+    left = float(rec.get("expires_at") or 0) - time.time()
+    return {**rec, "session": session_id, "expired": left <= 0, "expires_in_s": round(left, 1)}
+
+
+def live_leases(root: str) -> Dict[str, Dict[str, Any]]:
+    """Provider cache name -> the session record renting it, unexpired only.
+
+    This is what stops a sweep from deleting a cache a session is still paying
+    to hold. A named session deliberately leaves its cache rented so turn 2 can
+    reuse it, so "a cache exists that no process is using" is the *expected*
+    state, not evidence of a leak.
+    """
+    out: Dict[str, Dict[str, Any]] = {}
+    for session_id in list_sessions(root):
+        lease = read_lease(root, session_id)
+        if lease and not lease["expired"]:
+            out[str(lease["name"])] = lease
+    return out
+
+
+def clear_current(root: str) -> None:
+    try:
+        os.remove(os.path.join(root, CURRENT))
+    except OSError:
+        pass
+
+
+def remove_session(root: str, session_id: str) -> bool:
+    """Delete one session directory. Returns False when there was none.
+
+    The id is validated first: this is the one operation in the package that
+    deletes a tree, and `rm ../..` must not be a thing anyone can type.
+    """
+    directory = session_dir(root, session_id)
+    if not os.path.isdir(directory):
+        return False
+    shutil.rmtree(directory, ignore_errors=True)
+    return not os.path.isdir(directory)

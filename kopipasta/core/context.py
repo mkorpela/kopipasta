@@ -19,7 +19,7 @@ import hashlib
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from kopipasta.core.budget import estimate_tokens
+from kopipasta.core.budget import CHARS_PER_TOKEN, estimate_tokens
 from kopipasta.core.modes import Mode
 from kopipasta.core.resolver import EDIT, MAP, REF, SNIPPET, Entry, Selection
 from kopipasta.file import extract_symbols, read_file_contents
@@ -45,6 +45,10 @@ LEGEND = (
 class Payload:
     prefix: str
     suffix: str
+    #: Chars per token for the provider that will read this. Carried on the
+    #: payload rather than looked up here, because "how big is this" has a
+    #: different answer for Anthropic and Gemini — by nearly 50%.
+    cpt: float = CHARS_PER_TOKEN
 
     @property
     def text(self) -> str:
@@ -56,7 +60,7 @@ class Payload:
 
     @property
     def est_tokens(self) -> int:
-        return estimate_tokens(self.chars)
+        return estimate_tokens(self.chars, self.cpt)
 
 
 @dataclass

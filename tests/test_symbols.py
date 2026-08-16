@@ -12,8 +12,13 @@ def test_extract_symbols_from_python_class(tmp_path: Path):
     assert result == ["class Foo [init, bar]"]
 
 
-def test_extract_symbols_private_methods_omitted(tmp_path: Path):
-    """Single-underscore private methods are omitted; dunders are kept and normalized."""
+def test_extract_symbols_private_methods_are_kept(tmp_path: Path):
+    """Private methods are where the code lives; dunders are normalized.
+
+    The reader of a skeleton is a model about to change the class, not a
+    consumer of its public API. A helper it cannot see is a helper it writes
+    a second time.
+    """
     py_file = tmp_path / "example.py"
     py_file.write_text(
         "class Foo:\n"
@@ -22,17 +27,19 @@ def test_extract_symbols_private_methods_omitted(tmp_path: Path):
         "    def _private(self): pass\n"
     )
     result = extract_symbols(str(py_file))
-    assert result == ["class Foo [init, repr]"]
+    assert result == ["class Foo [init, repr, _private]"]
 
 
-def test_extract_symbols_private_top_level_function_omitted(tmp_path: Path):
-    """Top-level single-underscore private functions are omitted; dunders are kept."""
+def test_extract_symbols_private_top_level_function_is_kept(tmp_path: Path):
+    """A module's private functions are most of it: 37% of this repo's
+    symbols, and 5 of the 7 in `core/map.py`. Omitting them does not read as
+    a partial skeleton, it reads as a complete one."""
     py_file = tmp_path / "example.py"
     py_file.write_text(
         "def public(): pass\ndef _private(): pass\ndef __dunder(): pass\n"
     )
     result = extract_symbols(str(py_file))
-    assert result == ["def public()"]
+    assert result == ["def public()", "def _private()", "def __dunder()"]
 
 
 def test_extract_symbols_top_level_function(tmp_path: Path):

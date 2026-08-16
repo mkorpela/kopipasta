@@ -235,11 +235,12 @@ Worth keeping, because each came from something that went wrong:
    `claude` is on PATH and authenticated. `claude-cli:` is not the cheap option there, it is
    the **only** one — every other backend exits 2, so `kopipasta ask` currently fails closed
    with a working backend sitting on PATH. Five changes proposed, in value order:
-   auto-detect and default to it (announced on stderr); add the backend's fixed overhead to
-   the budget, which currently under-reports **14×**; make the `--json-schema` cost a stated
-   choice, since it exactly doubles the input and `triage` is the default mode; make the
-   recursion guard deliberate rather than a side effect of tools-off; default to sonnet for
-   its 1M window. Numbers and method in the report.
+   extend `TOOLS_OFF` from 11 names to all 38, which cuts the floor **4.9×** (34,382 → 7,070
+   tokens) because 85% of the request is schemas for tools an oracle never calls; auto-detect
+   and default to the backend (announced on stderr); add its overhead to the budget, which
+   currently under-reports **14×**; make the `--json-schema` cost a stated choice, since it
+   exactly doubles the input and `triage` is the default mode; make the recursion guard
+   deliberate rather than a side effect of tools-off. Numbers and method in the report.
 7. **Revisit Cache Economics at Target Scale:**
    - Re-measure Gemini and Anthropic at 400k+ tokens to cost the default 300s TTL against think-time.
 8. **Decide the `n` a cache figure needs before it is quotable** (see below). Unchanged.

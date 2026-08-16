@@ -589,16 +589,29 @@ check and only one looks like a problem.
 Measured inside Claude Code on the web (no provider key of any kind, `claude` on PATH and
 authenticated). Full report and proposal: **`docs/SANDBOX_BACKEND.md`**. Headlines:
 
-| | total input | note |
-|---|---|---|
-| plain call | **34,389** | the floor; ~$0.011 warm, ~$0.040 cold |
-| `--json-schema` | **69,064** | **exactly 2×** — a second model pass re-sends the whole prefix |
-| cwd = repo root vs empty dir | 34,382 / 34,376 | **no difference** — the floor is the system prompt |
-| `--allowedTools ""` vs deny-list | 38,722 / 34,389 | allow-list is *worse* |
+Capturing the request (point `ANTHROPIC_BASE_URL` at a local server) shows a
+`POST /v1/messages?beta=true` of **153,164 bytes**, of which **129,804 — 85% — is JSON schemas
+for 38 tools**. The system prompt is only ~15 KB. `Authorization: Bearer` is attached **by the
+CLI** from its own OAuth token; the sandbox border injects nothing, and `*.anthropic.com` is in
+the proxy's `noProxy` list, so those calls never traverse the egress proxy.
 
-Two hypotheses died: running the child from a bare directory to dodge `CLAUDE.md`, skills and
-MCP config saves nothing, and swapping the deny-list for an allow-list costs more. There is no
-flag that gets a `claude -p` call below roughly 34k tokens of input.
+| | tools | measured input | note |
+|---|---|---|---|
+| deny 4 names | 34 | **34,382** | ~$0.011 warm |
+| deny 11 (kopipasta today) | 30 | ~34k | body 118,268 B |
+| **deny all 38** | **2** | **7,070** | **4.9× cheaper** |
+| `--allowedTools ""` | 38 | — | **no-op**, all tools still sent |
+| `--json-schema` | — | **69,064** | **exactly 2×** — a second pass re-sends the prefix |
+| cwd repo root vs empty | — | 34,382 / 34,376 | no difference |
+
+**The floor is reducible after all.** Denying every tool takes it from ~34k to ~7k. An earlier
+version of this section said `--disallowedTools` did not shrink the request; that compared the
+deny-list against the allow-list rather than against a no-flag baseline, and was wrong.
+`--allowedTools ""` really is a no-op. Dodging `CLAUDE.md`/skills/MCP via cwd really does save
+nothing.
+
+The tool list is environment-specific — `Workflow`, `Artifact`, `DesignSync` are hosted-surface
+tools a laptop CLI never ships — so ~34k is a `remote_mobile` number, not a universal one.
 
 `triage` is the default mode and the one that wants the schema, so **the default path is the
 expensive one** and nothing currently says so. Against that, `sonnet` and `opus` both report a

@@ -28,21 +28,63 @@ the primary user.
 
 ## 2. What it costs — measured
 
-### The floor is ~34k tokens per call and you cannot lower it
+### What `claude -p` actually sends
 
-| Variant | total input | notes |
-|---|---|---|
-| plain, deny-list tools off | **34,389** | the baseline |
-| `--allowedTools ""` (allow-list) | 38,722 | *higher*, not lower |
-| cwd = repo root (CLAUDE.md, skills, MCP) | 34,382 | — |
-| cwd = empty directory | 34,376 | **no material difference** |
+Pointing `ANTHROPIC_BASE_URL` at a local capture server answers this exactly. One `claude -p
+"say OK"`:
 
-Two hypotheses died here. Running the child from a bare directory to dodge the project's
-`CLAUDE.md`, skills and MCP config saves nothing — the floor is the system prompt, not the
-project context. And switching the deny-list for an allow-list makes it slightly worse.
+```
+POST /v1/messages?beta=true            153,164 bytes
+Authorization: Bearer <115 chars>      ← attached BY THE CLI, not by the sandbox
+anthropic-beta: claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,…
+User-Agent: claude-cli/2.1.233 (external, remote_mobile)
 
-There is no flag that gets a `claude -p` call below roughly 34k tokens of input. Plan around
-it rather than trying to remove it.
+model=claude-sonnet-5  max_tokens=64000  stream=true
+system:   3 blocks, 15,464 B   (2 of them cache_control ephemeral ttl=1h)
+tools:   38 tools, 129,804 B   ← 85% of the request
+messages:            9,342 B
+```
+
+**The credential comes from the CLI, not from the sandbox border.** That kills the idea of
+having kopipasta POST directly and letting the boundary attach auth: `*.anthropic.com` is in
+the proxy's `noProxy` list, so those requests never traverse the egress proxy at all, and a raw
+`curl` to `/v1/messages` returns `x-api-key header is required` — nothing added anything. The
+token lives on a file descriptor the harness owns and the CLI reads.
+
+### The floor is 85% tool schemas — and it *is* reducible
+
+| Variant | tools | tool bytes | body | measured input |
+|---|---|---|---|---|
+| baseline, no flags | 38 | 129,804 | 153,160 | — |
+| `--allowedTools ""` | 38 | 129,804 | 153,160 | **no-op** |
+| `--strict-mcp-config` | 38 | 129,804 | 153,160 | no change |
+| deny 4 names | 34 | ~114,000 | — | 34,382 |
+| deny 11 names (kopipasta today) | 30 | 98,014 | 118,268 | ~34k |
+| **deny all 38 names** | **2** | **4,739** | **20,625** | **7,070** |
+
+**Denying every tool cuts the floor 4.9×, from ~34,382 to 7,070 tokens.** The system prompt is
+only ~15 KB of the request; the rest is JSON schemas for tools an oracle never calls.
+
+Two corrections to earlier claims in this document:
+
+- **`--disallowedTools` does remove the definitions from the request**, not merely deny their
+  use. An earlier version said otherwise, because it compared the deny-list against the
+  allow-list rather than against a no-flag baseline.
+- **`--allowedTools ""` is a no-op** — all 38 tools are still sent. It is strictly worse than
+  the deny-list, and the slightly higher token count first attributed to it was cache-state
+  noise.
+
+Still true: cwd makes no difference (34,382 from the repo root vs 34,376 from an empty
+directory), so dodging `CLAUDE.md`, skills and MCP config saves nothing.
+
+Six names carry 56% of the tool payload — `Workflow` (21,870 B), `Artifact` (13,448 B), `Bash`
+(11,991 B), `DesignSync` (9,324 B), `Agent` (8,616 B), `Monitor` (7,659 B) — so even partial
+coverage pays proportionally.
+
+**The tool list is environment-specific.** `Workflow`, `Artifact`, `DesignSync`,
+`ShareOnboardingGuide` and friends are hosted-surface tools; a laptop CLI ships far fewer. So
+~34k is a `remote_mobile` figure, not a universal constant — another reason to measure it at
+runtime rather than hardcode it.
 
 ### `--json-schema` doubles the bill
 
@@ -152,13 +194,27 @@ Cheap, independent of whatever the tool flags do, and it fails with a clear mess
 forking. Note the harness has its own `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` (observed: `1`),
 which governs its subagents — not a process we spawn ourselves.
 
-### 3.5 Choose sonnet explicitly
+### 3.5 Deny every tool, not eleven
+
+`ClaudeCliBackend.TOOLS_OFF` names 11 tools, of which 7 exist in this environment. Extending it
+to the full set takes the floor from ~34,382 to **7,070 tokens per call** — the single largest
+saving available on this backend, for a one-string change.
+
+The list cannot be complete for all time: it is environment- and version-specific, and a tool
+added tomorrow ships enabled. That is acceptable because the failure is graceful — an unknown
+tool costs its own schema and nothing else — but it argues for ordering the list by payload
+size, so the six names that carry 56% of the bytes are never the ones that drift.
+
+It also makes the recursion guard in §3.4 more urgent rather than less: the more the deny-list
+is treated as a cost lever, the more likely someone trims it for a reason unrelated to safety.
+
+### 3.6 Choose sonnet explicitly
 
 `claude-cli:-` inherits whatever the CLI defaults to. For an oracle the deciding property is
 the context window, and only sonnet and opus report 1M. Default `claude-cli:` to sonnet rather
 than leaving it implicit, so a 400k frontload does not fail against a 200k model.
 
-### 3.6 Timeouts
+### 3.7 Timeouts
 
 Defaults are fine (900s per call), but `--deadline` guidance should assume ~25s per turn on
 this backend rather than the ~4s a raw API gives.
@@ -178,7 +234,8 @@ uv run pytest -q -m sandbox
 
 Worth asserting, because each is a number that moved once already:
 
-- a plain call stays near the ~34k floor (alert if it drifts far, since it is not ours to control)
+- a fully-denied call stays near the ~7k floor, and a bare one near ~34k (alert on drift:
+  neither is ours to control)
 - `--json-schema` still costs ~2× a plain call
 - `ask --backend claude-cli:` returns a parseable triage envelope
 - the child cannot reach Bash, so the recursion guard holds

@@ -230,10 +230,20 @@ Worth keeping, because each came from something that went wrong:
    already knows how to write. Reinstating it needs a reason beyond "spec §11 listed it".
 4. ~~The estimator is calibrated to the wrong tokenizer~~ — **done**, §11.
 5. ~~Make the parser tolerate an unfenced patch block~~ — **done**, §11.
-6. **Revisit Cache Economics at Target Scale:**
+6. **The hosted-sandbox backend — `docs/SANDBOX_BACKEND.md`.** *Next up.* Measured inside
+   Claude Code on the web, where there is no provider API key and no way to get one, but
+   `claude` is on PATH and authenticated. `claude-cli:` is not the cheap option there, it is
+   the **only** one — every other backend exits 2, so `kopipasta ask` currently fails closed
+   with a working backend sitting on PATH. Five changes proposed, in value order:
+   auto-detect and default to it (announced on stderr); add the backend's fixed overhead to
+   the budget, which currently under-reports **14×**; make the `--json-schema` cost a stated
+   choice, since it exactly doubles the input and `triage` is the default mode; make the
+   recursion guard deliberate rather than a side effect of tools-off; default to sonnet for
+   its 1M window. Numbers and method in the report.
+7. **Revisit Cache Economics at Target Scale:**
    - Re-measure Gemini and Anthropic at 400k+ tokens to cost the default 300s TTL against think-time.
-7. **Decide the `n` a cache figure needs before it is quotable** (see below). Unchanged.
-8. **Mixed fenced and unfenced patches in one response.** `_parse_unfenced` runs only when the
+8. **Decide the `n` a cache figure needs before it is quotable** (see below). Unchanged.
+9. **Mixed fenced and unfenced patches in one response.** `_parse_unfenced` runs only when the
    fenced parse found *nothing*, so a response with three fenced patches and one unfenced drops
    the fourth and reports `patches: 3`. Detecting it means tracking which byte ranges the fenced
    parse consumed. Left alone deliberately: guessing at partial application is worse than the

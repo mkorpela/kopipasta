@@ -356,3 +356,5 @@ Python 3.10+.
 - [`docs/AGENT_CLI_FINDINGS.md`](docs/AGENT_CLI_FINDINGS.md) — what was actually measured,
   what broke, and what is still assumption.
 - [`docs/HANDOFF.md`](docs/HANDOFF.md) — current state and how to verify it.
+- [`docs/SANDBOX_BACKEND.md`](docs/SANDBOX_BACKEND.md) — running the oracle inside a
+  hosted agent, where `claude -p` is the only model access there is.

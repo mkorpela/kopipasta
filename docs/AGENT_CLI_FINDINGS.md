@@ -35,6 +35,7 @@ single sample.
 | Gemini cache lifecycle (TTL/close/reap) | **live-verified** | 99.9% reuse, 0 orphan resources after |
 | `openai:` backend | **wire format only** | mock; never saw a real response |
 | Gemini 1M context for a real repo | **CONFIRMED** | `inputTokenLimit: 1048576` on `gemini-3.7-flash` |
+| Hosted sandbox (`claude-cli:` only backend) | **live-verified** | ~34k floor, `--json-schema` 2×, sonnet 1M ctx — §2.14 |
 
 The question this document was originally built around — does the raw API share the CLI's cache
 write-visibility lag? — **is answered. It does not.** See §2.7; it changes the phasing.
@@ -65,6 +66,10 @@ The spec originally claimed `exec:` structurally gives both up. It does not — 
 unread flags. Hence the `claude-cli:` rung.
 
 ### 2.3 The harness tax
+
+> **Superseded.** The floor measured ~29.3k here and **~34k** when re-measured days later
+> (§2.14). It is set by a system prompt we do not own and it moves; treat the shape below as
+> the finding and §2.14 as the current number.
 
 Differencing a tiny prompt against a 46k-char payload:
 
@@ -579,6 +584,34 @@ cheap and often excellent; an empty finding list means nothing at all.** Round t
 produced a confident falsehood, round four produced a confident silence. Both cost the same to
 check and only one looks like a problem.
 
+### 2.14 The hosted sandbox: `claude-cli:` is the only backend, and what it costs
+
+Measured inside Claude Code on the web (no provider key of any kind, `claude` on PATH and
+authenticated). Full report and proposal: **`docs/SANDBOX_BACKEND.md`**. Headlines:
+
+| | total input | note |
+|---|---|---|
+| plain call | **34,389** | the floor; ~$0.011 warm, ~$0.040 cold |
+| `--json-schema` | **69,064** | **exactly 2×** — a second model pass re-sends the whole prefix |
+| cwd = repo root vs empty dir | 34,382 / 34,376 | **no difference** — the floor is the system prompt |
+| `--allowedTools ""` vs deny-list | 38,722 / 34,389 | allow-list is *worse* |
+
+Two hypotheses died: running the child from a bare directory to dodge `CLAUDE.md`, skills and
+MCP config saves nothing, and swapping the deny-list for an allow-list costs more. There is no
+flag that gets a `claude -p` call below roughly 34k tokens of input.
+
+`triage` is the default mode and the one that wants the schema, so **the default path is the
+expensive one** and nothing currently says so. Against that, `sonnet` and `opus` both report a
+**1,000,000-token context window**, so the frontload case works with no API key at all.
+
+Latency is 22–26s per `ask` against ~4s for a raw API call carrying the same payload — harness
+startup, not generation.
+
+Do not read a model price ranking out of single samples here: cache state dominates. A warm
+sonnet call measured $0.0104 while a cold haiku call measured $0.0508.
+
+---
+
 ## 3. Traps
 
 Ordered by how much time each cost.
@@ -764,6 +797,12 @@ The design targets 400k–1M. Cache behaviour, TTL and minimum-cacheable-prefix 
 at that scale, and a 5-minute ephemeral TTL is short relative to how long an agent might sit
 between turns. Worth one run at full size before betting the phasing on it.
 
+**Whether the ~34k sandbox floor stays put.** It grew from ~29k to ~34k between two
+measurements days apart (§2.14). It is set by a system prompt we do not own and will keep
+moving, so any budget arithmetic that hardcodes it needs a way to notice when it is wrong —
+which is why `docs/SANDBOX_BACKEND.md` §4 proposes a live test marked to skip where `claude`
+is not authenticated, rather than a constant.
+
 **Whether `claude-cli:`'s lag is a lag at all.** §2.4 showed a stable prefix reused across runs
 a minute apart but not back-to-back. That is consistent with write-visibility delay, but also
 with the CLI varying something in its own prefix between rapid invocations. Not worth chasing
@@ -784,5 +823,8 @@ unless `claude-cli:` stays in the design.
    release, not a per-request flag.
 4. ~~Run §5's Gemini check~~ — done, §2.9. Gemini-for-triage stands, but only *with* explicit
    `cachedContents`; the docs must not imply the caching is automatic.
-5. Re-run `livecheck anthropic gemini` at 400k+ to confirm both the no-lag result and the
+5. Act on `docs/SANDBOX_BACKEND.md` (§2.14): default to `claude-cli:` when it is the only
+   backend available, and give the budget ladder the backend's fixed overhead — it currently
+   under-reports by 14× on that path.
+6. Re-run `livecheck anthropic gemini` at 400k+ to confirm both the no-lag result and the
    explicit-cache economics hold at target scale, and to cost the TTL default.

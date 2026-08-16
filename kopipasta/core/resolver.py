@@ -67,6 +67,11 @@ class Entry:
     #: rather than being named. The budget ladder demotes bulk before
     #: explicit: someone who typed a path meant that path.
     bulk: bool = True
+    #: The TUI's "selected patches": specific hunks of a file rather than the
+    #: whole of it. No flag selects this — it exists so the interactive
+    #: selection can be rendered by the same renderer as everything else,
+    #: rather than by a second one that drifts.
+    chunks: Optional[List[str]] = None
 
     @property
     def flag(self) -> str:

@@ -581,8 +581,11 @@ q: Quit and finalize"""
             self.logger.info("action_e_abort", reason="no_delta_files")
             return
 
-        # Generate minimal prompt
-        prompt_text = generate_extension_prompt(delta_files, {})
+        # Generate minimal prompt. Rooted at the project so a file's path here
+        # reads the same as it did in the prompt that asked for it.
+        prompt_text = generate_extension_prompt(
+            delta_files, {}, root=self.project_root_abs
+        )
 
         try:
             copy_to_clipboard(prompt_text, self.console)
@@ -1502,3 +1505,12 @@ q: Quit and finalize"""
         files_to_include = self.manager.get_selected_files()
         map_files = self.manager.get_map_files()
         return files_to_include, self.manager.char_count, map_files
+
+    def selection(self, root: str):
+        """The finished selection, roles intact, for the shared renderer.
+
+        `run` returns a flat FileTuple list because that is what the caller
+        has always taken; this is how Delta and Base survive the trip to the
+        prompt instead of being flattened into one list on the way.
+        """
+        return self.manager.to_selection(root)

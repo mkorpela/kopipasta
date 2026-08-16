@@ -624,6 +624,25 @@ kopipasta/
     patchflow.py   # parse -> validate -> apply -> report
 ```
 
+`context.py` is shared, not parallel. The TUI's clipboard prompt and `ask`'s payload are the same
+bytes for the same selection — `render_context` produces the structure tree, the legend and the
+file zones, and each surface only adds its own wrapper: the TUI its memory layers and instruction
+tail, `ask` its conversation, its updates and the `--mode` tail. The TUI's three-state engine and
+the selection grammar are one model in two vocabularies, and they resolve to the same roles:
+
+```
+Delta (green)  ->  edit      active workspace, editable
+Base  (cyan)   ->  ref       synced context, read-only
+Map   (yellow) ->  map       skeleton only
+snippet        ->  snippet   first 50 lines, whichever state selected it
+```
+
+That correspondence was already load-bearing — the Ralph loop hands an agent Delta as editable
+and Base as read-only — but the pasted prompt flattened it into one undifferentiated
+`## File Contents` list, so the model was never shown the boundary the tool enforces everywhere
+else. Two renderers for one prompt is the drift this file exists to prevent; a test asserts the
+shared body is byte-identical from both entry points.
+
 Two rules for anything added here:
 
 - **Route through the existing helpers.** The walker, the symbol extractor, the structure renderer

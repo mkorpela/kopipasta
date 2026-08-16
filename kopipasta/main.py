@@ -2,7 +2,7 @@
 import os
 import argparse
 import sys
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import requests
 from rich.console import Console
 from pygments import highlight
@@ -212,6 +212,9 @@ class KopipastaApp:
         self.project_root_abs = os.path.abspath(os.getcwd())
         self.files_to_include: List[FileTuple] = []
         self.map_files: List[str] = []
+        #: The same selection with its roles intact, when the selector ran.
+        #: None means "no roles to preserve", and the renderer flattens.
+        self.selection: Any = None
         self.web_contents: Dict[str, Tuple[FileTuple, str]] = {}
         self.paths_for_tree: List[str] = []
         self.files_to_preselect: List[str] = []
@@ -559,6 +562,10 @@ class KopipastaApp:
             )
             self.files_to_include = selected_files
             self.map_files = map_files
+            # Delta and Base, kept apart all the way to the prompt. The flat
+            # list above cannot carry them, and flattening is what used to
+            # cost the pasted prompt its editable/read-only boundary.
+            self.selection = tree_selector.selection(self.project_root_abs)
             # Re-calculate total to prevent double-counting cached selections
             web_size = sum(len(content) for _, content in self.web_contents.values())
             self.current_char_count = file_char_count + web_size
@@ -601,6 +608,8 @@ class KopipastaApp:
             project_context=self.project_context,
             session_state=self.session_state,
             map_files=self.map_files if self.map_files else None,
+            selection=self._prompt_selection(),
+            root=self.project_root_abs,
         )
 
         # Get Task
@@ -621,6 +630,27 @@ class KopipastaApp:
         self._print_and_copy(final_prompt)
 
         self.logger.info("prompt_generated", char_count=len(final_prompt))
+
+    def _prompt_selection(self):
+        """The selection to render, after everything that filters it has run.
+
+        `files_to_include` is the authority on *what* survived — the memory
+        dedup below drops AI_CONTEXT.md and AI_SESSION.md from it once they
+        are injected as their own sections — and the selector's selection is
+        the authority on *which role* each survivor holds. Rebuilding from the
+        list alone would silently return every file to the active workspace,
+        which is the flattening this exists to undo.
+        """
+        if self.selection is None:
+            return None
+        kept = {os.path.abspath(f[0]) for f in self.files_to_include}
+        kept |= {os.path.abspath(p) for p in self.map_files}
+        self.selection.entries = {
+            path: entry
+            for path, entry in self.selection.entries.items()
+            if os.path.abspath(path) in kept
+        }
+        return self.selection
 
     def _deduplicate_memory_files(self):
         """

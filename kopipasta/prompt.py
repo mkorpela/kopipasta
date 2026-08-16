@@ -5,12 +5,15 @@ import subprocess
 import uuid
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Tuple, Optional
 
 from jinja2 import Template
 
-from kopipasta.file import FileTuple, extract_symbols, read_file_contents, is_ignored
+from kopipasta.file import FileTuple, extract_symbols, is_ignored
 from kopipasta.interaction import require_human, use_default_without_human
+
+if TYPE_CHECKING:  # pragma: no cover - core.context imports this module
+    from kopipasta.core.resolver import Selection
 from prompt_toolkit import prompt as prompt_toolkit_prompt
 from prompt_toolkit.styles import Style
 from rich.console import Console
@@ -32,23 +35,7 @@ DEFAULT_TEMPLATE = """{% if user_profile -%}
 {{ session_state }}
 
 {% endif -%}
-# Project Overview
-
-## Project Structure
-
-```json
-{{ structure }}
-```
-
-## File Contents
-
-{% for file in files -%}
-# FILE: {{ file.path }}{{ file.description }}
-```{{ file.language }}
-{{ file.content }}
-```
-
-{% endfor -%}
+{{ context }}
 {% if web_pages -%}
 ## Web Content
 
@@ -68,9 +55,10 @@ DEFAULT_TEMPLATE = """{% if user_profile -%}
 ## Instructions for Achieving the Task
 
 ### 🧠 Core Philosophy
-1. **No Hallucinations**: You see the ## Project Structure. If you need to read a file that isn't in ## File Contents, stop and ask me to paste it.
-2. **Critical Partner**: Do not blindly follow instructions if they are flawed. Challenge assumptions. Propose better architectural solutions.
-3. **Hard Stops**: If you need user input, end with [AWAITING USER RESPONSE]. Do not guess.
+1. **No Hallucinations**: You see the ## Project Structure. If you need to read a file whose contents are not under one of the zone headings above, stop and ask me to paste it.
+2. **Respect the Zones**: Propose changes only to files under ## Active Workspace (Editable). Files under ## Reference Context are there to be read; if one of them has to change, say so and ask me to move it.
+3. **Critical Partner**: Do not blindly follow instructions if they are flawed. Challenge assumptions. Propose better architectural solutions.
+4. **Hard Stops**: If you need user input, end with [AWAITING USER RESPONSE]. Do not guess.
 
 ### 🛠️ Code Output & Patching (CRITICAL)
 I use a local tool to auto-apply your code blocks. You MUST follow these rules:
@@ -80,7 +68,7 @@ Every code block must start with a comment line specifying the file path.
 Example: `// FILE: src/utils.py` or `# FILE: config.toml`
 
 **Rule 2: Modification vs. Creation**
-- **To EDIT an existing file**: Use **Unified Diff** format (with `@@ ... @@` headers) OR **Search/Replace** blocks (`<<<<` ... `====` ... `>>>>`). 
+- **To EDIT an existing file**: Use **Unified Diff** format (with `@@ ... @@` headers) OR **Search/Replace** blocks (`<<<<` ... `====` ... `>>>>`).
 - **To CREATE or OVERWRITE a file**: Provide the **FULL** file content.
 - **To DELETE a file**: Output a code block containing exactly `<<<DELETE>>>`.
 
@@ -427,6 +415,41 @@ def handle_env_variables(
     return content
 
 
+def selection_from_files(
+    files_to_include: List[FileTuple],
+    map_files: Optional[List[str]] = None,
+    root: Optional[str] = None,
+) -> "Selection":
+    """A flat `FileTuple` list as a role-bearing selection.
+
+    The fallback for callers that never had roles to lose — a cached
+    selection, a test, the extension prompt. Everything lands in the active
+    workspace because that is what an undifferentiated "selected" meant before
+    the two vocabularies were joined up; a caller that *does* know its roles
+    passes a `Selection` instead and keeps them.
+    """
+    from kopipasta.core.resolver import EDIT, MAP, SNIPPET, Entry, Selection
+
+    root = root or os.getcwd()
+    selection = Selection(root=root)
+
+    def add(path: str, role: str, chunks: Optional[List[str]] = None) -> None:
+        abs_path = os.path.abspath(path)
+        selection.entries[abs_path] = Entry(
+            path=abs_path,
+            rel=os.path.relpath(abs_path, root).replace(os.sep, "/"),
+            role=role,
+            bulk=False,
+            chunks=chunks,
+        )
+
+    for path in map_files or []:
+        add(path, MAP)
+    for path, use_snippet, chunks, _ in files_to_include:
+        add(path, SNIPPET if use_snippet and chunks is None else EDIT, chunks)
+    return selection
+
+
 def generate_prompt_template(
     files_to_include: List[FileTuple],
     ignore_patterns: List[str],
@@ -437,46 +460,40 @@ def generate_prompt_template(
     project_context: Optional[str] = None,
     session_state: Optional[str] = None,
     map_files: Optional[List[str]] = None,
+    selection: Optional["Selection"] = None,
+    root: Optional[str] = None,
 ) -> Tuple[str, int]:
+    """The clipboard prompt. Returns (rendered, cursor_position).
+
+    The context — the structure tree, the legend and the file zones — is
+    rendered by `kopipasta.core.context`, the same call `ask` makes before
+    posting to a model. This function only composes it with the memory layers
+    and the instruction tail, which is what the user's template is for. The
+    file-block format lives in exactly one place, so the two surfaces cannot
+    drift apart again without the shared test noticing.
+
+    `selection` carries the TUI's Delta/Base roles when the caller has them;
+    without it the file list is flattened into the active workspace.
     """
-    Generates the prompt using the Jinja2 template.
-    Returns (rendered_prompt_string, cursor_position_index).
-    """
+    from kopipasta.core.context import render_context
+
+    root = root or os.getcwd()
+    if selection is None:
+        selection = selection_from_files(files_to_include, map_files, root)
+
     env_decisions: Dict[str, str] = {}
 
-    # 1. Prepare Project Structure
-    structure_tree = get_project_structure(ignore_patterns, search_paths, map_files)
+    # 1. The shared body: tree, legend, zones. Masking happens inside.
+    context = render_context(
+        selection,
+        ignore=ignore_patterns,
+        root=root,
+        env_vars=env_vars,
+        search_paths=search_paths,
+    )
 
-    # 2. Prepare File Contents List
-    processed_files = []
-    for file, use_snippet, chunks, content_type in files_to_include:
-        relative_path = os.path.relpath(file)
-        language = content_type if content_type else get_language_for_file(file)
-        description = ""
-        content = ""
-
-        if chunks is not None:
-            description = " (selected patches)"
-            # Chunks are already strings, just join them
-            content = "\n".join(chunks)
-        elif use_snippet:
-            description = " (snippet)"
-            content = get_file_snippet(file)
-        else:
-            raw_content = read_file_contents(file)
-            content = handle_env_variables(raw_content, env_vars, env_decisions)
-
-        processed_files.append(
-            {
-                "path": relative_path,
-                "relative_path": relative_path,
-                "description": description,
-                "language": language,
-                "content": content,
-            }
-        )
-
-    # 3. Prepare Web Contents List
+    # 2. Web content has no counterpart in a repository selection, so it stays
+    #    a template slot rather than being forced into a zone.
     processed_web_pages = []
     if web_contents:
         for url, (file_tuple, raw_content) in web_contents.items():
@@ -495,23 +512,27 @@ def generate_prompt_template(
                 }
             )
 
-    # 4. Render Template
+    # 3. Render Template
     template = load_template()
 
     # Use a unique marker for this render to prevent collision if the
     # CURSOR_MARKER constant string itself appears in the file contents.
     unique_render_marker = f"{CURSOR_MARKER}_{uuid.uuid4().hex}"
     rendered = template.render(
-        structure=structure_tree,
-        files=processed_files,
+        context=context,
         web_pages=processed_web_pages,
         cursor_marker=unique_render_marker,
         user_profile=user_profile,
         project_context=project_context,
         session_state=session_state,
+        # Kept for templates written before the context was shared. A custom
+        # template that still loops over `files` keeps working; it just misses
+        # the zones, which is a reason to re-run --reset-template, not a crash.
+        structure=get_project_structure(ignore_patterns, search_paths, map_files),
+        files=_legacy_file_dicts(selection),
     )
 
-    # 5. Find and remove cursor marker
+    # 4. Find and remove cursor marker
     cursor_position = rendered.find(unique_render_marker)
     if cursor_position == -1:
         # Fallback if user deleted marker from template: append to end
@@ -522,37 +543,59 @@ def generate_prompt_template(
     return rendered, cursor_position
 
 
+def _legacy_file_dicts(selection: "Selection") -> List[Dict[str, str]]:
+    """`{{ files }}` for a template written before zones existed."""
+    from kopipasta.core.context import entry_content, entry_note
+    from kopipasta.core.resolver import EDIT, REF, SNIPPET
+
+    out = []
+    for entry in selection.by_role(EDIT, REF, SNIPPET):
+        note = entry_note(entry)
+        out.append(
+            {
+                "path": entry.rel,
+                "relative_path": entry.rel,
+                "description": f" ({note})" if note else "",
+                "language": get_language_for_file(entry.path),
+                "content": entry_content(entry),
+            }
+        )
+    return out
+
+
 def generate_extension_prompt(
-    files_to_include: List[FileTuple], env_vars: Dict[str, str]
+    files_to_include: List[FileTuple],
+    env_vars: Dict[str, str],
+    selection: Optional["Selection"] = None,
+    root: Optional[str] = None,
 ) -> str:
+    """The follow-up paste: file blocks and nothing else.
+
+    Third caller of the shared block format, and the same rule applies — a
+    file that arrives here has to look exactly like the same file did in the
+    first prompt, or the model sees two renderings of one path and has to
+    guess which is current. `ask` solves that turn-to-turn problem in its own
+    suffix; this is the clipboard's version of it.
     """
-    Generates a minimal prompt containing only file content blocks.
-    Used for the 'Extend Context' follow-up flow.
-    """
+    from kopipasta.core.context import entry_content, entry_note
+    from kopipasta.core.resolver import EDIT, REF, SNIPPET
+
+    root = root or os.getcwd()
+    if selection is None:
+        selection = selection_from_files(files_to_include, root=root)
+
     env_decisions: Dict[str, str] = {}
     processed_files = []
-
-    for file, use_snippet, chunks, content_type in files_to_include:
-        relative_path = os.path.relpath(file)
-        language = content_type if content_type else get_language_for_file(file)
-        description = ""
-
-        if chunks is not None:
-            description = " (selected patches)"
-            content = "\n".join(chunks)
-        elif use_snippet:
-            description = " (snippet)"
-            content = get_file_snippet(file)
-        else:
-            raw_content = read_file_contents(file)
-            content = handle_env_variables(raw_content, env_vars, env_decisions)
-
+    for entry in selection.by_role(EDIT, REF, SNIPPET):
+        note = entry_note(entry)
         processed_files.append(
             {
-                "path": relative_path,
-                "description": description,
-                "language": language,
-                "content": content,
+                "path": entry.rel,
+                "description": f" ({note})" if note else "",
+                "language": get_language_for_file(entry.path),
+                "content": handle_env_variables(
+                    entry_content(entry), env_vars, env_decisions
+                ),
             }
         )
 

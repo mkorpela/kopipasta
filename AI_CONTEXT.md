@@ -22,10 +22,15 @@ Selection is managed via a three-state engine to distinguish between background 
     - `Space` cycle: `Unselected` -> `Delta` -> `Unselected`. If `Base`, toggles to `Delta`.
     - **Promotion**: Files transition `Delta` -> `Base` during "Extend Context" (`e`), "Patch" (`p`), or "Quit" (`q`) to mark them as synced for the next turn.
 
-### One Renderer, Two Surfaces
-The clipboard prompt and the `kopipasta ask` payload are **the same bytes for the same selection**. `kopipasta/core/context.py` (`render_context`) is the only place a prompt's context is rendered — structure tree, legend, file zones, secret masking, block format. Each surface adds only its own wrapper: the TUI its memory layers and instruction tail, `ask` its conversation, updates and `--mode` tail.
+### The Clipboard Prompt Is Canonical
+The prompt the TUI copies is **the specification**. It is the one a human has read, tuned and come to trust; `kopipasta ask` sends the same thing to the same models with nobody there to notice a difference. So `ask` conforms to the TUI's shape — never the reverse. As an assertion, which is how it is tested:
+```
+ask payload == clipboard prompt, with the instruction tail swapped for the --mode tail
+```
+*   **Everything above the tail is the same bytes**: the three memory layers, the structure tree, the legend, the zones. Only the tail may differ, and only because the clipboard has a human who can answer a question and `ask` does not.
+*   **`kopipasta/core/context.py` renders all of it**: `render_memory` for the quad-memory prologue, `render_context` for structure tree, legend, zones, secret masking and block format. The template composes those two; it does not rebuild them.
 *   **The state engine and the CLI flags are one model**: `Delta -> edit`, `Base -> ref`, `Map -> map`, and a snippet is `snippet` whichever state selected it. `SelectionManager.to_selection()` is that mapping.
-*   **Never render a file block anywhere else.** A second renderer is how the pasted prompt lost its editable/read-only boundary — the states were tracked and enforced (the Ralph loop uses exactly this split) but flattened into one `## File Contents` list on the way to the clipboard. `tests/test_shared_rendering.py` asserts the shared body is byte-identical from both entry points.
+*   **Never render a prompt section anywhere else.** A second renderer is how the pasted prompt lost its editable/read-only boundary — the states were tracked and enforced (the Ralph loop uses exactly this split) but flattened into one `## File Contents` list on the way to the clipboard — and how `ask` came to send one memory layer where the clipboard sends three. `tests/test_shared_rendering.py` pins the equality above; change the canonical prompt there and it tells you what no longer matches.
 
 ### Ralph Loop (`r` hotkey) — MCP Agent Integration
 The Ralph Loop enables an external AI agent (e.g. Claude Desktop) to iteratively patch and test code via MCP until a verification command passes.
@@ -86,4 +91,5 @@ The `p` (Process) command acts as a universal intake for LLM output:
 ## 3. Anti-Patterns (Do Not Do)
 *   Do not hardcode directory trees in documentation; `kopipasta` generates them dynamically in the prompt.
 *   Do not duplicate prompt instructions (e.g., "How to patch") in this file; they belong in `prompt_template.j2` (clipboard) or `kopipasta/core/modes.py` (`ask`).
-*   Do not render a file block, a zone heading or the structure tree outside `kopipasta/core/context.py`. A second renderer drifts, and the drift is invisible until a model acts on the wrong prompt.
+*   Do not render a memory heading, a file block, a zone heading or the structure tree outside `kopipasta/core/context.py`. A second renderer drifts, and the drift is invisible until a model acts on the wrong prompt.
+*   Do not change `ask`'s prompt shape to suit `ask`. Change the canonical clipboard prompt, and let `ask` follow.

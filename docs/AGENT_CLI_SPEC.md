@@ -120,6 +120,10 @@ Note what is **absent** from every line: the model and the provider. Those are c
 Assembling context without calling a model is handled directly by `kopipasta ask --dry-run`
 (or `--backend none`).
 
+`ask` prepends the same three memory layers the TUI does — the global profile, `AI_CONTEXT.md`
+and `AI_SESSION.md` — because the clipboard prompt is the specification (§13). `--no-memory`
+drops all three; `--no-project-context` drops only the constitution.
+
 ### Dispatch
 
 If `argv[1]` is a known subcommand, dispatch to it. Otherwise fall through to legacy behaviour
@@ -624,11 +628,23 @@ kopipasta/
     patchflow.py   # parse -> validate -> apply -> report
 ```
 
-`context.py` is shared, not parallel. The TUI's clipboard prompt and `ask`'s payload are the same
-bytes for the same selection — `render_context` produces the structure tree, the legend and the
-file zones, and each surface only adds its own wrapper: the TUI its memory layers and instruction
-tail, `ask` its conversation, its updates and the `--mode` tail. The TUI's three-state engine and
-the selection grammar are one model in two vocabularies, and they resolve to the same roles:
+**The clipboard prompt is the specification.** It is the one a human has read, tuned and come to
+trust; `ask` sends the same thing to the same models with nobody there to notice a difference. So
+the TUI's shape is canonical and `ask` conforms to it — never the reverse. Stated as an assertion,
+which is how it is tested:
+
+```
+ask payload == clipboard prompt, with the instruction tail swapped for the --mode tail
+```
+
+Everything above the tail is the same bytes: the three memory layers, the structure tree, the
+legend, the zones. Only the tail may differ, and only because the clipboard has a human who can
+answer a question and `ask` does not. `context.py` renders all of it — `render_memory` for the
+prologue, `render_context` for the body — and the TUI's template composes those two rather than
+rebuilding them.
+
+The TUI's three-state engine and the selection grammar are one model in two vocabularies, and
+they resolve to the same roles:
 
 ```
 Delta (green)  ->  edit      active workspace, editable

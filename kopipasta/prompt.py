@@ -20,22 +20,7 @@ from rich.console import Console
 
 CURSOR_MARKER = "<<CURSOR_POSITION>>"
 
-DEFAULT_TEMPLATE = """{% if user_profile -%}
-# User Profile & Preferences
-{{ user_profile }}
-
-{% endif -%}
-{% if project_context -%}
-# Project Constitution (AI_CONTEXT.md)
-{{ project_context }}
-
-{% endif -%}
-{% if session_state -%}
-# Current Working Session (AI_SESSION.md)
-{{ session_state }}
-
-{% endif -%}
-{{ context }}
+DEFAULT_TEMPLATE = """{{ memory }}{{ context }}
 {% if web_pages -%}
 ## Web Content
 
@@ -475,7 +460,7 @@ def generate_prompt_template(
     `selection` carries the TUI's Delta/Base roles when the caller has them;
     without it the file list is flattened into the active workspace.
     """
-    from kopipasta.core.context import render_context
+    from kopipasta.core.context import render_context, render_memory
 
     root = root or os.getcwd()
     if selection is None:
@@ -483,7 +468,13 @@ def generate_prompt_template(
 
     env_decisions: Dict[str, str] = {}
 
-    # 1. The shared body: tree, legend, zones. Masking happens inside.
+    # 1. The memory prologue and the shared body, both from the renderer
+    #    `ask` uses. Masking happens inside the latter.
+    memory = render_memory(
+        user_profile=user_profile,
+        project_context=project_context,
+        session_state=session_state,
+    )
     context = render_context(
         selection,
         ignore=ignore_patterns,
@@ -519,9 +510,12 @@ def generate_prompt_template(
     # CURSOR_MARKER constant string itself appears in the file contents.
     unique_render_marker = f"{CURSOR_MARKER}_{uuid.uuid4().hex}"
     rendered = template.render(
+        memory=memory,
         context=context,
         web_pages=processed_web_pages,
         cursor_marker=unique_render_marker,
+        # The three layers individually, for a template that lays them out
+        # itself rather than taking the rendered prologue.
         user_profile=user_profile,
         project_context=project_context,
         session_state=session_state,

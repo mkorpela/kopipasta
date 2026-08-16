@@ -35,7 +35,13 @@ import time
 from typing import Any, Dict, List, Optional, Sequence
 
 from kopipasta.cache import find_project_root, get_project_key
-from kopipasta.config import read_env_file, read_gitignore, read_project_context
+from kopipasta.config import (
+    read_env_file,
+    read_gitignore,
+    read_global_profile,
+    read_project_context,
+    read_session_state,
+)
 from kopipasta.core import budget as budgetmod
 from kopipasta.core import modes as modesmod
 from kopipasta.core.backend import GeminiBackend, build
@@ -125,6 +131,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help=f"{', '.join(modesmod.MODE_NAMES)} (default: {modesmod.DEFAULT_MODE})")
     q.add_argument("--no-project-context", action="store_true",
                    help="do not prepend AI_CONTEXT.md")
+    q.add_argument("--no-memory", action="store_true",
+                   help="prepend none of the memory layers: the global profile, "
+                        "AI_CONTEXT.md and AI_SESSION.md")
 
     b = p.add_argument_group("budget and backend")
     b.add_argument("--budget", metavar="SIZE",
@@ -416,7 +425,15 @@ def _ask(args: argparse.Namespace) -> int:
         # produce is a TypeError three frames deeper.
         if selection is None:  # pragma: no cover - unreachable
             raise UsageError("nothing was selected, so there is nothing to ask about.")
-        project_context = None if args.no_project_context else read_project_context(root)
+        # The same three memory layers the clipboard prompt carries, in the
+        # same order. `ask` used to send only the constitution, so a prompt
+        # tuned against a profile and a live AI_SESSION.md quietly behaved
+        # differently here — on the surface with nobody watching for it.
+        memory = {} if args.no_memory else {
+            "user_profile": read_global_profile(),
+            "project_context": None if args.no_project_context else read_project_context(root),
+            "session_state": read_session_state(root),
+        }
 
         def render() -> str:
             return render_prefix(
@@ -424,7 +441,7 @@ def _ask(args: argparse.Namespace) -> int:
                 ignore=ignore,
                 root=root,
                 env_vars=env_vars,
-                project_context=project_context,
+                **memory,
             )
 
         prefix = render()

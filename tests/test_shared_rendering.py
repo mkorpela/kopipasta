@@ -23,6 +23,12 @@ from kopipasta.selection import FileState, SelectionManager
 
 @pytest.fixture
 def project(tmp_path, monkeypatch):
+    # `.git` so find_project_root lands here, and no provider reachable
+    # however the developer's shell is set up.
+    (tmp_path / ".git").mkdir()
+    for var in ("KOPIPASTA_BACKEND", "GEMINI_API_KEY", "GOOGLE_API_KEY",
+                "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "calc.py").write_text(
         'def add(a, b):\n    """Add two numbers."""\n    return a + b\n'
@@ -275,3 +281,168 @@ def test_a_template_written_before_zones_still_renders(project):
     assert "# FILE: src/calc.py" in tui
     assert "# FILE: src/util.py (first 50 lines only)" in tui
     assert "## Active Workspace" not in tui  # no zones, as the template asked
+
+
+# -- the TUI's output is the canonical prompt -------------------------------
+#
+# Not "the two are similar" and not "both have zones". The prompt a human
+# pastes into a chat window is the thing that has been read, tuned and
+# trusted; `ask` sends the same prompt to the same models with no human to
+# notice a difference. So the TUI's shape is the specification, and the tests
+# below are written against it — anything `ask` renders that the clipboard
+# does not is a divergence, whichever one it flatters.
+
+
+@pytest.fixture
+def memory(project, monkeypatch):
+    """All three of the quad-memory layers the TUI injects, on disk."""
+    from kopipasta.config import get_global_profile_path
+
+    profile = get_global_profile_path()
+    profile.parent.mkdir(parents=True, exist_ok=True)
+    profile.write_text("I am a Senior Python Developer.\n", encoding="utf-8")
+    (project / "AI_CONTEXT.md").write_text("# Rules\nNever use threads.\n")
+    (project / "AI_SESSION.md").write_text("# Session\nMid-refactor of calc.\n")
+    return project
+
+
+def _tui_prompt(project, task="Fix the thing.", **kwargs):
+    """The canonical prompt, task spliced in exactly where the cursor sat."""
+    from kopipasta.config import (
+        read_global_profile,
+        read_project_context,
+        read_session_state,
+    )
+
+    rendered, cursor = generate_prompt_template(
+        files_to_include=[],
+        ignore_patterns=[],
+        web_contents={},
+        env_vars={},
+        search_paths=[str(project)],
+        selection=_tui_selection(project),
+        root=str(project),
+        user_profile=read_global_profile(),
+        project_context=read_project_context(str(project)),
+        session_state=read_session_state(str(project)),
+        **kwargs,
+    )
+    return rendered[:cursor] + task + rendered[cursor:]
+
+
+def _ask_payload(project, capsys, *extra_argv, task="Fix the thing."):
+    """What `ask` actually sent, read back off disk.
+
+    Through the real verb rather than through `render_prefix` directly: which
+    memory layers get read, and from where, is part of what has to match, and
+    a helper that passed them in by hand would be testing the renderer while
+    the gap sat in the caller. On turn 1 the request file is the payload
+    verbatim, so what is read back here is what a provider would have seen.
+    """
+    import json
+
+    from kopipasta.core import ask as askmod
+    from kopipasta.core.errors import EXIT_OK
+
+    code = askmod.run(
+        [
+            "--backend", "none",
+            "-e", "src/calc.py",
+            "-r", "src/main.py",
+            "-s", "src/util.py",
+            "-m", "src/tree.py",
+            "--mode", "patch",
+            "-q", task,
+            "--json",
+            *extra_argv,
+        ]
+    )
+    assert code == EXIT_OK
+    data = json.loads(capsys.readouterr().out)
+    return (project / data["request"]).read_text()
+
+
+def test_the_payload_is_the_clipboard_prompt_with_a_different_tail(memory, capsys):
+    """The whole claim, as one assertion.
+
+    Everything above the instructions is the same bytes. Only the tail
+    differs, because only the tail is allowed to: the clipboard has a human
+    who can answer a question and `ask` does not.
+    """
+    from kopipasta.core import modes as modesmod
+
+    project = memory
+    tui = _tui_prompt(project)
+    head, sep, _ = tui.partition("\n\n## Instructions for Achieving the Task")
+    assert sep, "the canonical prompt lost its instruction tail"
+    expected = head + "\n\n" + modesmod.get("patch").instructions + "\n"
+    assert _ask_payload(project, capsys) == expected
+
+
+def test_ask_carries_every_memory_layer_the_clipboard_does(memory, capsys):
+    """The TUI injects three memory layers; `ask` injected one.
+
+    A prompt tuned against a global profile and a live session file behaves
+    differently without them, and `ask` is the surface with nobody watching
+    for the difference.
+    """
+    payload = _ask_payload(memory, capsys)
+    assert "# User Profile & Preferences" in payload
+    assert "I am a Senior Python Developer." in payload
+    assert "# Project Constitution (AI_CONTEXT.md)" in payload
+    assert "Never use threads." in payload
+    assert "# Current Working Session (AI_SESSION.md)" in payload
+    assert "Mid-refactor of calc." in payload
+
+
+def test_the_memory_layers_keep_the_canonical_order(memory, capsys):
+    """Global kernel, then project constitution, then working memory, then
+    the code. The order is the architecture, not a preference."""
+    payload = _ask_payload(memory, capsys)
+    assert (
+        payload.index("# User Profile & Preferences")
+        < payload.index("# Project Constitution (AI_CONTEXT.md)")
+        < payload.index("# Current Working Session (AI_SESSION.md)")
+        < payload.index("# Project Overview")
+    )
+
+
+def test_the_memory_layers_render_byte_for_byte_as_the_clipboard_renders_them(
+    memory, capsys
+):
+    """Same header, same spacing. Two renderers for one prologue is the same
+    trap as two renderers for one prompt, just smaller."""
+    from kopipasta.core.context import render_memory
+
+    project = memory
+    prologue = render_memory(
+        user_profile="I am a Senior Python Developer.\n",
+        project_context="# Rules\nNever use threads.\n",
+        session_state="# Session\nMid-refactor of calc.\n",
+    )
+    assert _tui_prompt(project).startswith(prologue)
+    assert _ask_payload(project, capsys).startswith(prologue)
+
+
+def test_a_layer_that_does_not_exist_leaves_no_heading_behind(project, capsys):
+    """No profile, no AI_SESSION.md — and no empty sections announcing it."""
+    payload = _ask_payload(project, capsys)
+    assert "# User Profile & Preferences" not in payload
+    assert "# Current Working Session" not in payload
+    assert payload.startswith("# Project Overview")
+
+
+def test_no_memory_drops_every_layer(memory, capsys):
+    payload = _ask_payload(memory, capsys, "--no-memory")
+    assert payload.startswith("# Project Overview")
+    assert "I am a Senior Python Developer." not in payload
+    assert "Never use threads." not in payload
+    assert "Mid-refactor of calc." not in payload
+
+
+def test_no_project_context_still_drops_only_the_constitution(memory, capsys):
+    """The narrower flag keeps its documented meaning."""
+    payload = _ask_payload(memory, capsys, "--no-project-context")
+    assert "Never use threads." not in payload
+    assert "I am a Senior Python Developer." in payload
+    assert "Mid-refactor of calc." in payload

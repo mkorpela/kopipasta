@@ -43,6 +43,41 @@ from kopipasta.prompt import (
     handle_env_variables,
 )
 
+#: The quad-memory layers, in the order the clipboard prompt has always
+#: emitted them: global kernel, project constitution, working memory
+#: (AI_CONTEXT.md §1). `ask` used to send only the middle one, so a prompt
+#: tuned against a profile and a live session file behaved differently on the
+#: surface with nobody watching for the difference.
+MEMORY_LAYERS: Tuple[Tuple[str, str], ...] = (
+    ("user_profile", "# User Profile & Preferences"),
+    ("project_context", "# Project Constitution (AI_CONTEXT.md)"),
+    ("session_state", "# Current Working Session (AI_SESSION.md)"),
+)
+
+
+def render_memory(
+    *,
+    user_profile: Optional[str] = None,
+    project_context: Optional[str] = None,
+    session_state: Optional[str] = None,
+) -> str:
+    """The memory prologue, byte for byte as the clipboard has always had it.
+
+    Reproduces what the template's three `{% if %}` blocks produced, down to
+    the blank lines, because the clipboard prompt is the specification here —
+    it is the one a human has read, tuned and come to trust. A layer that does
+    not exist contributes nothing at all, not an empty heading announcing it.
+    """
+    values = {
+        "user_profile": user_profile,
+        "project_context": project_context,
+        "session_state": session_state,
+    }
+    return "".join(
+        f"{heading}\n{values[key]}\n\n" for key, heading in MEMORY_LAYERS if values[key]
+    )
+
+
 LEGEND = (
     "The tree below lists every non-ignored file in the project, including "
     "files whose contents were not sent. A file mapped to a list of "
@@ -244,13 +279,23 @@ def render_prefix(
     root: str,
     env_vars: Optional[Dict[str, str]] = None,
     project_context: Optional[str] = None,
+    user_profile: Optional[str] = None,
+    session_state: Optional[str] = None,
 ) -> str:
-    """The stable half: project rules, the structure tree, and the file zones."""
-    out: List[str] = []
-    if project_context:
-        out += ["# Project Constitution (AI_CONTEXT.md)", "", project_context, ""]
-    out.append(render_context(selection, ignore=ignore, root=root, env_vars=env_vars))
-    return "\n".join(out)
+    """The stable half: the memory layers, the structure tree, and the zones.
+
+    Everything above the task, in the order the clipboard prompt puts it. The
+    task and the instruction tail are the suffix, which is the only part the
+    two surfaces are allowed to differ on.
+    """
+    memory = render_memory(
+        user_profile=user_profile,
+        project_context=project_context,
+        session_state=session_state,
+    )
+    return memory + render_context(
+        selection, ignore=ignore, root=root, env_vars=env_vars
+    )
 
 
 def render_suffix(

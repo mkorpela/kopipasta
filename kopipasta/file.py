@@ -273,7 +273,25 @@ def read_file_contents(file_path: str) -> str:
     try:
         with open(file_path, encoding="utf-8") as file:
             return file.read()
-    except (OSError, UnicodeDecodeError) as e:
+    except UnicodeDecodeError as e:
+        print(
+            f"Warning: {file_path} is not valid UTF-8; "
+            f"decoding with errors='replace': {e}"
+        )
+        try:
+            # We deliberately use errors="replace" here rather than
+            # errors="surrogateescape" because this text goes into a prompt and an
+            # HTTP request body. Lone surrogates cannot be encoded for transport
+            # or serialised to JSON. surrogateescape belongs on the patch path
+            # (kopipasta/patcher.py), where bytes must round-trip to disk unchanged;
+            # here, the payload must survive being sent.
+            with open(file_path, encoding="utf-8", errors="replace") as file:
+                return file.read()
+        except OSError as inner_err:
+            failure = f"Error reading {file_path}: {inner_err}"
+            print(failure)
+            return f"<.. {failure} ..>"
+    except OSError as e:
         failure = f"Error reading {file_path}: {e}"
         print(failure)
         return f"<.. {failure} ..>"

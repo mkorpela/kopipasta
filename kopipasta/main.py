@@ -370,6 +370,12 @@ class KopipastaApp:
             formatter_class=argparse.RawDescriptionHelpFormatter,
         )
         parser.add_argument(
+            "-V",
+            "--version",
+            action="store_true",
+            help="Show version and installation information",
+        )
+        parser.add_argument(
             "inputs",
             nargs="*",
             help="Files, directories, or URLs to include. Defaults to current directory.",
@@ -487,6 +493,12 @@ class KopipastaApp:
 
     def _handle_utility_commands(self) -> bool:
         """Handles flags that exit immediately (reset/edit). Returns True if handled."""
+        if getattr(self.args, "version", False):
+            from kopipasta import format_version
+
+            emit(format_version())
+            return True
+
         if self.args.reset_template:
             reset_template()
             return True

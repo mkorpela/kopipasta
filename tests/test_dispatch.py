@@ -297,3 +297,61 @@ def test_bare_help_is_not_narration(tmp_path):
     r = _run(["--help"], tmp_path)
     assert "ask" in r.stdout
     assert r.stderr == ""
+
+
+# -- version reporting -----------------------------------------------------
+
+
+def _read_pyproject_version() -> str:
+    pyproject_path = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    content = pyproject_path.read_text(encoding="utf-8")
+    for line in content.splitlines():
+        if line.startswith("version = "):
+            return line.split("=", 1)[1].strip().strip('"').strip("'")
+    raise AssertionError("version not found in pyproject.toml")
+
+
+def test_version_exits_0_and_matches_pyproject(tmp_path):
+    """kopipasta --version must exit 0, emit the version from pyproject.toml,
+    and name the imported package directory."""
+    expected_version = _read_pyproject_version()
+    r = _run(["--version"], tmp_path)
+    assert r.returncode == 0, f"exit {r.returncode}: {r.stderr}"
+    assert r.stderr == ""
+    lines = r.stdout.strip().splitlines()
+    assert len(lines) == 1, f"expected 1 line, got: {r.stdout}"
+    assert f"kopipasta {expected_version}" in lines[0]
+    expected_pkg_dir = str(Path(__file__).resolve().parent.parent / "kopipasta")
+    assert expected_pkg_dir in lines[0]
+
+
+def test_version_short_flag_matches_long_flag(tmp_path):
+    """-V is the short form for --version."""
+    r_long = _run(["--version"], tmp_path)
+    r_short = _run(["-V"], tmp_path)
+    assert r_short.returncode == 0, f"exit {r_short.returncode}: {r_short.stderr}"
+    assert r_short.stdout == r_long.stdout
+    assert r_short.stderr == ""
+
+
+def test_version_works_outside_git_or_project_repo(tmp_path):
+    """--version must not depend on project discovery or git state."""
+    non_project_dir = tmp_path / "empty_isolated_dir"
+    non_project_dir.mkdir()
+    r = _run(["--version"], non_project_dir)
+    assert r.returncode == 0, f"exit {r.returncode}: {r.stderr}"
+    assert "kopipasta " in r.stdout
+
+
+def test_version_fallback_when_metadata_missing(monkeypatch):
+    """If importlib.metadata cannot find the package, format_version falls back honestly."""
+    import importlib.metadata
+
+    from kopipasta import format_version
+
+    def mock_distribution(name):
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "distribution", mock_distribution)
+    v = format_version()
+    assert "kopipasta unknown (" in v

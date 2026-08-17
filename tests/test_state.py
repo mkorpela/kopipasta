@@ -7,7 +7,7 @@ import pytest
 
 from kopipasta.cache import get_project_key
 from kopipasta.core.errors import UsageError
-from kopipasta.core.state import resolve_state_root
+from kopipasta.core.state import StateRoot, resolve_state_root
 
 
 def test_01_default_in_normal_repo_resolves_to_git_dir(tmp_path: Path) -> None:
@@ -240,7 +240,7 @@ def test_11_explicit_relative_path_resolves_against_project_root_not_cwd(
 
     res = resolve_state_root(
         str(repo),
-        override="custom-state-dir",
+        override="./custom-state-dir",
         env={},
     )
     assert res.kind == "explicit"
@@ -326,3 +326,293 @@ def test_15_xdg_without_home_or_xdg_env_falls_back_to_temp_with_requested_source
     assert res.source == "--state-dir"
     assert res.kind == "temp"
     assert "kopipasta-state" in res.path
+
+
+def test_16_state_dir_at_repo_root_kopipasta_needs_gitignore(
+    tmp_path: Path,
+) -> None:
+    """16. State directory at <root>/.kopipasta requires a .gitignore entry."""
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True, exist_ok=True)
+    state = repo / ".kopipasta"
+
+    st = StateRoot(
+        project_root=str(repo),
+        path=str(state),
+        source="explicit",
+        kind="repo",
+    )
+    assert st.in_worktree is True
+    assert st.needs_gitignore is True
+
+
+def test_17_state_dir_inside_git_dir_is_in_worktree_but_needs_no_gitignore(
+    tmp_path: Path,
+) -> None:
+    """17. State at <root>/.git/kopipasta is in worktree but needs no .gitignore."""
+    repo = tmp_path / "git-repo"
+    (repo / ".git").mkdir(parents=True, exist_ok=True)
+    state = repo / ".git" / "kopipasta"
+
+    st = StateRoot(
+        project_root=str(repo),
+        path=str(state),
+        source="built-in default",
+        kind="git",
+    )
+    assert st.in_worktree is True
+    assert st.needs_gitignore is False
+
+
+def test_18_state_dir_outside_project_root_needs_no_gitignore(
+    tmp_path: Path,
+) -> None:
+    """18. State directory outside project root (XDG/temp) needs no .gitignore."""
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "xdg-state"
+    outside.mkdir(parents=True, exist_ok=True)
+
+    st = StateRoot(
+        project_root=str(repo),
+        path=str(outside),
+        source="KOPIPASTA_STATE_DIR",
+        kind="xdg",
+    )
+    assert st.in_worktree is False
+    assert st.needs_gitignore is False
+
+
+def test_19_needs_gitignore_is_path_based_not_kind_based(
+    tmp_path: Path,
+) -> None:
+    """19. needs_gitignore depends on filesystem location, never on kind value."""
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True, exist_ok=True)
+    git_state = str(repo / ".git" / "kopipasta")
+
+    st_git = StateRoot(
+        project_root=str(repo),
+        path=git_state,
+        source="built-in default",
+        kind="git",
+    )
+    st_explicit = StateRoot(
+        project_root=str(repo),
+        path=git_state,
+        source="--state-dir",
+        kind="explicit",
+    )
+    assert st_git.needs_gitignore is False
+    assert st_explicit.needs_gitignore is False
+
+
+def test_20_git_file_worktree_distinguishes_checkout_from_external_git_dir(
+    tmp_path: Path,
+) -> None:
+    """20. With .git file, state in checkout needs gitignore while external git dir does not."""
+    main_repo = tmp_path / "main-repo"
+    worktree_git_dir = main_repo / ".git" / "worktrees" / "feature"
+    worktree_git_dir.mkdir(parents=True, exist_ok=True)
+
+    worktree_root = tmp_path / "worktree-feat"
+    worktree_root.mkdir(parents=True, exist_ok=True)
+    dot_git = worktree_root / ".git"
+    dot_git.write_text(f"gitdir: {worktree_git_dir}\n", encoding="utf-8")
+
+    # Inside worktree checkout outside the git dir requires .gitignore
+    checkout_st = StateRoot(
+        project_root=str(worktree_root),
+        path=str(worktree_root / ".kopipasta"),
+        source="explicit",
+        kind="repo",
+    )
+    assert checkout_st.in_worktree is True
+    assert checkout_st.needs_gitignore is True
+
+    # At the target git dir outside the worktree checkout needs no .gitignore
+    ext_git_st = StateRoot(
+        project_root=str(worktree_root),
+        path=str(worktree_git_dir / "kopipasta"),
+        source="built-in default",
+        kind="git",
+    )
+    assert ext_git_st.in_worktree is False
+    assert ext_git_st.needs_gitignore is False
+
+
+def test_21_unresolvable_git_dir_with_git_present_falls_back_to_requiring_gitignore(
+    tmp_path: Path,
+) -> None:
+    """21. When git is present but its dir cannot be resolved, needs_gitignore is True."""
+    corrupt_repo = tmp_path / "corrupt-repo"
+    corrupt_repo.mkdir(parents=True, exist_ok=True)
+    (corrupt_repo / ".git").write_text("invalid gitdir content\n", encoding="utf-8")
+
+    st_corrupt = StateRoot(
+        project_root=str(corrupt_repo),
+        path=str(corrupt_repo / ".kopipasta"),
+        source="built-in default",
+        kind="repo",
+    )
+    assert st_corrupt.in_worktree is True
+    assert st_corrupt.needs_gitignore is True
+
+
+def test_22_non_git_directory_never_needs_gitignore(
+    tmp_path: Path,
+) -> None:
+    """22. A directory without git never needs a .gitignore entry."""
+    non_git = tmp_path / "plain-dir"
+    non_git.mkdir(parents=True, exist_ok=True)
+
+    st_plain = StateRoot(
+        project_root=str(non_git),
+        path=str(non_git / ".kopipasta"),
+        source="built-in default",
+        kind="repo",
+    )
+    assert st_plain.in_worktree is True
+    assert st_plain.needs_gitignore is False
+
+
+def test_23_bare_word_typo_refused_via_flag_naming_keywords_and_escape_hatch(
+    tmp_path: Path,
+) -> None:
+    """23. A bare word typo like 'gti' via --state-dir is refused with UsageError."""
+    repo = tmp_path / "typo-repo"
+    repo.mkdir(parents=True, exist_ok=True)
+
+    with pytest.raises(UsageError) as exc_info:
+        resolve_state_root(str(repo), override="gti", env={})
+
+    rendered = exc_info.value.render()
+    assert "gti" in rendered
+    assert "--state-dir" in rendered
+    assert "git" in rendered
+    assert "repo" in rendered
+    assert "xdg" in rendered
+    assert "./" in rendered
+    assert exc_info.value.exit_code == 1
+
+
+def test_24_bare_word_typo_refused_via_env_var(
+    tmp_path: Path,
+) -> None:
+    """24. Bare word typo via KOPIPASTA_STATE_DIR is refused and names env var."""
+    repo = tmp_path / "env-typo-repo"
+    repo.mkdir(parents=True, exist_ok=True)
+
+    with pytest.raises(UsageError) as exc_info:
+        resolve_state_root(
+            str(repo),
+            env={"KOPIPASTA_STATE_DIR": "gti"},
+        )
+
+    rendered = exc_info.value.render()
+    assert "KOPIPASTA_STATE_DIR" in rendered
+    assert "gti" in rendered
+    assert "git" in rendered
+    assert "repo" in rendered
+    assert "xdg" in rendered
+    assert "./" in rendered
+
+
+def test_25_bare_word_typo_refused_via_config_toml(
+    tmp_path: Path,
+) -> None:
+    """25. Bare word typo via config.toml [state] dir is refused and names config source."""
+    repo = tmp_path / "cfg-typo-repo"
+    repo.mkdir(parents=True, exist_ok=True)
+
+    cfg_file = tmp_path / "config" / "config.toml"
+    cfg_file.parent.mkdir(parents=True, exist_ok=True)
+    cfg_file.write_text('[state]\ndir = "gti"\n', encoding="utf-8")
+
+    with pytest.raises(UsageError) as exc_info:
+        resolve_state_root(
+            str(repo),
+            config_path=cfg_file,
+            env={},
+        )
+
+    rendered = exc_info.value.render()
+    assert "config.toml [state] dir" in rendered
+    assert "gti" in rendered
+    assert "git" in rendered
+    assert "repo" in rendered
+    assert "xdg" in rendered
+    assert "./" in rendered
+
+
+def test_26_dot_prefix_escape_hatch_resolves_relative_path(
+    tmp_path: Path,
+) -> None:
+    """26. Explicit relative paths with './' prefix are accepted and resolve correctly."""
+    repo = tmp_path / "escape-hatch-repo"
+    repo.mkdir(parents=True, exist_ok=True)
+
+    # Via flag
+    res_flag = resolve_state_root(str(repo), override="./gti", env={})
+    assert res_flag.kind == "explicit"
+    assert res_flag.path == os.path.normpath(str(repo / "gti"))
+
+    # Via env
+    res_env = resolve_state_root(
+        str(repo),
+        env={"KOPIPASTA_STATE_DIR": "./my-state"},
+    )
+    assert res_env.kind == "explicit"
+    assert res_env.path == os.path.normpath(str(repo / "my-state"))
+
+    # Via config
+    cfg_file = tmp_path / "config" / "config.toml"
+    cfg_file.parent.mkdir(parents=True, exist_ok=True)
+    cfg_file.write_text('[state]\ndir = "./cfg-state"\n', encoding="utf-8")
+    res_cfg = resolve_state_root(
+        str(repo),
+        config_path=cfg_file,
+        env={},
+    )
+    assert res_cfg.kind == "explicit"
+    assert res_cfg.path == os.path.normpath(str(repo / "cfg-state"))
+
+
+def test_27_path_with_separator_and_absolute_path_accepted(
+    tmp_path: Path,
+) -> None:
+    """27. Paths containing separators or absolute paths are accepted as explicit paths."""
+    repo = tmp_path / "path-syntax-repo"
+    repo.mkdir(parents=True, exist_ok=True)
+
+    # POSIX separator
+    res_sep = resolve_state_root(str(repo), override="state/kp", env={})
+    assert res_sep.kind == "explicit"
+    assert res_sep.path == os.path.normpath(str(repo / "state" / "kp"))
+
+    # Windows separator
+    res_win = resolve_state_root(str(repo), override="state\\kp", env={})
+    assert res_win.kind == "explicit"
+    assert res_win.path == os.path.normpath(str(repo / "state" / "kp"))
+
+    # Absolute path
+    outside = tmp_path / "absolute-state-target"
+    res_abs = resolve_state_root(str(repo), override=str(outside), env={})
+    assert res_abs.kind == "explicit"
+    assert res_abs.path == os.path.normpath(str(outside))
+
+
+def test_28_bare_word_refused_even_if_directory_already_exists(
+    tmp_path: Path,
+) -> None:
+    """28. Bare words are refused regardless of whether a matching directory exists."""
+    repo = tmp_path / "existing-dir-repo"
+    repo.mkdir(parents=True, exist_ok=True)
+    (repo / "gti").mkdir(parents=True, exist_ok=True)
+    (repo / "state").mkdir(parents=True, exist_ok=True)
+
+    with pytest.raises(UsageError):
+        resolve_state_root(str(repo), override="gti", env={})
+
+    with pytest.raises(UsageError):
+        resolve_state_root(str(repo), override="state", env={})

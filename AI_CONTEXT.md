@@ -65,11 +65,13 @@ The `p` (Process) command acts as a universal intake for LLM output:
 ### Context Budget
 *   `--all` sends **every non-ignored file in full**, read-only. The product is a large context window with the code inside it; `--budget` is the throttle, and the demotion ladder (full -> skeleton -> path-only) is what it pulls. Do not make `--all` cheaper by lowering its starting rung — that is how it came to send nothing at all on a Rust repo.
 *   Demotion falls **bulk before explicit** at every rung. A file the caller named must outlive one that `--all` dragged in, whatever their sizes.
-*   `.kopipasta/` is in the **default** ignore list, not only in the `.gitignore` line the tool writes. With `--all` sending whole files, one reverted line would otherwise feed every previous prompt and response back in as source.
+*   `.kopipasta/` is in the **default** ignore list, and must stay there even though state now defaults to `.git/kopipasta/`. With `--all` sending whole files, a leftover directory from an older version would otherwise feed every previous prompt and response back in as source. Relying on the `.gitignore` line was never enough — one reverted line was all it took.
 
 ### Patch Safety: the undo defines the guard
-*   `kopipasta apply` refuses a dirty worktree **only for the files the patch would write**. The undo is `git checkout` of those paths, so uncommitted work elsewhere cannot be harmed and blocking over it costs a run for nothing. Unrelated changes are narrated and left alone; `revert` still declines to touch anything that was already dirty.
-*   This is not cosmetic: `ask` appends `.kopipasta/` to `.gitignore` on first use, so a whole-worktree check meant the tool dirtied the tree and then refused to apply because the tree was dirty — the documented two-step failed on its own first run.
+*   `kopipasta apply` refuses a dirty worktree **only for the files the patch would write**. Uncommitted work elsewhere cannot be harmed, so blocking over it costs a run for nothing. Unrelated changes are narrated and left alone.
+*   The undo is a **byte snapshot** taken before the patch, not `git checkout`. This is what lets `--revert-on-fail` restore a file that is untracked but already present, or one in a directory with no git at all — neither of which git can put back. It also means `revert` no longer has to decline files that were already dirty: the snapshot is taken after the caller's edits, so their uncommitted version is exactly what comes back.
+*   This is not cosmetic: `ask` used to append `.kopipasta/` to `.gitignore` on first use, so a whole-worktree check meant the tool dirtied the tree and then refused to apply because the tree was dirty — the documented two-step failed on its own first run.
+*   The state directory is relocatable (`--state-dir` > `KOPIPASTA_STATE_DIR` > `config.toml [state] dir` > default). Anything that reaches session storage must go through the resolved `StateRoot` and the helpers in `core/session.py`, never through the `SESSIONS_DIR` constant — `apply` built its own paths that way and silently could not find sessions once the state directory moved, breaking ask→apply while `session ls` still listed them.
 
 ### Filesystem Safety
 *   **Heuristic Overwrite Protection**: The patcher must guard against "snippet hallucinations" (where an LLM outputs a snippet instead of the full file).

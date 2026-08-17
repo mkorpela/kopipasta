@@ -77,7 +77,7 @@ from kopipasta.core.resolver import (
     walk_all,
 )
 from kopipasta.core.resolver import ROLE_ORDER as ALL_ROLES
-from kopipasta.core.session import Session
+from kopipasta.core.session import Session, _resolve_state
 from kopipasta.interaction import (
     NoHumanAttached,
     get_task_from_user_interactive,
@@ -176,6 +176,18 @@ def add_selection_args(parser: argparse.ArgumentParser) -> None:
     parser.formatter_class = argparse.RawDescriptionHelpFormatter
 
 
+def add_state_dir_arg(
+    parser: argparse.ArgumentParser | argparse._ArgumentGroup,
+) -> None:
+    """Register the --state-dir flag on a verb parser."""
+    parser.add_argument(
+        "--state-dir",
+        metavar="LOCATION",
+        help="where kopipasta keeps its sessions; 'git' keeps them out of the "
+        "worktree entirely (also 'repo', 'xdg', or a path)",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = HelpToStdoutParser(
         prog="kopipasta ask",
@@ -272,6 +284,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SECONDS",
         help="lifetime of that cache; it is rented until it expires",
     )
+    add_state_dir_arg(s)
 
     p.add_argument(
         "--json",
@@ -476,7 +489,13 @@ def _ask(args: argparse.Namespace) -> int:
     #    `--json`, so the same command continued a conversation for a human and
     #    started one for an agent — an output flag deciding which context a
     #    question landed in. A disposable oracle is disposable by default.
-    session = Session.open(root, args.session, follow_current=args.continue_)
+    state_root = _resolve_state(root, override=getattr(args, "state_dir", None))
+    session = Session.open(
+        root,
+        args.session,
+        follow_current=args.continue_,
+        state_root=state_root,
+    )
     prefix = session.load_prefix()
     if prefix is not None and not args.json:
         narrate(f"kopipasta: continuing session {session.id}, turn {session.turn}")
@@ -1128,6 +1147,7 @@ def _emit(
 
 __all__ = [
     "add_selection_args",
+    "add_state_dir_arg",
     "build_parser",
     "extract_json",
     "report_failure",

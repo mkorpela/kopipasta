@@ -27,7 +27,6 @@ dogfooding `ask` at this repo:
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import shutil
 import subprocess
@@ -35,6 +34,7 @@ import sys
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from kopipasta.cache import find_project_root
+from kopipasta.core.ask import add_state_dir_arg
 from kopipasta.core.errors import (
     EXIT_OK,
     EXIT_PATCH_FAILED,
@@ -43,7 +43,13 @@ from kopipasta.core.errors import (
     KopipastaError,
     UsageError,
 )
-from kopipasta.core.session import SESSIONS_DIR, Session
+from kopipasta.core.session import (
+    Session,
+    _resolve_state,
+    read_selection,
+    session_dir,
+)
+from kopipasta.core.state import StateRoot
 from kopipasta.interaction import NoHumanAttached
 from kopipasta.output import (
     HelpToStdoutParser,
@@ -172,15 +178,18 @@ def dirty_files(root: str) -> Optional[Set[str]]:
 # --------------------------------------------------------------------------
 # where the patch comes from
 # --------------------------------------------------------------------------
-def _latest_response(root: str, session_id: str) -> str:
-    directory = os.path.join(root, SESSIONS_DIR, session_id)
+def _latest_response(
+    root: str, session_id: str, state_root: Optional[StateRoot] = None
+) -> str:
+    st = _resolve_state(root, state_root)
+    directory = session_dir(root, session_id, state_root=st)
     try:
         responses = sorted(
             f for f in os.listdir(directory) if f.endswith("-response.md")
         )
     except OSError:
         raise UsageError(
-            f"session {session_id!r} has no directory under {SESSIONS_DIR}/.",
+            f"session {session_id!r} has no directory under {st.display}/.",
             hint="kopipasta ask -q '...'      # start one",
         ) from None
     if not responses:
@@ -192,27 +201,34 @@ def _latest_response(root: str, session_id: str) -> str:
 
 
 def resolve_target(
-    root: str, target: str, session_flag: Optional[str]
+    root: str,
+    target: str,
+    session_flag: Optional[str],
+    state_root: Optional[StateRoot] = None,
 ) -> Tuple[str, Optional[str]]:
     """(text, session_id). `session_id` is None for a file or stdin.
 
     Knowing which session the patch came from is what lets the editable zone
     be enforced at all — the roles live in that session's selection record.
     """
+    st = _resolve_state(root, state_root)
     if session_flag:
-        return _read(_latest_response(root, session_flag)), session_flag
+        return (
+            _read(_latest_response(root, session_flag, state_root=st)),
+            session_flag,
+        )
     if target == "-":
         return sys.stdin.read(), None
     if target == "current":
-        session_id = Session.read_current(root)
+        session_id = Session.read_current(root, state_root=st)
         if not session_id:
             raise UsageError(
                 "there is no 'current' session to apply.",
-                detail=f"No conversation is recorded in {SESSIONS_DIR}/.",
+                detail=f"No conversation is recorded in {st.display}/.",
                 hint="kopipasta ask --mode patch -q '...'   # produce one\n"
                 "kopipasta apply <file>                # or apply a file",
             )
-        return _read(_latest_response(root, session_id)), session_id
+        return _read(_latest_response(root, session_id, state_root=st)), session_id
     if os.path.isdir(target):
         raise UsageError(f"{target!r} is a directory, not a patch.")
     if not os.path.exists(target):
@@ -229,7 +245,9 @@ def _read(path: str) -> str:
         return fh.read()
 
 
-def editable_set(root: str, session_id: str) -> Optional[Set[str]]:
+def editable_set(
+    root: str, session_id: str, state_root: Optional[StateRoot] = None
+) -> Optional[Set[str]]:
     """The Active Workspace of the session's latest turn (spec §11).
 
     `None` means *no record to enforce against* — no selection file, or one we
@@ -240,16 +258,9 @@ def editable_set(root: str, session_id: str) -> Optional[Set[str]]:
     Collapsing the two with `editable or None` turned the strictest case into
     the most permissive one. Found by dogfooding this file at the oracle.
     """
-    path = os.path.join(root, SESSIONS_DIR, session_id, "selection.json")
-    try:
-        with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
-    except (OSError, ValueError):
+    turn, files = read_selection(root, session_id, state_root=state_root)
+    if turn == 0 and not files:
         return None
-    if not isinstance(data, dict) or not data:
-        return None
-    latest = max(data, key=lambda k: int(k) if str(k).isdigit() else -1)
-    files = (data.get(latest) or {}).get("files") or {}
     return {
         rel
         for rel, rec in files.items()
@@ -486,6 +497,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--session", metavar="ID", help="apply that session's latest response"
     )
+    add_state_dir_arg(p)
 
     s = p.add_argument_group("safety")
     s.add_argument(
@@ -568,6 +580,7 @@ def _run_parsed(argv: Sequence[str]) -> int:
 
 def _apply(args: argparse.Namespace) -> int:
     root = str(find_project_root())
+    state_root = _resolve_state(root, override=getattr(args, "state_dir", None))
 
     if args.revert_on_fail and not args.verify:
         raise UsageError(
@@ -575,7 +588,9 @@ def _apply(args: argparse.Namespace) -> int:
             hint="kopipasta apply current --verify 'pytest -q' --revert-on-fail",
         )
 
-    text, session_id = resolve_target(root, args.target, args.session)
+    text, session_id = resolve_target(
+        root, args.target, args.session, state_root=state_root
+    )
     patches = parse_llm_output(text)
     if not patches:
         raise NothingToApply(
@@ -629,7 +644,7 @@ def _apply(args: argparse.Namespace) -> int:
     # 2. The editable zone, when we know it.
     zone: Optional[Set[str]] = None
     if session_id and not args.any_file:
-        zone = editable_set(root, session_id)
+        zone = editable_set(root, session_id, state_root=state_root)
         if zone is None:
             narrate(
                 f"kopipasta: session {session_id} records no editable files; "
@@ -659,11 +674,27 @@ def _apply(args: argparse.Namespace) -> int:
     finally:
         os.chdir(cwd)
 
+    worktree: Dict[str, Any] = {
+        "dirty_check": (
+            "unknown" if was_dirty is None else ("dirty" if was_dirty else "clean")
+        ),
+        "blocking": blocking,
+        "bystanders": bystanders,
+    }
+    if was_dirty is None:
+        worktree["reason"] = "not a git repository"
+
     payload: Dict[str, Any] = {
         "ok": result.ok,
         "dry_run": args.dry_run,
         "target": args.target if not args.session else f"session:{args.session}",
         "session": session_id,
+        # The clean/dirty/unknown split is the undo contract: unknown means
+        # there was no VCS to inspect, dirty with blocking files means the
+        # caller opted in with --dirty-ok, and clean means the worktree is
+        # safe to roll back. Collapsing unknown to clean or empty lists would
+        # hide that no undo baseline exists.
+        "worktree": worktree,
         # Spelled the same way `ask` spells it, and for the same reason: a
         # bare `patches` count is read as "patches applied" by anyone who did
         # not write the tool, and the two verbs' envelopes should be

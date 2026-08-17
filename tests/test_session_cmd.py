@@ -13,13 +13,15 @@ like them. Two behaviours here are worth more than the rest:
 """
 
 import json
+import os
+from pathlib import Path
 
 import pytest
 
 from kopipasta.core import ask as askmod
 from kopipasta.core import session_cmd
 from kopipasta.core.errors import EXIT_OK, EXIT_USAGE
-from kopipasta.core.session import CACHE_FILE, SESSIONS_DIR, Session
+from kopipasta.core.session import CACHE_FILE, Session, list_sessions, session_dir
 
 
 @pytest.fixture
@@ -74,7 +76,9 @@ def lease(project, session_id, **over):
     """Write the cache handle a real Gemini turn would have left behind."""
     import time
 
-    path = project / SESSIONS_DIR / session_id / CACHE_FILE
+    s_dir = Path(session_dir(str(project), session_id))
+    s_dir.mkdir(parents=True, exist_ok=True)
+    path = s_dir / CACHE_FILE
     path.write_text(
         json.dumps(
             {
@@ -130,8 +134,8 @@ def test_show_follows_current_and_reports_pointers_not_payloads(project, capsys)
     assert data["id"] == "one"
     turn = data["turns"][0]
     assert turn["question"].startswith("why is addition wrong")
-    assert turn["request"] == ".kopipasta/sessions/one/001-request.md"
-    assert turn["response"] == ".kopipasta/sessions/one/001-response.md"
+    assert turn["request"] == f"{data['path']}/001-request.md"
+    assert turn["response"] == f"{data['path']}/001-response.md"
     # The payload stays in the file. Putting a 4,000-token answer in a listing
     # would put it back into the context this tool exists to protect.
     assert len(turn["answer"]) <= session_cmd.HEAD_CHARS + 1
@@ -193,15 +197,16 @@ def test_rm_never_guesses_its_target(project, capsys):
     ask("-e", "src/calc.py", "--session", "one", "-q", "a")
     data = run_json(capsys, "rm", expect=EXIT_USAGE)
     assert "needs an id, or --all" in data["summary"]
-    assert (project / SESSIONS_DIR / "one").is_dir()
+    assert Path(session_dir(str(project), "one")).is_dir()
 
 
 def test_rm_deletes_the_session_and_clears_a_dangling_current(project, capsys):
     ask("-e", "src/calc.py", "--session", "one", "-q", "a")
     assert Session.read_current(str(project)) == "one"
+    s_dir = Path(session_dir(str(project), "one"))
     data = run_json(capsys, "rm", "one")
     assert data["removed"] == ["one"] and data["current_cleared"] is True
-    assert not (project / SESSIONS_DIR / "one").exists()
+    assert not s_dir.exists()
     assert Session.read_current(str(project)) is None
 
 
@@ -240,7 +245,7 @@ def test_rm_all_takes_every_session(project, capsys):
     ask("-e", "src/calc.py", "--session", "two", "-q", "b")
     data = run_json(capsys, "rm", "--all")
     assert sorted(data["removed"]) == ["one", "two"]
-    assert not any((project / SESSIONS_DIR).iterdir())
+    assert list_sessions(str(project)) == []
 
 
 def test_an_id_that_is_a_path_is_refused(project, capsys):
@@ -368,3 +373,109 @@ def test_json_is_a_single_object_on_stdout(project, capsys):
     captured = capsys.readouterr()
     json.loads(captured.out)  # parses whole; narration never lands mid-object
     assert "kopipasta:" not in captured.out
+
+
+# -- relocatable state directory -------------------------------------------
+
+
+def test_ls_and_show_report_relative_path_when_inside_project(project, capsys):
+    """When state is within the project worktree, path is relative with forward slashes."""
+    ask("-e", "src/calc.py", "--session", "one", "-q", "a")
+    data_ls = run_json(capsys, "ls")
+    path_ls = data_ls["sessions"][0]["path"]
+    assert not os.path.isabs(path_ls)
+    assert "\\" not in path_ls
+    assert path_ls.endswith("sessions/one")
+
+    data_show = run_json(capsys, "show", "one")
+    assert data_show["path"] == path_ls
+    assert data_show["turns"][0]["request"] == f"{path_ls}/001-request.md"
+
+
+def test_ls_and_show_fallback_to_absolute_path_on_relpath_failure(
+    project, capsys, monkeypatch
+):
+    """Cross-drive or invalid relpath falls back cleanly to the absolute path."""
+    ask("-e", "src/calc.py", "--session", "one", "-q", "a")
+
+    def broken_relpath(path, start=None):
+        raise ValueError("path is on mount 'D:', start on mount 'C:'")
+
+    monkeypatch.setattr(os.path, "relpath", broken_relpath)
+
+    data_ls = run_json(capsys, "ls")
+    path_ls = data_ls["sessions"][0]["path"]
+    assert os.path.isabs(path_ls)
+    assert path_ls.endswith("sessions/one")
+
+    data_show = run_json(capsys, "show", "one")
+    assert data_show["path"] == path_ls
+    assert os.path.isabs(data_show["turns"][0]["request"])
+
+
+def test_ls_and_show_with_relocated_state_dir(project, capsys, monkeypatch):
+    """State relocated to .git/kopipasta still works for ls and show."""
+    monkeypatch.setenv("KOPIPASTA_STATE_DIR", "git")
+    ask("-e", "src/calc.py", "--session", "relocated", "-q", "hello")
+    data_ls = run_json(capsys, "ls")
+    assert len(data_ls["sessions"]) == 1
+    session = data_ls["sessions"][0]
+    assert session["id"] == "relocated"
+    assert ".git" in session["path"]
+
+    data_show = run_json(capsys, "show", "relocated")
+    assert data_show["id"] == "relocated"
+    assert data_show["path"] == session["path"]
+    assert data_show["turns"][0]["request"].startswith(session["path"])
+
+
+def test_no_sessions_message_names_consulted_directory(project, capsys, monkeypatch):
+    """The empty-state message tells the user exactly which directory was checked."""
+    monkeypatch.setenv("KOPIPASTA_STATE_DIR", "git")
+    run("ls")
+    err = capsys.readouterr().err
+    assert "no sessions in .git/kopipasta/sessions/." in err
+
+
+def test_ls_lists_legacy_and_default_sessions_without_duplicates(project, capsys):
+    """`session ls` lists sessions from legacy .kopipasta/ and default without duplicates."""
+    ask("-e", "src/calc.py", "--session", "new-sess", "-q", "a")
+    ask(
+        "--state-dir",
+        "repo",
+        "-e",
+        "src/calc.py",
+        "--session",
+        "legacy-sess",
+        "-q",
+        "b",
+    )
+    # Duplicate directory in legacy location to verify deduplication
+    legacy_dup = project / ".kopipasta" / "sessions" / "new-sess"
+    legacy_dup.mkdir(parents=True, exist_ok=True)
+
+    data = run_json(capsys, "ls")
+    session_ids = [s["id"] for s in data["sessions"]]
+    assert session_ids == ["legacy-sess", "new-sess"]
+    assert len(session_ids) == len(set(session_ids))
+
+
+def test_show_works_for_legacy_session(project, capsys):
+    """`session show <id>` displays details for a session in the legacy location."""
+    ask(
+        "--state-dir",
+        "repo",
+        "-e",
+        "src/calc.py",
+        "--session",
+        "legacy-one",
+        "-q",
+        "why is calc needed",
+    )
+    data = run_json(capsys, "show", "legacy-one")
+    assert data["id"] == "legacy-one"
+    assert data["path"] == ".kopipasta/sessions/legacy-one"
+    turn = data["turns"][0]
+    assert turn["question"].startswith("why is calc needed")
+    assert turn["request"] == ".kopipasta/sessions/legacy-one/001-request.md"
+    assert turn["response"] == ".kopipasta/sessions/legacy-one/001-response.md"

@@ -35,6 +35,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from kopipasta.core.context import Turn
 from kopipasta.core.errors import UsageError
+from kopipasta.core.state import SRC_DEFAULT, StateRoot, resolve_state_root
 from kopipasta.git_utils import add_to_gitignore
 from kopipasta.output import narrate
 from kopipasta.proc import TEXT
@@ -48,6 +49,40 @@ TRANSCRIPT = "transcript.jsonl"
 SELECTION = "selection.json"
 CACHE_FILE = "cache.json"
 META = "meta.json"
+
+# Overrides the fallback used when no flag, environment variable or config
+# value asks for a location. None means resolve_state_root's own chain applies:
+# .git/kopipasta/ -> <project>/.kopipasta/ -> XDG -> temp.
+#
+# It was pinned to "repo" while the state directory was being made relocatable,
+# so that the refactor could be proved to change nothing. The pin is gone: in a
+# git repository the default is now .git/kopipasta/, which is inside the
+# repository but outside the worktree, so kopipasta no longer creates a
+# directory in the tree or appends to .gitignore to hide it.
+#
+# Old sessions are not migrated. They are read where they lie, and a session
+# that already exists keeps being written there (see Session.__init__), so
+# upgrading never moves or copies a conversation. The hook stays because
+# pinning the location is genuinely useful in tests.
+FALLBACK_STATE_LOCATION: Optional[str] = None
+
+
+def _resolve_state(
+    root: str,
+    state_root: Optional[StateRoot] = None,
+    override: Optional[str] = None,
+) -> StateRoot:
+    """Resolve the state root for root unless one was already supplied.
+
+    Resolving is memoized by the caller when looping (e.g. live_leases) to
+    avoid repeated filesystem inspection.
+    """
+    if state_root is not None:
+        return state_root
+    st = resolve_state_root(root, override=override)
+    if st.source == SRC_DEFAULT and FALLBACK_STATE_LOCATION is not None:
+        return resolve_state_root(root, override=FALLBACK_STATE_LOCATION)
+    return st
 
 
 def new_session_id() -> str:
@@ -135,10 +170,24 @@ class SentFile:
 class Session:
     """One conversation. Created on `open`, appended to on every turn."""
 
-    def __init__(self, root: str, session_id: str, *, created: bool) -> None:
+    def __init__(
+        self,
+        root: str,
+        session_id: str,
+        *,
+        created: bool,
+        state_root: Optional[StateRoot] = None,
+    ) -> None:
         self.root = root
+        self.state_root = _resolve_state(root, state_root)
         self.id = session_id
-        self.dir = os.path.join(root, SESSIONS_DIR, session_id)
+        # Go through session_dir rather than joining onto the resolved root, so
+        # that a conversation started under the legacy in-worktree location
+        # keeps being written where it already lives. Building the path here
+        # meant reads found a legacy session while writes silently began a new
+        # one beside it: resuming an old session restarted it at turn 1 and
+        # abandoned its context. A conversation is never moved or copied.
+        self.dir = session_dir(root, session_id, state_root=self.state_root)
         self.created = created
         self._dir_ready = False
         self._gitignore_checked = False
@@ -152,6 +201,7 @@ class Session:
         session_id: Optional[str] = None,
         *,
         follow_current: bool = False,
+        state_root: Optional[StateRoot] = None,
     ) -> "Session":
         """Resume `session_id`, follow the `current` pointer, or start fresh.
 
@@ -168,11 +218,12 @@ class Session:
         selection should not leave an empty conversation behind, so the
         directory appears on the first actual write.
         """
+        st = _resolve_state(root, state_root)
         if session_id:
             _check_id(session_id)
         else:
             if follow_current:
-                session_id = cls.read_current(root)
+                session_id = cls.read_current(root, state_root=st)
                 if not session_id:
                     raise UsageError(
                         "--continue: there is no session to continue.",
@@ -180,20 +231,13 @@ class Session:
                         hint="Drop --continue to start one, or name it with --session <id>.",
                     )
             session_id = session_id or new_session_id()
-        directory = os.path.join(root, SESSIONS_DIR, session_id)
-        return cls(root, session_id, created=not os.path.isdir(directory))
-
-    def _in_worktree(self) -> bool:
-        """True when the state directory lives inside a git worktree.
-
-        A git repo has a .git directory or a .git file (worktrees and
-        submodules). Writing a .gitignore into a directory with no git would
-        litter a non-repo checkout with an artifact nothing will ever read.
-        """
-        return os.path.exists(os.path.join(self.root, ".git"))
+        directory = os.path.join(st.path, "sessions", session_id)
+        return cls(
+            root, session_id, created=not os.path.isdir(directory), state_root=st
+        )
 
     def _ensure_gitignore(self) -> None:
-        """Keep .kopipasta/ out of version control, once per session instance.
+        """Keep the state directory out of version control, once per session instance.
 
         Announced when it happens, because on a first run in a fresh repo it
         is the *only* change the run makes to the tree, and a tracked file
@@ -201,17 +245,19 @@ class Session:
         something else.
 
         Checked independently of directory creation: resuming a session must
-        still repair the rule if it was lost, but non-git checkouts must never
-        gain a stray .gitignore.
+        still repair the rule if it was lost, but locations that do not require
+        an ignore entry (like .git/ or outside the project) must never gain
+        a stray .gitignore entry.
         """
         if self._gitignore_checked:
             return
         self._gitignore_checked = True
-        if not self._in_worktree():
+        if not self.state_root.needs_gitignore:
             return
-        if add_to_gitignore(self.root, f"{STATE_DIR}/"):
+        entry = f"{self.state_root.display.rstrip('/')}/"
+        if add_to_gitignore(self.root, entry):
             narrate(
-                f"kopipasta: added '{STATE_DIR}/' to .gitignore — session "
+                f"kopipasta: added '{entry}' to .gitignore — session "
                 "records are bookkeeping, not source."
             )
 
@@ -222,21 +268,37 @@ class Session:
         self._ensure_gitignore()
 
     @staticmethod
-    def read_current(root: str) -> Optional[str]:
+    def read_current(
+        root: str, state_root: Optional[StateRoot] = None
+    ) -> Optional[str]:
+        st = _resolve_state(root, state_root)
+        name: Optional[str] = None
         try:
-            with open(os.path.join(root, CURRENT), encoding="utf-8") as fh:
+            with open(os.path.join(st.path, "current"), encoding="utf-8") as fh:
                 name = fh.read().strip()
         except OSError:
-            return None
-        if name and os.path.isdir(os.path.join(root, SESSIONS_DIR, name)):
-            return name
+            name = None
+        if not name:
+            legacy_current = os.path.abspath(os.path.join(root, STATE_DIR, "current"))
+            if legacy_current != os.path.abspath(os.path.join(st.path, "current")):
+                try:
+                    with open(legacy_current, encoding="utf-8") as fh:
+                        name = fh.read().strip()
+                except OSError:
+                    name = None
+        if name:
+            try:
+                if os.path.isdir(session_dir(root, name, state_root=st)):
+                    return name
+            except UsageError:
+                return None
         return None
 
     def set_current(self) -> None:
         """Point `current` here. Human convenience; never read under --json."""
         try:
             self._ensure_dir()
-            _write_text(os.path.join(self.root, CURRENT), self.id + "\n")
+            _write_text(os.path.join(self.state_root.path, "current"), self.id + "\n")
         except OSError:
             pass  # A convenience must never be able to fail a run (trap 23).
 
@@ -474,36 +536,73 @@ class Session:
 # on-disk layout, and a second module that knows where `meta.json` lives is a
 # second module to fix when it moves.
 # --------------------------------------------------------------------------
-def session_dir(root: str, session_id: str) -> str:
+def session_dir(
+    root: str, session_id: str, state_root: Optional[StateRoot] = None
+) -> str:
+    """The directory holding `session_id`.
+
+    Prefers the resolved state root. Falls back to the legacy location
+    (<root>/.kopipasta/sessions/<id>) if it exists there, so sessions recorded
+    by earlier versions remain readable without migration.
+    """
     _check_id(session_id)
-    return os.path.join(root, SESSIONS_DIR, session_id)
+    st = _resolve_state(root, state_root)
+    primary = os.path.join(st.path, "sessions", session_id)
+    legacy = os.path.abspath(os.path.join(root, STATE_DIR, "sessions", session_id))
+    if os.path.abspath(primary) == legacy:
+        return primary
+    if os.path.isdir(primary):
+        return primary
+    if os.path.isdir(legacy):
+        return legacy
+    return primary
 
 
-def list_sessions(root: str) -> List[str]:
-    """Every session id on disk, oldest first — ids start with the date."""
-    try:
-        names = os.listdir(os.path.join(root, SESSIONS_DIR))
-    except OSError:
-        return []
-    return sorted(
-        n for n in names if os.path.isdir(os.path.join(root, SESSIONS_DIR, n))
+def list_sessions(root: str, state_root: Optional[StateRoot] = None) -> List[str]:
+    """Every session id on disk, oldest first — ids start with the date.
+
+    Returns the union of the resolved state directory and the legacy
+    location, preferring the resolved store if an id exists in both.
+    """
+    st = _resolve_state(root, state_root)
+    primary_dir = os.path.join(st.path, "sessions")
+    legacy_dir = os.path.abspath(os.path.join(root, STATE_DIR, "sessions"))
+
+    def _dirs_in(d: str) -> set[str]:
+        try:
+            names = os.listdir(d)
+        except OSError:
+            return set()
+        return {n for n in names if os.path.isdir(os.path.join(d, n))}
+
+    found = _dirs_in(primary_dir)
+    if os.path.abspath(primary_dir) != legacy_dir:
+        found.update(_dirs_in(legacy_dir))
+    return sorted(found)
+
+
+def read_meta(
+    root: str, session_id: str, state_root: Optional[StateRoot] = None
+) -> Dict[str, Any]:
+    st = _resolve_state(root, state_root)
+    meta = _read_json(
+        os.path.join(session_dir(root, session_id, state_root=st), META), {}
     )
-
-
-def read_meta(root: str, session_id: str) -> Dict[str, Any]:
-    meta = _read_json(os.path.join(session_dir(root, session_id), META), {})
     # The file is whatever is on disk. A hand-edited `meta.json` holding a
     # list would otherwise be handed back under a Dict annotation and fail
     # somewhere far from here.
     return meta if isinstance(meta, dict) else {}
 
 
-def read_turns(root: str, session_id: str) -> List[Dict[str, Any]]:
+def read_turns(
+    root: str, session_id: str, state_root: Optional[StateRoot] = None
+) -> List[Dict[str, Any]]:
     """The transcript, oldest first. Malformed lines are skipped, not fatal."""
+    st = _resolve_state(root, state_root)
     out: List[Dict[str, Any]] = []
     try:
         with open(
-            os.path.join(session_dir(root, session_id), TRANSCRIPT),
+            os.path.join(session_dir(root, session_id, state_root=st), TRANSCRIPT),
             encoding="utf-8",
         ) as fh:
             lines = fh.readlines()
@@ -519,14 +618,19 @@ def read_turns(root: str, session_id: str) -> List[Dict[str, Any]]:
     return out
 
 
-def read_selection(root: str, session_id: str) -> Tuple[int, Dict[str, Dict[str, str]]]:
+def read_selection(
+    root: str, session_id: str, state_root: Optional[StateRoot] = None
+) -> Tuple[int, Dict[str, Dict[str, str]]]:
     """(turn, files) for the latest recorded turn. `(0, {})` when there is none.
 
     The *latest* turn, because that is the context the next thing to touch this
     session inherits — the same record `apply` reads to enforce the editable
     zone.
     """
-    data = _read_json(os.path.join(session_dir(root, session_id), SELECTION), {})
+    st = _resolve_state(root, state_root)
+    data = _read_json(
+        os.path.join(session_dir(root, session_id, state_root=st), SELECTION), {}
+    )
     if not isinstance(data, dict) or not data:
         return 0, {}
     latest = max(data, key=lambda k: int(k) if str(k).isdigit() else -1)
@@ -535,7 +639,9 @@ def read_selection(root: str, session_id: str) -> Tuple[int, Dict[str, Dict[str,
     return turn, {k: v for k, v in files.items() if isinstance(v, dict)}
 
 
-def read_lease(root: str, session_id: str) -> Optional[Dict[str, Any]]:
+def read_lease(
+    root: str, session_id: str, state_root: Optional[StateRoot] = None
+) -> Optional[Dict[str, Any]]:
     """The provider-side cache this session is renting, if any.
 
     Returned whether or not it has expired, with `expired` and `expires_in_s`
@@ -543,7 +649,10 @@ def read_lease(root: str, session_id: str) -> Optional[Dict[str, Any]]:
     delete a live one; a report must not claim an expired one is still costing
     money.
     """
-    rec = _read_json(os.path.join(session_dir(root, session_id), CACHE_FILE), None)
+    st = _resolve_state(root, state_root)
+    rec = _read_json(
+        os.path.join(session_dir(root, session_id, state_root=st), CACHE_FILE), None
+    )
     if not isinstance(rec, dict) or not rec.get("name"):
         return None
     left = float(rec.get("expires_at") or 0) - time.time()
@@ -555,7 +664,9 @@ def read_lease(root: str, session_id: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def live_leases(root: str) -> Dict[str, Dict[str, Any]]:
+def live_leases(
+    root: str, state_root: Optional[StateRoot] = None
+) -> Dict[str, Dict[str, Any]]:
     """Provider cache name -> the session record renting it, unexpired only.
 
     This is what stops a sweep from deleting a cache a session is still paying
@@ -563,28 +674,39 @@ def live_leases(root: str) -> Dict[str, Dict[str, Any]]:
     reuse it, so "a cache exists that no process is using" is the *expected*
     state, not evidence of a leak.
     """
+    st = _resolve_state(root, state_root)
     out: Dict[str, Dict[str, Any]] = {}
-    for session_id in list_sessions(root):
-        lease = read_lease(root, session_id)
+    for session_id in list_sessions(root, state_root=st):
+        lease = read_lease(root, session_id, state_root=st)
         if lease and not lease["expired"]:
             out[str(lease["name"])] = lease
     return out
 
 
-def clear_current(root: str) -> None:
+def clear_current(root: str, state_root: Optional[StateRoot] = None) -> None:
+    st = _resolve_state(root, state_root)
     try:
-        os.remove(os.path.join(root, CURRENT))
+        os.remove(os.path.join(st.path, "current"))
     except OSError:
         pass
+    legacy_current = os.path.abspath(os.path.join(root, STATE_DIR, "current"))
+    if legacy_current != os.path.abspath(os.path.join(st.path, "current")):
+        try:
+            os.remove(legacy_current)
+        except OSError:
+            pass
 
 
-def remove_session(root: str, session_id: str) -> bool:
+def remove_session(
+    root: str, session_id: str, state_root: Optional[StateRoot] = None
+) -> bool:
     """Delete one session directory. Returns False when there was none.
 
     The id is validated first: this is the one operation in the package that
     deletes a tree, and `rm ../..` must not be a thing anyone can type.
     """
-    directory = session_dir(root, session_id)
+    st = _resolve_state(root, state_root)
+    directory = session_dir(root, session_id, state_root=st)
     if not os.path.isdir(directory):
         return False
     shutil.rmtree(directory, ignore_errors=True)

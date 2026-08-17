@@ -496,3 +496,309 @@ is the unit of work.
 
 Also worth stating: two of these round trips were spent asking a model to sort imports, which
 `ruff check --fix` did instantly and correctly. Mechanical fixes belong to the mechanical tool.
+
+
+---
+
+## 9. Round 3 continued - what was fixed, and two things I got wrong
+
+Section 8 recorded the findings. This records the dispositions. Everything below was landed
+through `kopipasta ask --mode patch` and `kopipasta apply --verify --revert-on-fail`, against
+an editable install, so each fix was running by the time the next one was proposed. 622 -> 629
+tests.
+
+### 9.1 The state directory can now leave the worktree
+
+This was the original request and it is done, without a migration and without changing the
+default. Measured, three fresh repositories:
+
+```
+nothing set                 .kopipasta/ in worktree,  .gitignore written,  git status: ?? .gitignore ?? a.py
+KOPIPASTA_STATE_DIR=git     .git/kopipasta/,          no .gitignore,       git status: ?? a.py
+KOPIPASTA_STATE_DIR=xdg     outside the repo,         no .gitignore,       git status: ?? a.py
+```
+
+The middle line is section 7.1's complaint answered: the tool touches nothing tracked. The
+same value can come from `config.toml [state] dir` for a permanent per-user choice.
+
+Three things had to be true first, and each was verified on its own:
+
+- Session storage takes its paths from a resolved `StateRoot` rather than from module
+  constants. Landed as a pure refactor: all 622 tests passed with zero test edits, which is
+  the only evidence worth having that a refactor changed nothing.
+- `StateRoot.needs_gitignore` decides whether an ignore entry is required, replacing a bare
+  `.git` existence check. It is path-based rather than kind-based on purpose, so an explicit
+  `--state-dir .git/kopipasta` behaves identically to the default that lands in the same place.
+- Sessions written under the old layout stay readable. `list_sessions` returns the union of
+  both locations without duplicates; a legacy id resolves to the legacy directory; writes
+  always go to the resolved one. Nothing is copied or moved, because a half-finished migration
+  is worse than two directories.
+
+**The default has not moved, deliberately.** 56 test assertions and a dozen documents name
+`.kopipasta/` explicitly, and the read-through that makes old sessions survive the move landed
+only in the same session. Flipping it is now a one-line deletion of the fallback in
+`session.py`, which is exactly why it should be its own commit with its own release note
+rather than a side effect of making overrides work.
+
+### 9.2 The undo no longer delegates to git
+
+`--revert-on-fail` restores from a byte snapshot taken before the patch. The case that
+motivated it - a file untracked but already present, which `git checkout` cannot restore -
+now round-trips, as does a file in a directory with no git at all. Retiring the
+`WAS_ALREADY_DIRTY` decline is safe because the snapshot is taken after the caller's edits, so
+their uncommitted work is what comes back; the test asserting exactly that is the one that
+would catch the removal being wrong. Sabotaging one token turned 7 tests red.
+
+It earned its keep during this session: a later patch failed `--verify`, was reverted
+cleanly, and the tree came back byte-identical - including the uncommitted work of two
+earlier fixes.
+
+### 9.3 The parser prefers a directive to an inference
+
+Section 8.3 blamed missing fences. The real mechanism is narrower. A response editing
+`tests/test_apply.py` parsed as two patches for `helper.py` and `app.py`, because the test
+fixtures contain `### helper.py` markdown headers and the parser infers a path by looking back
+five lines from a fence. Then `return patches or _parse_unfenced(...)` short-circuited, so the
+fallback that had the right answer never ran:
+
+```
+declared_file_paths(text)  -> ['tests/test_apply.py']            # column-0 `# FILE:`
+PatchParser(text).parse()  -> ['helper.py', 'app.py']            # inferred from fixtures
+_parse_unfenced(text)      -> [('tests/test_apply.py', 'diff')]  # correct, unreachable
+```
+
+The rule now is that a column-0 `# FILE:` is a directive and outranks inference, firing only
+when the two sets are disjoint - when the parser and the model disagree completely about which
+files are involved. Before this, kopipasta could not edit its own patcher test suite; after
+it, that edit landed 1/1 hunks first try.
+
+### 9.4 Tolerance, in both directions
+
+A single byte that is not valid UTF-8 used to make a file unpatchable. Reads and writes on the
+patch path are now paired through `surrogateescape`, so undecodable bytes round-trip to disk
+exactly. A cp1252 or latin-1 fallback would also have "worked" while writing back different
+bytes, which is silent corruption and worse than the crash.
+
+Payload assembly needed the opposite treatment and got it: `errors="replace"`, because that
+text goes into an HTTP request body and lone surrogates cannot be transported or serialised to
+JSON. Previously one bad byte replaced an entire file's contents with a sixty-character error
+string - measured at 7,227 tokens of prose lost from a `--all` selection - while the envelope
+still counted the file among those sent.
+
+The two opposite choices are correct for their two paths, and both now say so in a comment.
+
+### 9.5 The envelope says what it could not determine
+
+`apply --json` now carries a `worktree` block with `dirty_check` of `clean`, `dirty` or
+`unknown`, plus a reason when unknown. Previously "your worktree is clean" and "there is no git
+here, so I could not look" were indistinguishable to a machine caller, and the second means
+there was no undo baseline at all.
+
+### 9.6 Two claims from section 8 retracted
+
+- **The BOM.** I recorded that `--json` output carries a UTF-8 BOM that breaks `json.load`.
+  It does not. Invoked through `subprocess` with no shell, stdout begins `{\r\n  "ok"`. The BOM
+  was PowerShell's pipeline re-encoding between native commands. Not a kopipasta defect.
+- **CRLF.** I suspected patching a CRLF file rewrote the whole file to LF. It does not; all six
+  CRLF pairs survive a patch. My first probe reported otherwise because a PowerShell
+  double-quoted `"```n"` collapses to one backtick plus a newline, so the closing fence was
+  malformed and the patch never parsed. The tool was fine; the probe was broken.
+
+Both were caught by re-testing a claim I had already written down. Neither would have been.
+
+### 9.7 A false negative in my own verification
+
+Worth recording because it is the failure mode this repository exists to prevent. To check a
+new test had teeth, I sabotaged the implementation with a regex ending `\(\)$`. The file is
+CRLF, so `$` sits before the `\r`, the substitution silently matched nothing, and the suite
+passed. I read that as "the test does not catch this".
+
+With the sabotage actually applied, five tests failed. The check now counts the marker in the
+file before trusting the result. A verification step that cannot tell "I checked and it was
+fine" from "I did not manage to check" is the same defect as an envelope that cannot tell
+`clean` from `unknown` - which I was fixing in `apply.py` the same afternoon.
+
+
+---
+
+## 10. Round 4 - relocating the state directory, and what that exposed
+
+Section 9 claimed the state directory could now leave the worktree. That claim was half true
+when I made it, and finding the missing half is most of what this round is about.
+
+### 10.1 The relocation was broken in the one place that matters
+
+`ask` honoured the relocation. `session ls` honoured it. `apply` did not:
+
+```
+default                  ask -> .kopipasta/      session ls: sees it   apply: exit 0
+KOPIPASTA_STATE_DIR=git  ask -> .git/kopipasta/  session ls: sees it   apply: exit 1
+```
+
+The error was `session '<id>' not found`, a usage error, for a session written seconds earlier
+and listed happily by the verb whose entire job is listing sessions. You could ask, you could
+list, you could not apply - the core loop, broken, while every individual command looked fine.
+
+Cause: `apply` built its paths from the `SESSIONS_DIR` module constant rather than asking the
+session helpers where state lives, so it always looked in `<root>/.kopipasta/sessions/`. Two
+sites, one of which also open-coded a reader that already existed.
+
+I had verified the relocation with a probe that ran `ask` and inspected the filesystem. It
+never ran `apply`. The probe tested the claim I was making rather than the workflow the user
+has, and those came apart precisely at the seam between two commands.
+
+The fix routes both sites through the public helpers, which also buys `apply` the legacy
+read-through for free. Five tests, and they assert the target file's contents changed rather
+than just the exit code - an apply that reports success while writing nothing is exactly the
+bug class here. Sabotaged back to the constant: three red, and the legacy read-through test
+correctly stayed green, because a hardcoded legacy path still finds a legacy session.
+
+### 10.2 A one-character typo put a directory in the worktree
+
+```
+kopipasta ask ... --state-dir gti
+exit 0
+repo afterwards:  .git  .gitignore  a.py  gti/
+```
+
+`gti` is a typo for `git`. Any value that is not a recognised keyword was treated as a path, so
+the typo became a *relative* path: kopipasta created `gti/` in the worktree and added a
+`.gitignore` entry for it. The user asked for state to be kept out of the worktree and got the
+opposite, silently, from a single transposed character - via the very flag whose purpose is to
+prevent that.
+
+Now a bare word with no separator and no leading dot that is not a known keyword is refused,
+naming the accepted keywords and the `./gti` escape hatch. Paths stay legal in every form that
+looks like a path. Existing directories do not change the interpretation, or behaviour would
+depend on filesystem state.
+
+The rule is refuse, not correct. Guessing that `gti` meant `git` is wrong in a way that writes
+session state somewhere unexpected; refusing is cheap to recover from.
+
+### 10.3 The patch format cannot describe itself
+
+An attempt to add tests failed with `missing closing quote in string literal`. The tests
+embedded a patch as a Python string, and the marker lines inside that string terminated the
+enclosing block early. The format has no escaping, so it cannot carry content containing its
+own markers.
+
+This is the same root cause as section 8.3's fixture-header confusion, seen from the other
+side, and it is a permanent hazard for exactly one repository: the one whose test suite is full
+of patch fixtures. The workaround is to derive new fixture content from the existing constants
+with string operations rather than typing markers out.
+
+### 10.4 Two failures that were mine, not the tool's
+
+**I poisoned my own prompt.** I ended a spec with "do not write any line beginning with a patch
+marker inside the code you produce", meaning: do not embed markers in test string literals. It
+reads as a blanket prohibition. The model complied by abandoning the tool's own patch format
+and emitting git-conflict-style markers instead, so the implementation patch did not parse and
+was dropped while the test patch applied - tests with nothing behind them. My retry note then
+quoted the wrong markers verbatim, which made it worse. Removing the sentence fixed it on the
+next attempt: two patches, no skips.
+
+Worth stating plainly: an instruction about *content* was read as an instruction about *form*.
+The envelope and the payload are not distinguishable to the model unless you say which you mean.
+
+**I applied the same patch twice.** A verify failure whose JSON I mis-parsed left me thinking a
+run had failed when it had actually applied. Re-running appended the same block again, and the
+duplicate definitions shadowed the originals - five new tests, of which only the second copy
+ran. `ruff` caught it as F811. A duplicated test that silently replaces its twin is a
+particularly quiet way to lose coverage.
+
+Both failures came from reading a result wrongly rather than from acting wrongly, which is the
+same category as section 9.7. The pattern is now unmistakable: my errors this session have
+overwhelmingly been *verification* errors, not construction errors.
+
+### 10.5 Two things the tool did right, unprompted
+
+The `patches_skipped` field from section 8.5 paid for itself twice. Both times a patch was
+declared and dropped, the envelope said so by name, and `apply --dry-run` showed exactly which
+file would land. Without it I would have applied a test-only patch and spent the next quarter
+hour debugging tests whose implementation was never written.
+
+`--revert-on-fail` fired four times, three of them for a single auto-fixable lint nit, and
+restored the tree byte-for-byte every time - including, once, the uncommitted work of two
+earlier fixes. The lesson from the three wasted round trips is a workflow one: put
+`ruff check --fix` in `--format-cmd`, not just `ruff format`, or trivia will keep reverting
+good work.
+
+### 10.6 State of the relocation
+
+`--state-dir` is wired through `ask`, `apply` and `session`; the flag outranks
+`KOPIPASTA_STATE_DIR`, which outranks `config.toml [state] dir`. Verified end to end: with
+`git`, sessions land in `.git/kopipasta/`, no `.gitignore` is written, and `git status` shows
+only the user's own files.
+
+The default has still not moved, for the reasons in section 9.1. That remains a one-line
+deletion plus 56 test assertions and a dozen documents, and it should be its own commit.
+
+
+---
+
+## 11. Round 5 - the default moved
+
+`FALLBACK_STATE_LOCATION` is now `None`, so in a git repository state lives in
+`.git/kopipasta/`. Measured in a fresh repository, default settings, no flags:
+
+```
+.kopipasta/ in worktree : False
+.git/kopipasta/         : True
+.gitignore written      : False
+git status              : ?? a.py
+```
+
+`git status` shows the user's file and nothing else. That is the whole point of the exercise:
+the tool no longer creates a directory in the tree, and no longer edits `.gitignore` to hide
+the directory it created.
+
+### 11.1 The flip cost 20 tests and found one real bug
+
+Twenty failures, in two kinds. Most were tests that built `<project>/.kopipasta/...` by hand to
+find a session's files - they failed with `FileNotFoundError` and were fixed by asking the
+session helpers where the session is, so they now name no location at all and will survive the
+next move. The rest were the `.gitignore` tests, which are now pinned explicitly to the
+in-worktree location: that machinery still exists and still matters, it is simply no longer the
+default path. They were always tests of "when state is in the worktree, it gets ignored".
+
+Then there was the twenty-first failure, which was not a test problem.
+
+A legacy session was visible to `session ls` and readable by `session show`, but resuming it
+with `--session <id>` started at **turn 1**. `Session.__init__` built its directory by joining
+`sessions/<id>` onto the resolved state root instead of going through the `session_dir` helper
+that implements the read-through. So reads found the old conversation and writes silently began
+a new one beside it, at the new location. On upgrade, every resumed session would have quietly
+lost its history while appearing to work.
+
+The read-through had been verified before the flip - but only through the read helpers, which
+was exactly the same mistake as section 10.1: testing the claim rather than the workflow. Both
+times the gap was between two operations that were each individually correct.
+
+Fixed by having `Session.__init__` resolve through the same helper, so a conversation that
+already exists keeps being written where it lives. Nothing is ever moved or copied. Sabotaged
+back to the join: red, and only that test - which is the right blast radius for the guarantee.
+
+### 11.2 The upgrade path, measured end to end
+
+A repository with an existing `.kopipasta/old-work` session, then upgraded, with no flags:
+
+```
+session ls            -> ['old-work']            visible
+session show old-work -> exit 0, 1 turn          readable
+resume old-work       -> turn 2                  continues, not restarted
+                      -> still in .kopipasta/    written in place
+                      -> not duplicated to .git  never copied
+new session           -> .git/kopipasta/         new work goes to the new home
+session ls            -> both, no duplicates
+```
+
+No migration step, no copy, nothing to run. Old conversations finish where they started; new
+ones start in the new place. `--state-dir repo` restores the previous layout wholesale for
+anyone who wants it.
+
+### 11.3 What this round did not do
+
+The `.gitignore` line earlier versions wrote is left where it is. Removing a line from a file
+the user owns, on their behalf, to tidy up after a version they may still be running, is not
+worth the surprise. The README says it is safe to delete along with the directory, and leaves
+that to the reader.

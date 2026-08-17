@@ -28,6 +28,7 @@ from kopipasta.core.errors import (
     EXIT_USAGE,
     EXIT_VERIFY,
 )
+from kopipasta.core.session import Session
 
 needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
 
@@ -807,17 +808,20 @@ def test_unrelated_dirt_is_still_said_out_loud(repo, capsys):
 def test_ask_then_apply_works_on_the_first_run_in_a_clean_repo(repo, capsys, tmp_path):
     """The flagship two-step, from a clean tree, with nothing done in between.
 
-    `ask` writes `.kopipasta/` and appends it to `.gitignore` on first use —
-    so the tool dirtied the worktree and then refused to apply because the
-    worktree was dirty. The documented workflow failed on its own first run,
-    and the suggested fix (`git stash`) would have stashed kopipasta's own
-    bookkeeping.
+    Historically, `ask` wrote `.kopipasta/` into the worktree and appended it
+    to `.gitignore` on first use — so the tool dirtied the worktree and then
+    refused to apply because the worktree was dirty. The documented workflow
+    failed on its own first run.
+
+    With default state residing in `.git/kopipasta/`, the guarantee is now
+    stronger: `ask` leaves the worktree pristine, modifying neither `.gitignore`
+    nor any tracked/untracked file, so `apply` succeeds immediately.
     """
     from kopipasta.core import ask as askmod
 
-    # The fixture pre-seeds the ignore rule; a real project has not heard of
-    # kopipasta yet, and that first write is the whole point of this test.
-    (repo / ".gitignore").write_text("__pycache__/\n")
+    # Clean repo with no kopipasta ignore rule
+    orig_gitignore = "__pycache__/\n"
+    (repo / ".gitignore").write_text(orig_gitignore)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "no kopipasta rule yet")
 
@@ -841,7 +845,18 @@ def test_ask_then_apply_works_on_the_first_run_in_a_clean_repo(repo, capsys, tmp
     )
     capsys.readouterr()
 
-    assert ".kopipasta/" in (repo / ".gitignore").read_text()
+    # ask must not dirty the worktree or touch .gitignore
+    assert (repo / ".gitignore").read_text() == orig_gitignore
+    assert not (repo / ".kopipasta").exists()
+    proc = subprocess.run(
+        [shutil.which("git"), "status", "--porcelain"],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert proc.stdout.strip() == ""
+
     data = run_json(capsys, "current")
     assert data["ok"] is True
     assert data["applied"] == ["app.py"]
@@ -1096,3 +1111,181 @@ def test_a_file_that_is_not_valid_utf8_is_patched_not_refused(repo, capsys):
     assert b"return '\xff'" in after, (
         "the byte it could not decode must survive the round trip untouched"
     )
+
+
+# -- worktree diagnostic in json envelope ----------------------------------
+
+
+@needs_git
+def test_worktree_reports_clean_when_repo_has_no_uncommitted_changes(repo, capsys):
+    data = run_json(capsys, write_patch(repo, CLEAN_PATCH))
+    assert data["worktree"] == {
+        "dirty_check": "clean",
+        "blocking": [],
+        "bystanders": [],
+    }
+    assert "reason" not in data["worktree"]
+
+
+@needs_git
+def test_worktree_reports_dirty_with_blocking_files_under_dirty_ok(repo, capsys):
+    """When a patch targets a dirty file and --dirty-ok permits it, blocking
+    names the uncommitted file that was overwritten."""
+    (repo / "app.py").write_text(ORIGINAL + "# uncommitted\n")
+    data = run_json(capsys, write_patch(repo, CLEAN_PATCH), "--dirty-ok")
+    assert data["worktree"] == {
+        "dirty_check": "dirty",
+        "blocking": ["app.py"],
+        "bystanders": [],
+    }
+
+
+@needs_git
+def test_worktree_reports_dirty_with_bystander_files(repo, capsys):
+    """Unrelated dirt is recorded in bystanders so the caller knows the
+    worktree had uncommitted changes the patch left alone."""
+    (repo / "ref.py").write_text("REFERENCE = 999\n")
+    data = run_json(capsys, write_patch(repo, CLEAN_PATCH))
+    assert data["worktree"] == {
+        "dirty_check": "dirty",
+        "blocking": [],
+        "bystanders": ["ref.py"],
+    }
+
+
+def test_worktree_reports_unknown_when_not_in_a_git_repo(tmp_path, capsys, monkeypatch):
+    """The key invariant: unknown is never collapsed to clean.
+
+    A clean worktree and an uninspected one both have empty blocking and
+    bystander lists, but unknown means no VCS baseline exists to restore.
+    The explicit state and reason make that impossible to mismodel.
+    """
+    work = tmp_path / "plain_dir"
+    work.mkdir()
+    (work / "app.py").write_text(ORIGINAL)
+    monkeypatch.chdir(work)
+    monkeypatch.setenv("KOPIPASTA_NONINTERACTIVE", "1")
+
+    patch_file = tmp_path / "patch.md"
+    patch_file.write_text(CLEAN_PATCH)
+
+    data = run_json(capsys, str(patch_file), "--any-file")
+    assert data["worktree"]["dirty_check"] == "unknown"
+    assert data["worktree"]["dirty_check"] != "clean"
+    assert data["worktree"]["blocking"] == []
+    assert data["worktree"]["bystanders"] == []
+    assert data["worktree"]["reason"] == "not a git repository"
+
+
+@needs_git
+def test_worktree_is_reported_in_dry_run_mode(repo, capsys):
+    """A dry run is when a caller assesses worktree safety before applying,
+    so the worktree status must be present there too."""
+    (repo / "ref.py").write_text("REFERENCE = 999\n")
+    data = run_json(capsys, write_patch(repo, CLEAN_PATCH), "--dry-run")
+    assert data["dry_run"] is True
+    assert data["worktree"] == {
+        "dirty_check": "dirty",
+        "blocking": [],
+        "bystanders": ["ref.py"],
+    }
+
+
+# -- relocated state directory ---------------------------------------------
+
+
+@needs_git
+def test_apply_session_finds_response_and_modifies_file_when_state_is_relocated(
+    repo, capsys, monkeypatch
+):
+    """When state is relocated, `apply --session <id>` finds the session and
+    actually writes the patched changes to disk."""
+    monkeypatch.setenv("KOPIPASTA_STATE_DIR", "git")
+    sess = Session.open(str(repo), "relocated-s1")
+    sess.write_response(CLEAN_PATCH)
+
+    data = run_json(capsys, "--session", "relocated-s1")
+    assert data["ok"] is True
+    assert data["session"] == "relocated-s1"
+    assert data["applied"] == ["app.py"]
+    assert "return 100" in (repo / "app.py").read_text()
+
+
+@needs_git
+def test_apply_current_follows_pointer_and_modifies_file_when_state_is_relocated(
+    repo, capsys, monkeypatch
+):
+    """When state is relocated, `apply` with default target 'current' resolves
+    the current pointer and applies the patch to disk."""
+    monkeypatch.setenv("KOPIPASTA_STATE_DIR", "git")
+    sess = Session.open(str(repo), "relocated-s2")
+    sess.write_response(CLEAN_PATCH)
+    sess.set_current()
+
+    data = run_json(capsys)
+    assert data["ok"] is True
+    assert data["session"] == "relocated-s2"
+    assert data["applied"] == ["app.py"]
+    assert "return 100" in (repo / "app.py").read_text()
+
+
+@needs_git
+def test_apply_relocated_state_reads_selection_and_enforces_editable_zone(
+    repo, capsys, monkeypatch
+):
+    """When state is relocated, `apply` resolves selection.json to enforce the
+    session's editable zone, refusing modifications to read-only files."""
+    monkeypatch.setenv("KOPIPASTA_STATE_DIR", "git")
+    sess = Session.open(str(repo), "relocated-s3")
+    sess.record_selection({"app.py": {"role": "edit", "hash": "x"}}, demoted=[])
+
+    ref_patch = (
+        CLEAN_PATCH.replace("app.py", "ref.py")
+        .replace("def a():\n    return 1", "REFERENCE = 1")
+        .replace("def a():\n    return 100", "REFERENCE = 99")
+    )
+    sess.write_response(ref_patch)
+
+    data = run_json(capsys, "--session", "relocated-s3", expect=EXIT_PATCH_FAILED)
+    assert data["skipped"] == ["ref.py"]
+    assert (repo / "ref.py").read_text() == "REFERENCE = 1\n"
+
+
+@needs_git
+def test_apply_default_state_location_applies_patch_and_modifies_file(repo, capsys):
+    """Under default state location, session response and selection are found
+    and the target file on disk is modified."""
+    sess = Session.open(str(repo), "default-s1")
+    sess.record_selection({"app.py": {"role": "edit", "hash": "x"}}, demoted=[])
+    sess.write_response(CLEAN_PATCH)
+    sess.set_current()
+
+    data = run_json(capsys, "--session", "default-s1")
+    assert data["ok"] is True
+    assert data["session"] == "default-s1"
+    assert data["applied"] == ["app.py"]
+    assert "return 100" in (repo / "app.py").read_text()
+
+    (repo / "app.py").write_text(ORIGINAL)
+    data_cur = run_json(capsys)
+    assert data_cur["ok"] is True
+    assert data_cur["session"] == "default-s1"
+    assert data_cur["applied"] == ["app.py"]
+    assert "return 100" in (repo / "app.py").read_text()
+
+
+@needs_git
+def test_apply_relocated_state_inherits_legacy_read_through(repo, capsys, monkeypatch):
+    """A session created in the legacy location remains applicable after
+    relocating the state directory."""
+    legacy_dir = repo / ".kopipasta" / "sessions" / "legacy-s1"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "001-response.md").write_text(CLEAN_PATCH, encoding="utf-8")
+
+    monkeypatch.setenv("KOPIPASTA_STATE_DIR", "git")
+
+    data = run_json(capsys, "--session", "legacy-s1")
+    assert data["ok"] is True
+    assert data["session"] == "legacy-s1"
+    assert data["applied"] == ["app.py"]
+    assert "return 100" in (repo / "app.py").read_text()

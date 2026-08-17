@@ -29,11 +29,12 @@ import os
 from typing import Any, Dict, List, Optional, Sequence
 
 from kopipasta.cache import find_project_root, get_project_key
+from kopipasta.core.ask import add_state_dir_arg
 from kopipasta.core.context import content_hash
 from kopipasta.core.errors import EXIT_OK, KopipastaError, UsageError
 from kopipasta.core.session import (
-    STATE_DIR,
     Session,
+    _resolve_state,
     clear_current,
     list_sessions,
     live_leases,
@@ -44,6 +45,7 @@ from kopipasta.core.session import (
     remove_session,
     session_dir,
 )
+from kopipasta.core.state import StateRoot
 from kopipasta.output import (
     HelpToStdoutParser,
     emit,
@@ -62,7 +64,7 @@ HEAD_CHARS = 100
 def build_parser() -> argparse.ArgumentParser:
     p = HelpToStdoutParser(
         prog="kopipasta session",
-        description="Inspect and retire the conversations in .kopipasta/sessions/.",
+        description="Inspect and retire conversations in kopipasta's state directory.",
     )
     # On the top level as well as on every subcommand, so that `session --json`
     # — the shape an agent reaches for when it has forgotten the subcommand —
@@ -73,6 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="stdout becomes a single JSON object (spec §8)",
     )
+    add_state_dir_arg(p)
     subs = p.add_subparsers(dest="sub")
 
     def sub(name: str, help: str) -> argparse.ArgumentParser:
@@ -109,9 +112,10 @@ def build_parser() -> argparse.ArgumentParser:
     reap.add_argument("--dry-run", action="store_true", help="report, delete nothing")
 
     p.epilog = (
-        "Sessions live in .kopipasta/sessions/<id>/ as plain files: the request, the\n"
-        "response and the record of exactly what was sent. `rm -rf .kopipasta` is a\n"
-        "complete reset."
+        "Sessions live in kopipasta's state directory under sessions/<id>/ as plain\n"
+        "files: the request, the response and the record of exactly what was sent.\n"
+        "The location is controlled by --state-dir and defaults to inside the project.\n"
+        "Removing the state directory is a complete reset."
     )
     p.formatter_class = argparse.RawDescriptionHelpFormatter
     return p
@@ -154,21 +158,26 @@ def _run_parsed(argv: Sequence[str]) -> int:
 
 def _dispatch(args: argparse.Namespace) -> int:
     root = str(find_project_root())
+    state_root = _resolve_state(root, override=getattr(args, "state_dir", None))
     if args.sub == "ls":
-        return _ls(root, args)
+        return _ls(root, args, state_root)
     if args.sub == "show":
-        return _show(root, args)
+        return _show(root, args, state_root)
     if args.sub == "diff":
-        return _diff(root, args)
+        return _diff(root, args, state_root)
     if args.sub == "rm":
-        return _rm(root, args)
-    return _reap(root, args)
+        return _rm(root, args, state_root)
+    return _reap(root, args, state_root)
 
 
 # --------------------------------------------------------------------------
 # resolving which session is meant
 # --------------------------------------------------------------------------
-def _resolve(root: str, session_id: Optional[str]) -> str:
+def _resolve(
+    root: str,
+    session_id: Optional[str],
+    state_root: Optional[StateRoot] = None,
+) -> str:
     """A session id, or what `current` points at.
 
     `current` is followed here and never in `ask`, and the difference is not
@@ -176,13 +185,14 @@ def _resolve(root: str, session_id: Optional[str]) -> str:
     nothing, while resuming one silently lands a question in somebody else's
     conversation.
     """
-    known = list_sessions(root)
+    known = list_sessions(root, state_root=state_root)
     if not session_id or session_id == "current":
-        resolved = Session.read_current(root)
+        resolved = Session.read_current(root, state_root=state_root)
         if not resolved:
+            st = _resolve_state(root, state_root=state_root)
             raise UsageError(
                 "there is no 'current' session.",
-                detail=f"No conversation is recorded in {STATE_DIR}/."
+                detail=f"No conversation is recorded in {st.display}/."
                 if not known
                 else f"{len(known)} session(s) exist but none is current.",
                 hint="kopipasta session ls          # what exists\n"
@@ -201,8 +211,10 @@ def _resolve(root: str, session_id: Optional[str]) -> str:
     return session_id
 
 
-def _lease_json(root: str, session_id: str) -> Optional[Dict[str, Any]]:
-    lease = read_lease(root, session_id)
+def _lease_json(
+    root: str, session_id: str, state_root: Optional[StateRoot] = None
+) -> Optional[Dict[str, Any]]:
+    lease = read_lease(root, session_id, state_root=state_root)
     if not lease:
         return None
     return {
@@ -214,32 +226,62 @@ def _lease_json(root: str, session_id: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def _summary(root: str, session_id: str, current: Optional[str]) -> Dict[str, Any]:
-    meta = read_meta(root, session_id)
+def _display_path(path: str, root: str, state_root: Optional[StateRoot] = None) -> str:
+    """Format a state path relative to root if inside worktree, else absolute.
+
+    Matches StateRoot.display behaviour: attempts a repo-relative path with
+    forward slashes and falls back to absolute path on cross-drive ValueError or
+    OSError.
+    """
+    st = _resolve_state(root, state_root=state_root)
+    if st.in_worktree:
+        try:
+            rel = os.path.relpath(path, root)
+            return rel.replace(os.sep, "/")
+        except (ValueError, OSError):
+            pass
+    # Machine consumers read this field; keep the separator consistent whether
+    # the path came back relative or absolute. On Windows a forward-slash
+    # absolute path is still a valid path, so nothing is lost by normalising.
+    return path.replace(os.sep, "/")
+
+
+def _summary(
+    root: str,
+    session_id: str,
+    current: Optional[str],
+    state_root: Optional[StateRoot] = None,
+) -> Dict[str, Any]:
+    st = _resolve_state(root, state_root=state_root)
+    sdir = session_dir(root, session_id, state_root=st)
+    meta = read_meta(root, session_id, state_root=st)
     totals = meta.get("totals") or {}
     return {
         "id": session_id,
         "current": session_id == current,
-        "turns": meta.get("turns", len(read_turns(root, session_id))),
+        "turns": meta.get("turns", len(read_turns(root, session_id, state_root=st))),
         "created": meta.get("created"),
         "updated": meta.get("updated"),
         "backend": meta.get("backend"),
         "model": meta.get("model"),
         "git_head": meta.get("git_head"),
         "totals": totals,
-        "cache": _lease_json(root, session_id),
-        "path": os.path.relpath(session_dir(root, session_id), root).replace(
-            os.sep, "/"
-        ),
+        "cache": _lease_json(root, session_id, state_root=st),
+        "path": _display_path(sdir, root, state_root=st),
     }
 
 
 # --------------------------------------------------------------------------
 # ls
 # --------------------------------------------------------------------------
-def _ls(root: str, args: argparse.Namespace) -> int:
-    current = Session.read_current(root)
-    sessions = [_summary(root, s, current) for s in list_sessions(root)]
+def _ls(
+    root: str, args: argparse.Namespace, state_root: Optional[StateRoot] = None
+) -> int:
+    current = Session.read_current(root, state_root=state_root)
+    sessions = [
+        _summary(root, s, current, state_root=state_root)
+        for s in list_sessions(root, state_root=state_root)
+    ]
 
     if args.json:
         emit_json({"ok": True, "current": current, "sessions": sessions})
@@ -247,8 +289,9 @@ def _ls(root: str, args: argparse.Namespace) -> int:
 
     if not sessions:
         # Not an error: no conversations is the normal state of a fresh repo.
+        st = _resolve_state(root, state_root=state_root)
         emit("")
-        narrate(f"kopipasta: no sessions in {STATE_DIR}/sessions/.")
+        narrate(f"kopipasta: no sessions in {st.display}/sessions/.")
         return EXIT_OK
 
     rows = [
@@ -276,13 +319,20 @@ def _lease_note(cache: Optional[Dict[str, Any]]) -> str:
 # --------------------------------------------------------------------------
 # show
 # --------------------------------------------------------------------------
-def _show(root: str, args: argparse.Namespace) -> int:
-    session_id = _resolve(root, args.id)
-    summary = _summary(root, session_id, Session.read_current(root))
-    turn_no, files = read_selection(root, session_id)
+def _show(
+    root: str, args: argparse.Namespace, state_root: Optional[StateRoot] = None
+) -> int:
+    session_id = _resolve(root, args.id, state_root=state_root)
+    summary = _summary(
+        root,
+        session_id,
+        Session.read_current(root, state_root=state_root),
+        state_root=state_root,
+    )
+    turn_no, files = read_selection(root, session_id, state_root=state_root)
 
     turns: List[Dict[str, Any]] = []
-    for rec in read_turns(root, session_id):
+    for rec in read_turns(root, session_id, state_root=state_root):
         n = int(rec.get("turn") or 0)
         turns.append(
             {
@@ -347,7 +397,9 @@ def _head(text: Any) -> str:
 # --------------------------------------------------------------------------
 # diff — has the code moved since the oracle read it
 # --------------------------------------------------------------------------
-def _diff(root: str, args: argparse.Namespace) -> int:
+def _diff(
+    root: str, args: argparse.Namespace, state_root: Optional[StateRoot] = None
+) -> int:
     """Compare the recorded content hashes against the files on disk.
 
     The question this answers is "is the answer I am holding still about the
@@ -355,8 +407,8 @@ def _diff(root: str, args: argparse.Namespace) -> int:
     knows what changed since the last commit, and the session knows what it
     read — but only the session record knows *which bytes* were sent.
     """
-    session_id = _resolve(root, args.id)
-    turn_no, files = read_selection(root, session_id)
+    session_id = _resolve(root, args.id, state_root=state_root)
+    turn_no, files = read_selection(root, session_id, state_root=state_root)
 
     stale: List[Dict[str, str]] = []
     fresh = 0
@@ -406,7 +458,9 @@ def _diff(root: str, args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------
 # rm — and hand back what the session was renting
 # --------------------------------------------------------------------------
-def _rm(root: str, args: argparse.Namespace) -> int:
+def _rm(
+    root: str, args: argparse.Namespace, state_root: Optional[StateRoot] = None
+) -> int:
     if args.all and args.id:
         raise UsageError(
             "give an id or --all, not both.",
@@ -421,8 +475,12 @@ def _rm(root: str, args: argparse.Namespace) -> int:
             "kopipasta session rm --all    # every conversation in this project",
         )
 
-    targets = list_sessions(root) if args.all else [_resolve(root, args.id)]
-    current = Session.read_current(root)
+    targets = (
+        list_sessions(root, state_root=state_root)
+        if args.all
+        else [_resolve(root, args.id, state_root=state_root)]
+    )
+    current = Session.read_current(root, state_root=state_root)
 
     removed: List[str] = []
     released: List[Dict[str, Any]] = []
@@ -430,7 +488,7 @@ def _rm(root: str, args: argparse.Namespace) -> int:
         # The lease first: the resource name lives only in the session's
         # cache.json, so deleting the directory first would leave a rented
         # cache with nothing on disk to say what is being paid for.
-        lease = read_lease(root, session_id)
+        lease = read_lease(root, session_id, state_root=state_root)
         if lease and not lease["expired"] and _release(lease):
             released.append(
                 {
@@ -439,12 +497,12 @@ def _rm(root: str, args: argparse.Namespace) -> int:
                     "tokens": lease.get("tokens"),
                 }
             )
-        if remove_session(root, session_id):
+        if remove_session(root, session_id, state_root=state_root):
             removed.append(session_id)
 
     current_cleared = bool(current and current in removed)
     if current_cleared:
-        clear_current(root)
+        clear_current(root, state_root=state_root)
 
     payload = {
         "ok": True,
@@ -478,27 +536,31 @@ def _release(lease: Dict[str, Any]) -> bool:
 # --------------------------------------------------------------------------
 # reap — the rented caches nothing is using any more
 # --------------------------------------------------------------------------
-def _reap(root: str, args: argparse.Namespace) -> int:
+def _reap(
+    root: str, args: argparse.Namespace, state_root: Optional[StateRoot] = None
+) -> int:
     """Hand back caches this project rented and no live session is holding.
+    =======
+        leases = live_leases(root, state_root=state_root)
 
-    A non-zero count is not evidence of a bug. A named session leaves its
-    cache rented on purpose so turn 2 can reuse it, and this is what makes
-    sweeping safe: those are named in `keep` and are left alone.
+        A non-zero count is not evidence of a bug. A named session leaves its
+        cache rented on purpose so turn 2 can reuse it, and this is what makes
+        sweeping safe: those are named in `keep` and are left alone.
 
-    **Scoped to this project, and there is no flag to widen it.** A lease
-    lives in the project that took it, so a machine-wide sweep can read this
-    project's leases and no others — it would delete a cache another repo is
-    holding mid-conversation, which is the exact money bug this function was
-    written to prevent, one scope up. The asymmetry decides it: an abandoned
-    cache costs storage rent bounded by a TTL of at most an hour, while a
-    destroyed live one costs a full re-creation on every following turn
-    (16,329 tokens, measured). Recovering from a crash needs no wider scope
-    anyway — the leases are still on disk, so `reap` inside that project is
-    already correct.
+        **Scoped to this project, and there is no flag to widen it.** A lease
+        lives in the project that took it, so a machine-wide sweep can read this
+        project's leases and no others — it would delete a cache another repo is
+        holding mid-conversation, which is the exact money bug this function was
+        written to prevent, one scope up. The asymmetry decides it: an abandoned
+        cache costs storage rent bounded by a TTL of at most an hour, while a
+        destroyed live one costs a full re-creation on every following turn
+        (16,329 tokens, measured). Recovering from a crash needs no wider scope
+        anyway — the leases are still on disk, so `reap` inside that project is
+        already correct.
     """
     from kopipasta.core.backend import CACHE_PREFIX, GeminiBackend, _cache_label
 
-    leases = live_leases(root)
+    leases = live_leases(root, state_root=state_root)
     label = get_project_key(root)
     wanted = f"{CACHE_PREFIX}{_cache_label(label)}-"
 

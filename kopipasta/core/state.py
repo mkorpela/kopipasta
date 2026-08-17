@@ -48,6 +48,43 @@ SRC_CONFIG = "config.toml [state] dir"
 SRC_DEFAULT = "built-in default"
 
 
+def _is_path_syntax(val: str) -> bool:
+    """Check if a string contains explicit path syntax.
+
+    A value is treated as a path when it begins with a dot (./state, ../shared,
+    .cache), begins with a tilde (~/state), contains a POSIX or Windows path
+    separator, is absolute, or starts with a Windows drive letter (e.g. C:state).
+    Single bare words without path syntax are rejected to prevent typos for known
+    keywords (e.g. 'gti') from silently creating directories in the worktree.
+    """
+    if val.startswith((".", "~")):
+        return True
+    if "/" in val or "\\" in val:
+        return True
+    if os.path.isabs(val):
+        return True
+    if len(val) >= 2 and val[0].isalpha() and val[1] == ":":
+        return True
+    return False
+
+
+def _is_subpath(path: str, parent: str) -> bool:
+    """Check if path is identical to or contained within parent directory."""
+    try:
+        p = Path(path).resolve()
+        r = Path(parent).resolve()
+        return p == r or p.is_relative_to(r)
+    except (ValueError, RuntimeError):
+        pass
+    try:
+        p_abs = os.path.abspath(path)
+        r_abs = os.path.abspath(parent)
+        rel = os.path.relpath(p_abs, r_abs)
+        return not rel.startswith("..") and not os.path.isabs(rel)
+    except (ValueError, OSError):
+        return False
+
+
 @dataclass(frozen=True)
 class StateRoot:
     project_root: str  # absolute; what find_project_root() returned
@@ -57,21 +94,38 @@ class StateRoot:
 
     @property
     def in_worktree(self) -> bool:
-        """True when `path` is inside `project_root`. Governs whether a
-        .gitignore entry is needed at all."""
-        try:
-            p = Path(self.path).resolve()
-            r = Path(self.project_root).resolve()
-            return p == r or p.is_relative_to(r)
-        except (ValueError, RuntimeError):
-            pass
-        try:
-            p_abs = os.path.abspath(self.path)
-            r_abs = os.path.abspath(self.project_root)
-            rel = os.path.relpath(p_abs, r_abs)
-            return not rel.startswith("..") and not os.path.isabs(rel)
-        except (ValueError, OSError):
+        """True when `path` is inside `project_root`. Governs display formatting,
+        determining whether the path can be presented as repo-relative."""
+        return _is_subpath(self.path, self.project_root)
+
+    @property
+    def needs_gitignore(self) -> bool:
+        """True when the state directory must be ignored in .gitignore.
+
+        A directory outside the project root never needs ignoring, and a project
+        with no git repository at all has no use for a .gitignore file. When git
+        is present, git unconditionally ignores everything inside its own metadata
+        directory (.git/), so only state paths in the worktree outside .git/
+        require an explicit ignore rule.
+        """
+        if not self.in_worktree:
             return False
+
+        has_git = bool(os.environ.get("GIT_DIR", "").strip()) or os.path.exists(
+            os.path.join(self.project_root, ".git")
+        )
+        if not has_git:
+            return False
+
+        git_dir = _find_git_dir(self.project_root, os.environ)
+        if not git_dir:
+            # Something git-shaped is present but its git directory could not
+            # be resolved (e.g. a corrupt or unreadable .git file). Err on the
+            # side of caution: a redundant .gitignore line in a broken repo is
+            # harmless, whereas missing one leaks transcripts and leases.
+            return True
+
+        return not _is_subpath(self.path, git_dir)
 
     @property
     def display(self) -> str:
@@ -239,6 +293,33 @@ def resolve_state_root(
                 source=source,
                 kind="temp",
             )
+        if not _is_path_syntax(raw_value):
+            if source == SRC_FLAG:
+                msg = f"{SRC_FLAG} was given unrecognised keyword {raw_value!r}."
+            elif source == SRC_ENV:
+                msg = (
+                    f"{SRC_ENV} is set to {raw_value!r}, which is not a"
+                    " recognized keyword."
+                )
+            elif source == SRC_CONFIG:
+                msg = (
+                    f"{SRC_CONFIG} is set to {raw_value!r}, which is not a"
+                    " recognized keyword."
+                )
+            else:
+                msg = (
+                    f"unrecognised state directory keyword {raw_value!r} from {source}."
+                )
+            raise UsageError(
+                msg,
+                detail=f"Resolved from {source} for project root {abs_root}.",
+                hint=(
+                    "Accepted keywords are 'git', 'repo', 'xdg'.\n"
+                    f"To specify a relative path named '{raw_value}', prefix it"
+                    f" with './' (e.g. './{raw_value}')."
+                ),
+            )
+
         expanded = os.path.expanduser(raw_value)
         if not os.path.isabs(expanded):
             target_path = os.path.abspath(os.path.join(abs_root, expanded))

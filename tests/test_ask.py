@@ -13,11 +13,13 @@ silently withheld file produces a confident answer about code nobody read.
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 
 from kopipasta.core import ask as askmod
 from kopipasta.core import budget as budgetmod
+from kopipasta.core import session as sessionmod
 from kopipasta.core.errors import EXIT_BUDGET, EXIT_NO_BACKEND, EXIT_OK, EXIT_USAGE
 from kopipasta.interaction import EXIT_NO_HUMAN
 
@@ -515,17 +517,30 @@ def test_the_budget_is_read_in_the_same_currency_as_the_payload(
 
 def test_a_turn_leaves_a_readable_record(project, capsys):
     data = run_json(capsys, "-e", "src/calc.py", "-q", "why does add exist?")
-    session_dir = project / ".kopipasta" / "sessions" / data["session"]
-    assert (session_dir / "001-request.md").exists()
-    assert (session_dir / "001-response.md").exists()
-    assert (session_dir / "001-meta.json").exists()
-    assert (session_dir / "prefix.md").exists()
-    transcript = (session_dir / "transcript.jsonl").read_text().strip().splitlines()
+    s_dir = Path(sessionmod.session_dir(str(project), data["session"]))
+    assert (s_dir / "001-request.md").exists()
+    assert (s_dir / "001-response.md").exists()
+    assert (s_dir / "001-meta.json").exists()
+    assert (s_dir / "prefix.md").exists()
+    transcript = (s_dir / "transcript.jsonl").read_text().strip().splitlines()
     assert json.loads(transcript[0])["question"] == "why does add exist?"
 
 
+def test_default_state_location_is_clean_in_git_repo(project, capsys):
+    """In a git repo, default state lives in .git/ and leaves worktree clean."""
+    assert not (project / ".kopipasta").exists()
+    orig_gitignore = (project / ".gitignore").read_text(encoding="utf-8")
+    data = run_json(capsys, "-e", "src/calc.py", "-q", "x")
+    assert not (project / ".kopipasta").exists()
+    assert (project / ".gitignore").read_text(encoding="utf-8") == orig_gitignore
+    s_dir = Path(sessionmod.session_dir(str(project), data["session"]))
+    assert s_dir.exists()
+    assert str(project / ".git") in str(s_dir)
+
+
 def test_the_state_directory_is_gitignored_on_first_write(project, capsys):
-    run("-e", "src/calc.py", "-q", "x")
+    """When state is in the worktree, it gets gitignored on first write."""
+    run("--state-dir", "repo", "-e", "src/calc.py", "-q", "x")
     assert ".kopipasta/" in (project / ".gitignore").read_text()
 
 
@@ -633,16 +648,13 @@ def test_the_prefix_is_byte_identical_across_turns(project, capsys, canned):
     first = run_json(
         capsys, "-e", "src/calc.py", "--session", "s", "-q", "one", backend=canned
     )
-    prefix = (
-        project / ".kopipasta" / "sessions" / first["session"] / "prefix.md"
-    ).read_bytes()
+    s_dir = Path(sessionmod.session_dir(str(project), first["session"]))
+    prefix = (s_dir / "prefix.md").read_bytes()
     (project / "src" / "calc.py").write_text(
         "def add(a, b):\n    return a + b  # changed\n"
     )
     run_json(capsys, "-e", "src/calc.py", "--session", "s", "-q", "two", backend=canned)
-    assert (
-        project / ".kopipasta" / "sessions" / first["session"] / "prefix.md"
-    ).read_bytes() == prefix
+    assert (s_dir / "prefix.md").read_bytes() == prefix
 
 
 def test_json_mode_never_resumes_someone_elses_conversation(project, capsys):
@@ -665,9 +677,8 @@ def test_the_current_pointer_is_written_even_under_json(project, capsys):
     the test above pins that half.
     """
     data = run_json(capsys, "-e", "src/calc.py", "-q", "x")
-    pointer = project / ".kopipasta" / "current"
-    assert pointer.exists(), "no `current` for `apply current` to resolve"
-    assert pointer.read_text().strip() == data["session"]
+    curr = sessionmod.Session.read_current(str(project))
+    assert curr == data["session"], "no `current` for `apply current` to resolve"
 
 
 def test_a_follow_up_turn_records_the_context_it_inherited(project, capsys, canned):
@@ -691,7 +702,8 @@ def test_a_follow_up_turn_records_the_context_it_inherited(project, capsys, cann
     )
     run_json(capsys, "--session", "s", "-q", "two", backend=canned)
 
-    record = json.loads((project / ".kopipasta/sessions/s/selection.json").read_text())
+    s_dir = Path(sessionmod.session_dir(str(project), "s"))
+    record = json.loads((s_dir / "selection.json").read_text(encoding="utf-8"))
     assert record["2"]["files"], "turn 2 recorded no files at all"
     assert record["2"]["files"]["src/calc.py"]["role"] == "edit"
     assert record["2"]["files"]["src/main.py"]["role"] == "ref"
@@ -703,7 +715,8 @@ def test_a_follow_up_turn_records_the_role_it_changed(project, capsys, canned):
     run_json(capsys, "-r", "src/calc.py", "--session", "s", "-q", "one", backend=canned)
     run_json(capsys, "-e", "src/calc.py", "--session", "s", "-q", "two", backend=canned)
 
-    record = json.loads((project / ".kopipasta/sessions/s/selection.json").read_text())
+    s_dir = Path(sessionmod.session_dir(str(project), "s"))
+    record = json.loads((s_dir / "selection.json").read_text(encoding="utf-8"))
     assert record["1"]["files"]["src/calc.py"]["role"] == "ref"
     assert record["2"]["files"]["src/calc.py"]["role"] == "edit"
 
@@ -717,25 +730,67 @@ def test_a_second_ask_does_not_silently_continue_the_first(project, capsys, cann
     tool exists to keep out of the caller's window.
     """
     run("-e", "src/calc.py", "-q", "one", backend=canned)
-    first = (project / ".kopipasta" / "current").read_text().strip()
+    first = sessionmod.Session.read_current(str(project))
     run("-e", "src/calc.py", "-q", "two", backend=canned)
-    second = (project / ".kopipasta" / "current").read_text().strip()
+    second = sessionmod.Session.read_current(str(project))
 
-    assert first != second
-    assert len(list((project / ".kopipasta" / "sessions").iterdir())) == 2
+    assert first and second and first != second
+    assert len(sessionmod.list_sessions(str(project))) == 2
 
 
 def test_continue_resumes_the_pointer(project, capsys, canned):
     """The replacement for implicit resumption: you have to ask for it."""
     run("-e", "src/calc.py", "-q", "one", backend=canned)
-    first = (project / ".kopipasta" / "current").read_text().strip()
+    first = sessionmod.Session.read_current(str(project))
+    assert first is not None
     run("--continue", "-q", "two", backend=canned)
 
-    assert (project / ".kopipasta" / "current").read_text().strip() == first
-    record = json.loads(
-        (project / ".kopipasta" / "sessions" / first / "selection.json").read_text()
-    )
+    assert sessionmod.Session.read_current(str(project)) == first
+    s_dir = Path(sessionmod.session_dir(str(project), first))
+    record = json.loads((s_dir / "selection.json").read_text(encoding="utf-8"))
     assert "2" in record, "the follow-up did not land in the same session"
+
+
+def test_legacy_sessions_are_found_and_resumed_without_migration(
+    project, capsys, canned
+):
+    """Sessions in <project>/.kopipasta/sessions/ are still readable and resumable."""
+    # Write a turn in the legacy in-worktree location
+    run_json(
+        capsys,
+        "--state-dir",
+        "repo",
+        "-e",
+        "src/calc.py",
+        "--session",
+        "legacy-1",
+        "-q",
+        "one",
+        backend=canned,
+    )
+    assert (project / ".kopipasta" / "sessions" / "legacy-1").is_dir()
+
+    # 1. list_sessions sees legacy sessions under default resolution
+    assert "legacy-1" in sessionmod.list_sessions(str(project))
+
+    # 2. Resuming with explicit --session resolves the legacy session directory
+    turn2 = run_json(
+        capsys,
+        "-e",
+        "src/calc.py",
+        "--session",
+        "legacy-1",
+        "-q",
+        "two",
+        backend=canned,
+    )
+    assert turn2["turn"] == 2
+    assert turn2["session"] == "legacy-1"
+
+    # 3. Resuming with --continue resolves the legacy current pointer
+    turn3 = run_json(capsys, "--continue", "-q", "three", backend=canned)
+    assert turn3["turn"] == 3
+    assert turn3["session"] == "legacy-1"
 
 
 def test_continue_is_honoured_under_json_because_it_is_explicit(
@@ -1032,16 +1087,9 @@ def test_a_mode_without_a_section_still_falls_back_to_ask(
 
 
 def test_writing_the_gitignore_rule_is_announced(project, capsys):
-    """Field report 2.6.
-
-    The first run in a repo appends `.kopipasta/` to a tracked `.gitignore`.
-    It is the right default — session records are not source — but it was the
-    only tree change that run produced, and it happened in silence. A tool
-    that edits a tracked file without saying so is one `git diff` away from
-    looking like a bug in something else.
-    """
+    """Field report 2.6: when state is in the worktree, writing .gitignore is announced."""
     assert ".kopipasta/" not in (project / ".gitignore").read_text()
-    run("-e", "src/calc.py", "-q", "x")
+    run("--state-dir", "repo", "-e", "src/calc.py", "-q", "x")
     err = capsys.readouterr().err
     # A specific sentence, not just the two words appearing somewhere: every
     # run mentions `.gitignore` and `.kopipasta/` in passing, so a loose
@@ -1052,24 +1100,24 @@ def test_writing_the_gitignore_rule_is_announced(project, capsys):
 
 def test_the_announcement_is_not_repeated_once_the_rule_is_there(project, capsys):
     """Narration that fires on every run is narration nobody reads."""
-    run("-e", "src/calc.py", "-q", "x")
+    run("--state-dir", "repo", "-e", "src/calc.py", "-q", "x")
     capsys.readouterr()
-    run("-e", "src/calc.py", "-q", "x")
+    run("--state-dir", "repo", "-e", "src/calc.py", "-q", "x")
     assert "added '.kopipasta/'" not in capsys.readouterr().err
 
 
 def test_the_gitignore_announcement_happens_at_most_once_per_run(project, capsys):
-    """Multiple writes within one turn must not duplicate the narration."""
+    """Multiple writes within one turn with in-worktree state must not duplicate."""
     assert ".kopipasta/" not in (project / ".gitignore").read_text()
-    run("-e", "src/calc.py", "-q", "x")
+    run("--state-dir", "repo", "-e", "src/calc.py", "-q", "x")
     err = capsys.readouterr().err
     assert err.count("added '.kopipasta/' to .gitignore") == 1
 
 
 def test_the_gitignore_entry_is_not_duplicated_when_already_present(project):
-    """Running multiple times must leave exactly one entry in .gitignore."""
-    run("-e", "src/calc.py", "-q", "one")
-    run("-e", "src/calc.py", "-q", "two")
+    """Running multiple times with in-worktree state leaves one entry in .gitignore."""
+    run("--state-dir", "repo", "-e", "src/calc.py", "-q", "one")
+    run("--state-dir", "repo", "-e", "src/calc.py", "-q", "two")
     lines = (project / ".gitignore").read_text(encoding="utf-8").splitlines()
     assert lines.count(".kopipasta/") == 1
 
@@ -1077,20 +1125,40 @@ def test_the_gitignore_entry_is_not_duplicated_when_already_present(project):
 def test_resuming_an_existing_session_repairs_a_missing_gitignore_entry(
     project, capsys, canned
 ):
-    """DEFECT 1: A continued session must still ensure the ignore entry.
+    """DEFECT 1: A continued in-worktree session must still ensure the ignore entry.
 
     When a session directory already exists, `_dir_ready` used to short-circuit
     `_ensure_dir` before checking gitignore, leaving a lost rule unrepaired
     permanently. Resuming an existing session must re-add the entry and preserve
     unrelated lines like `*.log`.
     """
-    run("-e", "src/calc.py", "--session", "s1", "-q", "one", backend=canned)
+    run(
+        "--state-dir",
+        "repo",
+        "-e",
+        "src/calc.py",
+        "--session",
+        "s1",
+        "-q",
+        "one",
+        backend=canned,
+    )
     assert ".kopipasta/" in (project / ".gitignore").read_text()
 
     # Overwrite .gitignore without .kopipasta/
     (project / ".gitignore").write_text("*.log\n", encoding="utf-8")
 
-    run("-e", "src/calc.py", "--session", "s1", "-q", "two", backend=canned)
+    run(
+        "--state-dir",
+        "repo",
+        "-e",
+        "src/calc.py",
+        "--session",
+        "s1",
+        "-q",
+        "two",
+        backend=canned,
+    )
     content = (project / ".gitignore").read_text(encoding="utf-8")
     assert "*.log" in content
     assert ".kopipasta/" in content
@@ -1111,8 +1179,10 @@ def test_a_non_git_directory_never_gains_a_gitignore(project, capsys):
     err = capsys.readouterr().err
     assert not (project / ".gitignore").exists()
     assert "added '.kopipasta/'" not in err
-    assert (project / ".kopipasta" / "sessions").is_dir()
-    assert list((project / ".kopipasta" / "sessions").iterdir())
+    sessions = sessionmod.list_sessions(str(project))
+    assert sessions
+    s_dir = Path(sessionmod.session_dir(str(project), sessions[0]))
+    assert s_dir.is_dir()
 
 
 def test_a_response_with_no_patch_is_a_format_problem_not_a_misconfigured_backend(

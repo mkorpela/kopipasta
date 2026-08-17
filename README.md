@@ -244,9 +244,9 @@ timeout_s    900                built-in default
 
 ## Sessions
 
-Every `ask` writes a turn to `.kopipasta/sessions/<id>/` as plain files — the request, the
-response, and the record of exactly what was sent. Nothing is hidden, and `rm -rf .kopipasta`
-is a complete reset.
+Every `ask` writes a turn to `sessions/<id>/` inside kopipasta's state directory, as plain
+files — the request, the response, and the record of exactly what was sent. Nothing is hidden,
+and removing the state directory is a complete reset.
 
 ```bash
 kopipasta session ls                    # newest last; * marks what `apply current` uses
@@ -254,6 +254,39 @@ kopipasta session show <id>             # turns, usage, artifact paths
 kopipasta session diff <id>             # what changed on disk since the context was built
 kopipasta session reap                  # hand back provider caches no longer in use
 ```
+
+### Where that state lives
+
+In a git repository, `.git/kopipasta/` — inside the repository, outside the worktree. Nothing
+is created in your tree and nothing is appended to `.gitignore`; `git status` after an `ask` is
+exactly what it was before. Without git, it falls back to `.kopipasta/` in the project, then to
+your XDG state directory.
+
+Override it if you want it elsewhere:
+
+```bash
+kopipasta ask --state-dir repo ...      # .kopipasta/ in the project (the pre-0.71 layout)
+kopipasta ask --state-dir xdg ...       # your XDG state directory, outside the repo entirely
+kopipasta ask --state-dir ./somewhere   # any path; a leading ./ is required for a bare name
+```
+
+The same value can be set once, as `KOPIPASTA_STATE_DIR=repo` in the environment, or in
+`config.toml`:
+
+```toml
+[state]
+dir = "repo"
+```
+
+Precedence is `--state-dir` > `KOPIPASTA_STATE_DIR` > `config.toml` > the default. An
+unrecognised bare word such as `--state-dir gti` is refused rather than quietly treated as a
+relative directory name.
+
+**Upgrading:** sessions already in `.kopipasta/` are not migrated, moved or copied. They are
+listed alongside new ones, `session show` reads them, and resuming one keeps writing where it
+already lives. New sessions go to the new location. If you want the old layout back, set
+`--state-dir repo`. Deleting `.kopipasta/` once you no longer need its history — along with the
+`.gitignore` line an earlier version added — is safe.
 
 `--session <id>` or `--continue` keeps a conversation going; files already sent and unchanged
 are not resent.

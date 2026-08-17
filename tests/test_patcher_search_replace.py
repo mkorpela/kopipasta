@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 
 import pytest
+from patch_asserts import hunks_of
 
 from kopipasta.patcher import apply_patches, parse_llm_output
 
@@ -38,7 +39,7 @@ def patched():
     assert p["file_path"] == "kopipasta/test_file.py"
     assert p["type"] == "diff"
 
-    hunks = p["content"]
+    hunks = hunks_of(p)
     assert len(hunks) == 1
     assert hunks[0]["original_lines"] == ["def original():", "    return True"]
     assert hunks[0]["new_lines"] == ["def patched():", "    return False"]
@@ -124,8 +125,8 @@ def test_split_block_search_replace(search_replace_dir):
     patches = parse_llm_output(llm_output)
     assert len(patches) == 1
     assert patches[0]["file_path"] == "app.py"
-    assert patches[0]["content"][0]["original_lines"] == ["foo"]
-    assert patches[0]["content"][0]["new_lines"] == ["bar"]
+    assert hunks_of(patches[0])[0]["original_lines"] == ["foo"]
+    assert hunks_of(patches[0])[0]["new_lines"] == ["bar"]
 
 
 def test_short_markers_search_replace(search_replace_dir):
@@ -136,8 +137,8 @@ def test_short_markers_search_replace(search_replace_dir):
     patches = parse_llm_output(llm_output)
     assert len(patches) == 1
     assert patches[0]["file_path"] == "app.py"
-    assert patches[0]["content"][0]["original_lines"] == ["foo"]
-    assert patches[0]["content"][0]["new_lines"] == ["bar"]
+    assert hunks_of(patches[0])[0]["original_lines"] == ["foo"]
+    assert hunks_of(patches[0])[0]["new_lines"] == ["bar"]
 
 
 def test_mixed_header_styles(search_replace_dir):
@@ -159,4 +160,4 @@ new
 """
     patches = parse_llm_output(llm_output)
     assert patches[0]["file_path"] == "right_name.py"
-    assert patches[0]["content"][0]["original_lines"] == ["old"]
+    assert hunks_of(patches[0])[0]["original_lines"] == ["old"]

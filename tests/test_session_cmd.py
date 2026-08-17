@@ -142,9 +142,9 @@ def test_show_follows_current_and_reports_pointers_not_payloads(project, capsys)
 
 
 def test_show_reports_the_context_the_next_turn_would_inherit(project, capsys):
-    ask("-e", "src/calc.py", "-m", "src/main.py", "--session", "one", "-q", "a")
+    ask("--pin", "src/calc.py", "-m", "src/main.py", "--session", "one", "-q", "a")
     data = run_json(capsys, "show", "one")
-    assert data["context"] == {"turn": 1, "files": 2, "roles": {"edit": 1, "map": 1}}
+    assert data["context"] == {"turn": 1, "files": 2, "roles": {"pin": 1, "map": 1}}
 
 
 def test_an_unknown_id_names_the_ones_that_exist(project, capsys):
@@ -217,10 +217,15 @@ def test_rm_hands_the_rented_cache_back_before_deleting_the_record(
     leaves a meter running with nothing on disk to say what it is for."""
     ask("-e", "src/calc.py", "--session", "one", "-q", "a")
     lease(project, "one")
-    released = []
+    released: list[str] = []
+
+    def fake_release_lease(rec: dict[str, object], **kw: object) -> bool:
+        released.append(str(rec["name"]))
+        return True
+
     monkeypatch.setattr(
         "kopipasta.core.backend.release_lease",
-        lambda rec, **kw: released.append(rec["name"]) is None,
+        fake_release_lease,
     )
     data = run_json(capsys, "rm", "one")
     assert released == ["cachedContents/one"]
@@ -278,14 +283,21 @@ def test_reap_keeps_what_a_session_is_renting(project, capsys, monkeypatch):
             ]
         ),
     )
-    swept = {}
+    swept: dict[str, list[str] | str | None] = {}
+
+    def fake_reap_keeps(
+        cls: object,
+        base_url: str | None = None,
+        *,
+        keep: tuple[str, ...] = (),
+        label: str | None = None,
+    ) -> int:
+        swept.update(keep=list(keep), label=label)
+        return 1
+
     monkeypatch.setattr(
         "kopipasta.core.backend.GeminiBackend.reap_orphans",
-        classmethod(
-            lambda cls, base_url=None, *, keep=(), label=None: (
-                swept.update(keep=list(keep), label=label) or 1
-            )
-        ),
+        classmethod(fake_reap_keeps),
     )
     data = run_json(capsys, "reap")
     assert data["held_by_sessions"] == [
@@ -313,12 +325,21 @@ def test_no_invocation_of_reap_can_sweep_another_project(project, capsys, monkey
         "kopipasta.core.backend.GeminiBackend.list_caches",
         classmethod(lambda cls, base_url=None: []),
     )
-    seen = []
+    seen: list[str | None] = []
+
+    def fake_reap_seen(
+        cls: object,
+        base_url: str | None = None,
+        *,
+        keep: tuple[str, ...] = (),
+        label: str | None = None,
+    ) -> int:
+        seen.append(label)
+        return 0
+
     monkeypatch.setattr(
         "kopipasta.core.backend.GeminiBackend.reap_orphans",
-        classmethod(
-            lambda cls, base_url=None, *, keep=(), label=None: seen.append(label) or 0
-        ),
+        classmethod(fake_reap_seen),
     )
     run_json(capsys, "reap")
     assert seen == [key(project)], "the sweep must always carry this project's label"

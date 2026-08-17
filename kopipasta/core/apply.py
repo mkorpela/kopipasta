@@ -27,6 +27,7 @@ dogfooding `ask` at this repo:
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import os
 import shutil
 import subprocess
@@ -43,6 +44,7 @@ from kopipasta.core.errors import (
     KopipastaError,
     UsageError,
 )
+from kopipasta.core.resolver import PIN
 from kopipasta.core.session import (
     Session,
     _resolve_state,
@@ -50,6 +52,7 @@ from kopipasta.core.session import (
     session_dir,
 )
 from kopipasta.core.state import StateRoot
+from kopipasta.file import decode_text
 from kopipasta.interaction import NoHumanAttached
 from kopipasta.output import (
     HelpToStdoutParser,
@@ -59,6 +62,7 @@ from kopipasta.output import (
     stdout_reserved_for_output,
 )
 from kopipasta.patcher import (
+    Patch,
     apply_patches,
     normalise_path,
     parse_llm_output,
@@ -241,22 +245,37 @@ def resolve_target(
 
 
 def _read(path: str) -> str:
-    with open(path, encoding="utf-8", errors="replace") as fh:
-        return fh.read()
+    """The patch file, decoded by sniffing rather than by assumption.
+
+    `kopipasta ask ... > patch.txt` in PowerShell 5.1 writes UTF-16LE. Read as
+    UTF-8 that is a wall of U+FFFD, every fence and every `# FILE:` marker is
+    destroyed, and `apply` reports "no patches found" for a file that is
+    entirely well-formed.
+    """
+    with open(path, "rb") as fh:
+        text, encoding, replacements = decode_text(fh.read())
+    if replacements:
+        narrate(
+            f"kopipasta: {path} decoded as {encoding} with "
+            f"{replacements} unreadable character(s); the patch may not parse."
+        )
+    return text
 
 
-def editable_set(
+def pinned_set(
     root: str, session_id: str, state_root: Optional[StateRoot] = None
 ) -> Optional[Set[str]]:
-    """The Active Workspace of the session's latest turn (spec §11).
+    """The working set (`--pin`) of the session's latest turn.
 
-    `None` means *no record to enforce against* — no selection file, or one we
-    cannot read. An **empty set** is the opposite answer: the record exists and
-    says nothing was editable, which is exactly what a triage session (all `-r`
-    and `-m`, no `-e`) looks like, and every modification should be refused.
+    Reporting only. This used to be `editable_set`, and `apply` refused any
+    patch touching a file outside it. The refusal is gone: which files a change
+    needs is discovered by asking, not declared before asking, and a guard that
+    fires on the answer to its own question mostly blocks correct patches. What
+    survives is the observation — `outside_focus` in the envelope says the
+    model went somewhere you were not looking, which is worth knowing and not
+    worth refusing over.
 
-    Collapsing the two with `editable or None` turned the strictest case into
-    the most permissive one. Found by dogfooding this file at the oracle.
+    `None` means there is no record to compare against.
     """
     turn, files = read_selection(root, session_id, state_root=state_root)
     if turn == 0 and not files:
@@ -264,8 +283,25 @@ def editable_set(
     return {
         rel
         for rel, rec in files.items()
-        if isinstance(rec, dict) and rec.get("role") == "edit"
+        if isinstance(rec, dict) and rec.get("role") == PIN
     }
+
+
+def only_zone(root: str, patterns: Sequence[str], patches: Sequence[Patch]) -> Set[str]:
+    """`--only` resolved against the paths this patch actually declares.
+
+    Globbing here rather than on disk is deliberate: `--only 'src/**/*.py'`
+    should constrain a patch that creates `src/new/thing.py`, and a file that
+    does not exist yet cannot be found by walking. The patch names its own
+    targets, so those are what the pattern filters.
+    """
+    declared = {normalise_path(p["file_path"]) for p in patches}
+    allowed: Set[str] = set()
+    for raw in patterns:
+        pattern = normalise_path(raw)
+        hits = {d for d in declared if d == pattern or fnmatch.fnmatch(d, pattern)}
+        allowed |= hits
+    return allowed
 
 
 # --------------------------------------------------------------------------
@@ -519,9 +555,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="overwrite even when the shrink/hallucination guard fires",
     )
     s.add_argument(
-        "--any-file",
-        action="store_true",
-        help="do not restrict edits to the session's editable set",
+        "--only",
+        action="append",
+        metavar="PATH",
+        help="restrict this apply to these paths (repeatable; globs allowed). "
+        "Unrestricted by default.",
     )
 
     v = p.add_argument_group("verification")
@@ -641,25 +679,29 @@ def _apply(args: argparse.Namespace) -> int:
     if not args.dry_run:
         snapshot = take_snapshot(root, targets)
 
-    # 2. The editable zone, when we know it.
+    # 2. The restriction, if the caller asked for one. Unrestricted by default:
+    #    which files a change needs is the answer to the question, not a
+    #    precondition of asking it.
     zone: Optional[Set[str]] = None
-    if session_id and not args.any_file:
-        zone = editable_set(root, session_id, state_root=state_root)
-        if zone is None:
+    if args.only:
+        zone = only_zone(root, args.only, patches)
+
+    # 3. What the model touched outside the working set. Reported, never
+    #    refused — see `pinned_set`.
+    focus = pinned_set(root, session_id, state_root=state_root) if session_id else None
+    outside_focus: List[str] = []
+    if focus:
+        outside_focus = sorted(
+            p["file_path"]
+            for p in patches
+            if normalise_path(p["file_path"]) not in focus
+            and os.path.exists(os.path.join(root, p["file_path"]))
+        )
+        if outside_focus:
             narrate(
-                f"kopipasta: session {session_id} records no editable files; "
-                "applying without a zone restriction."
+                f"kopipasta: {len(outside_focus)} file(s) changed outside the "
+                "working set: " + ", ".join(outside_focus[:8])
             )
-        else:
-            # A file the model invented is a creation, not a rewrite of
-            # something it was only shown for reference. Refusing those would
-            # make "add a new module" impossible; the guard exists to stop an
-            # -r file being edited, and that file exists by definition.
-            zone = zone | {
-                p["file_path"]
-                for p in patches
-                if not os.path.exists(os.path.join(root, p["file_path"]))
-            }
 
     cwd = os.getcwd()
     os.chdir(root)
@@ -702,6 +744,8 @@ def _apply(args: argparse.Namespace) -> int:
         "patches_proposed": len(patches),
         "patches_applied": len(result.applied),
         **({"patches_skipped": dropped} if dropped else {}),
+        **({"only": sorted(zone)} if zone is not None else {}),
+        **({"outside_focus": outside_focus} if outside_focus else {}),
         "applied": result.applied,
         "partial": result.partial,
         "failed": result.failed,
@@ -714,7 +758,7 @@ def _apply(args: argparse.Namespace) -> int:
         },
     }
 
-    # 3. Did it land? Spec §8: 5 is "worktree untouched, retry is safe",
+    # 4. Did it land? Spec §8: 5 is "worktree untouched, retry is safe",
     #    4 is "you have a mess to clean up". Never the same number.
     if not result.ok and not result.changed:
         raise PatchFailed(
@@ -725,7 +769,7 @@ def _apply(args: argparse.Namespace) -> int:
             **payload,
         )
 
-    # 4. Normalise before judging. A formatter is not a gate: its failure is
+    # 5. Normalise before judging. A formatter is not a gate: its failure is
     #    reported and the run continues, because exit 7 has to keep meaning
     #    "--verify failed" or the caller cannot tell which command to go and
     #    look at.
@@ -745,7 +789,7 @@ def _apply(args: argparse.Namespace) -> int:
                 "and unformatted. " + (output.splitlines() or [""])[-1]
             )
 
-    # 5. Verification, and the way back out.
+    # 6. Verification, and the way back out.
     if args.verify and not args.dry_run:
         code, output = run_verify(root, args.verify, args.verify_timeout)
         payload["verify"] = {"command": args.verify, "exit": code, "output": output}

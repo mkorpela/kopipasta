@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import Iterator
 
 import pytest
 from rich.text import Text
@@ -10,7 +11,7 @@ from kopipasta.tree_selector import FileNode, TreeSelector
 
 
 @pytest.fixture
-def mock_project(tmp_path: Path) -> Path:
+def mock_project(tmp_path: Path) -> Iterator[Path]:
     """Creates a mock project structure for testing TreeSelector."""
     proj = tmp_path / "selector_project"
     proj.mkdir()

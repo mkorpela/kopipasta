@@ -3,18 +3,25 @@
 The TUI's three-state selection model maps one-to-one onto flags, which is
 what makes its core concept work headlessly:
 
-    -e/--edit      full content, editable      the active workspace
-    -r/--ref       full content, read-only     dependencies, do not change
-    -m/--map       AST skeleton                signatures and one docstring line
-    -s/--snippet   first 50 lines              a coarse peek
-    -x/--exclude   dropped                     applied last, wins over everything
+    -p/--pin       full content, never demoted  the working set
+    -r/--ref       full content                 dependencies and call sites
+    -m/--map       AST skeleton                 signatures and one docstring line
+    -s/--snippet   first 50 lines               a coarse peek
+    -x/--exclude   dropped                      applied last, wins over everything
+
+`--pin` is a claim about attention and budget priority, not about permission.
+It was `-e/--edit`, and it did carry a write permission: `apply` refused any
+patch against a file outside it. That permission was a prediction made before
+the question was asked, so it now lives on `apply --only`, where the proposed
+patch is in hand. What survives the move is the never-demoted guarantee, which
+could not move: the budget ladder runs at assembly time, before a patch exists.
 
 Two properties the rest of the pipeline depends on:
 
 **Resolution is by role precedence, not argv order.** Flags are documented as
-order-independent, so `-m '**/*.py' -e kopipasta/patcher.py` has to mean the
+order-independent, so `-m '**/*.py' --pin kopipasta/patcher.py` has to mean the
 same thing whichever way round it is typed: skeleton the tree, but that one
-file in full. Detail wins — edit > ref > snippet > map.
+file in full. Detail wins — pin > ref > snippet > map.
 
 **Every pattern carries its match count.** A typo'd glob that selects nothing
 is the most dangerous failure in the tool: the model answers from the project
@@ -38,23 +45,32 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from kopipasta.core.errors import EmptySelection, UsageError
-from kopipasta.file import extract_symbols, is_binary, is_ignored
+from kopipasta.file import decode_text, extract_symbols, is_binary, is_ignored
 from kopipasta.proc import TEXT
 
-EDIT = "edit"
+#: The focus role. It is a statement about *attention and priority*, not about
+#: permission: pinned files are sent in full and are never demoted to fit a
+#: budget. It does not restrict what a patch may touch — `apply --only` does
+#: that, at the point where the proposed changes are actually known.
+PIN = "pin"
 REF = "ref"
 MAP = "map"
 SNIPPET = "snippet"
 
 #: Least detail first. Later assignments win, so this order *is* the precedence.
-ROLE_ORDER: Tuple[str, ...] = (MAP, SNIPPET, REF, EDIT)
+ROLE_ORDER: Tuple[str, ...] = (MAP, SNIPPET, REF, PIN)
 
-ROLE_FLAG = {EDIT: "-e", REF: "-r", MAP: "-m", SNIPPET: "-s"}
+ROLE_FLAG = {PIN: "--pin", REF: "-r", MAP: "-m", SNIPPET: "-s"}
 
 #: Roles whose rendering is the file's actual text. These are the expensive
 #: ones, the ones the budget ladder demotes, and the ones session dedup can
 #: skip resending.
-FULL_TEXT_ROLES = (EDIT, REF, SNIPPET)
+FULL_TEXT_ROLES = (PIN, REF, SNIPPET)
+
+#: Roles as they may appear in a selection.json written by an older version.
+#: "edit" was renamed to "pin" when the write-permission meaning moved to
+#: `apply --only`; the records outlive the rename, so reads normalise.
+LEGACY_ROLES = {"edit": PIN}
 
 
 @dataclass
@@ -114,7 +130,7 @@ class Selection:
 class SelectionSpec:
     """The selection flags, as parsed. One field per flag in spec §4."""
 
-    edit: List[str] = field(default_factory=list)
+    pin: List[str] = field(default_factory=list)
     ref: List[str] = field(default_factory=list)
     map: List[str] = field(default_factory=list)
     snippet: List[str] = field(default_factory=list)
@@ -127,7 +143,7 @@ class SelectionSpec:
     def is_empty(self) -> bool:
         return not any(
             (
-                self.edit,
+                self.pin,
                 self.ref,
                 self.map,
                 self.snippet,
@@ -227,8 +243,11 @@ def read_path_list(path: str, root: str) -> List[str]:
     """
     target = path if os.path.isabs(path) else os.path.join(root, path)
     try:
-        with open(target, encoding="utf-8", errors="replace") as fh:
-            lines = fh.read().splitlines()
+        # A UTF-16 path list decoded as UTF-8 becomes a wall of U+FFFD, and
+        # every path in it then "matched no files" — a wrong answer that looks
+        # like an ordinary empty selection.
+        with open(target, "rb") as fh:
+            lines = decode_text(fh.read())[0].splitlines()
     except OSError as exc:
         raise UsageError(
             f"could not read the path list {path}.",
@@ -255,7 +274,7 @@ def _patterns_for(values: Sequence[str], root: str) -> List[str]:
 # resolution
 # --------------------------------------------------------------------------
 def resolve(
-    spec: SelectionSpec, ignore: Sequence[str], root: str, *, changed_role: str = EDIT
+    spec: SelectionSpec, ignore: Sequence[str], root: str, *, changed_role: str = PIN
 ) -> Selection:
     """Build the selection, recording what every pattern matched.
 
@@ -312,7 +331,7 @@ def resolve(
             sel.patterns.append((ROLE_FLAG[role], pattern, len(hits)))
             assign(hits, role, bulk=False)
 
-    # Exclusion is applied last and wins over everything, including -e.
+    # Exclusion is applied last and wins over everything, including --pin.
     for pattern in _patterns_for(spec.exclude or [], root):
         hits = expand(pattern, ignore, root)
         dropped = 0

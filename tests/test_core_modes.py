@@ -61,6 +61,7 @@ def test_structured_modes_can_render_themselves_for_a_human():
 
 
 def test_triage_renders_the_answer_a_caller_asked_for():
+    assert modes.TRIAGE.summary is not None
     out = modes.TRIAGE.summary(
         {
             "hypothesis": "expiry is checked twice",
@@ -79,6 +80,7 @@ def test_triage_renders_the_answer_a_caller_asked_for():
 
 def test_a_summary_survives_a_provider_that_returns_junk_in_a_valid_shape():
     """The schema guarantees the keys, not that every item is an object."""
+    assert modes.TRIAGE.summary is not None
     assert (
         modes.TRIAGE.summary({"relevant_files": ["auth.py", None], "hypothesis": ""})
         == ""
@@ -92,6 +94,7 @@ def test_aliases_resolve_to_the_same_mode():
 def test_an_unknown_mode_names_the_real_ones():
     with pytest.raises(UsageError) as exc:
         modes.get("triaje")
+    assert exc.value.detail is not None
     assert "triage" in exc.value.detail
 
 

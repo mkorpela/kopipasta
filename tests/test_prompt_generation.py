@@ -62,9 +62,10 @@ def test_generate_prompt_template_regression(default_template):
         '{"file.py":[],"large.py":[],"patched.py":[]}\n',
         "```\n\n",
         # A flat file list has no Delta/Base to preserve, so it all lands in
-        # the workspace. What it must never do is land in no zone at all.
-        "## Active Workspace (Editable)\n\n",
-        "These files are the working set. Changes belong here.\n\n",
+        # the working set. What it must never do is land in no zone at all.
+        "## Working Set (Focus Here)\n\n",
+        "The task centres on these files. They are sent whole and are never "
+        "trimmed to fit a budget.\n\n",
         "# FILE: file.py\n",
         "```python\n",
         "print('hello world')\n",
@@ -91,7 +92,7 @@ def test_generate_prompt_template_regression(default_template):
         "## Instructions for Achieving the Task\n\n",
         "### 🧠 Core Philosophy\n",
         "1. **No Hallucinations**: You see the ## Project Structure. If you need to read a file whose contents are not under one of the zone headings above, stop and ask me to paste it.\n",
-        "2. **Respect the Zones**: Propose changes only to files under ## Active Workspace (Editable). Files under ## Reference Context are there to be read; if one of them has to change, say so and ask me to move it.\n",
+        "2. **Respect the Zones**: The task centres on ## Working Set (Focus Here); keep changes there where you can. Files under ## Supporting Context are mostly there to be read — change one only if the task genuinely needs it, and say why.\n",
         "3. **Critical Partner**: Do not blindly follow instructions if they are flawed. Challenge assumptions. Propose better architectural solutions.\n",
         "4. **Hard Stops**: If you need user input, end with [AWAITING USER RESPONSE]. Do not guess.\n\n",
         "### 🛠️ Code Output & Patching (CRITICAL)\n",
@@ -121,13 +122,14 @@ def test_generate_prompt_template_regression(default_template):
 def test_generate_extension_prompt(tmp_path):
     import os
 
+    from kopipasta.file import FileTuple
     from kopipasta.prompt import generate_extension_prompt
 
     f1 = tmp_path / "new_logic.py"
     f1.write_text("def added(): pass")
 
     # FileTuple: (path, is_snippet, chunks, content_type)
-    files = [(str(f1), False, None, "python")]
+    files: list[FileTuple] = [(str(f1), False, None, "python")]
 
     # Change CWD to tmp_path so relpath returns expected short name
     old_cwd = os.getcwd()

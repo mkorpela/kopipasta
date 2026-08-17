@@ -1,3 +1,5 @@
+from patch_asserts import text_of
+
 from kopipasta.patcher import parse_llm_output
 
 
@@ -24,7 +26,7 @@ Hope this helps!
     patches = parse_llm_output(llm_output)
 
     assert len(patches) == 1
-    content = patches[0]["content"]
+    content = text_of(patches[0])
 
     # The parser should capture the full line, including the ending formatting
     assert 'prompt += f"### {path}\\n\\n```{lang}\\n{content}\\n```\\n\\n"' in content

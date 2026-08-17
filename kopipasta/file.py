@@ -1,9 +1,10 @@
 import ast
+import codecs
 import copy
 import fnmatch
 import os
 from pathlib import Path
-from typing import List, Optional, Set, Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 try:
     import tree_sitter
@@ -269,32 +270,140 @@ def get_all_patterns(
     return basename_patterns, path_patterns
 
 
+#: Byte-order marks, longest first. The UTF-32 marks *begin with* the UTF-16
+#: ones (BOM_UTF32_LE is BOM_UTF16_LE + b"\x00\x00"), so testing the short one
+#: first would decode a UTF-32 file as UTF-16 and produce confident nonsense.
+_BOMS: Tuple[Tuple[bytes, str], ...] = (
+    (codecs.BOM_UTF32_LE, "utf-32-le"),
+    (codecs.BOM_UTF32_BE, "utf-32-be"),
+    (codecs.BOM_UTF8, "utf-8"),
+    (codecs.BOM_UTF16_LE, "utf-16-le"),
+    (codecs.BOM_UTF16_BE, "utf-16-be"),
+)
+
+#: Files that had to be decoded destructively, and what it cost them. Keyed by
+#: path, so the renderer can put the damage next to the content and the model
+#: is told it is reading a guess. A warning on stderr does not reach the model,
+#: and a model that is not told will review the mojibake with total confidence.
+_lossy_reads: Dict[str, str] = {}
+
+
+def _sniff_utf16(data: bytes) -> Optional[str]:
+    """Guess a BOM-less UTF-16 encoding from where the NUL bytes fall.
+
+    Text that is mostly ASCII encodes to UTF-16 as alternating character and
+    NUL bytes, so the NULs land at every odd index for little-endian and every
+    even index for big-endian. Nothing else in normal text does that.
+
+    Deliberately conservative: it fires only when one parity is dense with
+    NULs and the other has effectively none. `git diff` redirected through
+    PowerShell 5.1 lands here, and so does anything else written by a Windows
+    tool that defaults to UTF-16.
+    """
+    sample = data[:4096]
+    if b"\x00" not in sample or len(sample) < 4:
+        return None
+    evens = sum(1 for i in range(0, len(sample), 2) if sample[i] == 0)
+    odds = sum(1 for i in range(1, len(sample), 2) if sample[i] == 0)
+    half = len(sample) // 2
+    if odds > half * 0.3 and evens <= half * 0.05:
+        return "utf-16-le"
+    if evens > half * 0.3 and odds <= half * 0.05:
+        return "utf-16-be"
+    return None
+
+
+def _newlines(text: str) -> str:
+    """Python text mode's universal-newline translation, done explicitly."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def decode_text(data: bytes) -> Tuple[str, str, int]:
+    """Decode file bytes to text. Returns (text, encoding, replacements).
+
+    UTF-8 is the assumption, not the rule. PowerShell 5.1's `>` redirection
+    writes UTF-16LE, so `git diff > changes.txt` on Windows produces a
+    perfectly readable file that is not UTF-8 — and reading it as UTF-8 with
+    errors="replace" yielded a wall of U+FFFD that a model then reviewed
+    without ever saying it could not read it. The file was never the problem;
+    assuming its encoding was.
+
+    `replacements` is the count of characters that could not be recovered. A
+    non-zero value means the text is a lossy guess and every caller should say
+    so out loud rather than pass it off as the file.
+
+    Line endings are normalised to "\\n", which is what Python's text mode did
+    for every one of these callers before the read became binary. It is not a
+    cosmetic choice: dropping it put CRLF into the rendered payload and into
+    the memory prologue, so the same file produced different bytes depending on
+    the platform that checked it out. Nothing here round-trips to disk — the
+    patch path has its own reader (`patcher._read_file`) that preserves bytes
+    exactly, because that one does.
+    """
+    for bom, encoding in _BOMS:
+        if data.startswith(bom):
+            body = data[len(bom) :]
+            try:
+                return _newlines(body.decode(encoding)), encoding, 0
+            except UnicodeDecodeError:
+                text = _newlines(body.decode(encoding, errors="replace"))
+                return text, encoding, text.count("\ufffd")
+
+    # The sniff runs *before* the UTF-8 attempt, not after it as a fallback.
+    # BOM-less UTF-16LE ASCII is a sequence of legal UTF-8 bytes — NUL is
+    # valid UTF-8 — so a strict utf-8 decode of it succeeds and returns
+    # "l\\x00i\\x00n\\x00e", no error raised, nothing to fall back from. A
+    # fallback can only catch encodings that fail to decode; this one does not.
+    sniffed = _sniff_utf16(data)
+    if sniffed:
+        try:
+            return _newlines(data.decode(sniffed)), sniffed, 0
+        except UnicodeDecodeError:
+            pass
+
+    try:
+        return _newlines(data.decode("utf-8")), "utf-8", 0
+    except UnicodeDecodeError:
+        pass
+
+    # Last resort. errors="replace" rather than errors="surrogateescape"
+    # because this text goes into a prompt and an HTTP request body: lone
+    # surrogates cannot be encoded for transport or serialised to JSON.
+    # surrogateescape belongs on the patch path (kopipasta/patcher.py), where
+    # bytes must round-trip to disk unchanged; here the payload must survive
+    # being sent.
+    text = _newlines(data.decode("utf-8", errors="replace"))
+    return text, "utf-8", text.count("\ufffd")
+
+
+def decode_note(file_path: str) -> Optional[str]:
+    """The caveat a lossily-decoded file has to carry, if it is one."""
+    return _lossy_reads.get(os.path.abspath(file_path))
+
+
+def lossy_reads() -> Dict[str, str]:
+    """Every file read destructively so far, for the run's own report."""
+    return dict(_lossy_reads)
+
+
 def read_file_contents(file_path: str) -> str:
     try:
-        with open(file_path, encoding="utf-8") as file:
-            return file.read()
-    except UnicodeDecodeError as e:
-        print(
-            f"Warning: {file_path} is not valid UTF-8; "
-            f"decoding with errors='replace': {e}"
-        )
-        try:
-            # We deliberately use errors="replace" here rather than
-            # errors="surrogateescape" because this text goes into a prompt and an
-            # HTTP request body. Lone surrogates cannot be encoded for transport
-            # or serialised to JSON. surrogateescape belongs on the patch path
-            # (kopipasta/patcher.py), where bytes must round-trip to disk unchanged;
-            # here, the payload must survive being sent.
-            with open(file_path, encoding="utf-8", errors="replace") as file:
-                return file.read()
-        except OSError as inner_err:
-            failure = f"Error reading {file_path}: {inner_err}"
-            print(failure)
-            return f"<.. {failure} ..>"
+        with open(file_path, "rb") as file:
+            data = file.read()
     except OSError as e:
         failure = f"Error reading {file_path}: {e}"
         print(failure)
         return f"<.. {failure} ..>"
+
+    text, encoding, replacements = decode_text(data)
+    key = os.path.abspath(file_path)
+    if replacements:
+        note = f"decoded as {encoding} with {replacements} unreadable character(s)"
+        _lossy_reads[key] = note
+        print(f"Warning: {file_path} is not valid {encoding}; {note}.")
+    else:
+        _lossy_reads.pop(key, None)
+    return text
 
 
 def is_binary(file_path: str) -> bool:
@@ -328,6 +437,14 @@ def is_binary(file_path: str) -> bool:
         with open(file_path, "rb") as file:
             # Read a smaller chunk, 512 bytes is usually enough to find a null byte
             chunk = file.read(512)
+            # UTF-16 and UTF-32 text is more than half NUL bytes, so the null
+            # test below calls it binary and the file vanishes from the
+            # selection without a word. A BOM, or the alternating-NUL pattern
+            # that BOM-less UTF-16 makes, says it is text in an encoding this
+            # tool can read — see `decode_text`.
+            if any(chunk.startswith(bom) for bom, _ in _BOMS) or _sniff_utf16(chunk):
+                _is_binary_cache[file_path] = False
+                return False
             if b"\0" in chunk:
                 _is_binary_cache[file_path] = True
                 return True

@@ -16,8 +16,8 @@ sandboxes constrained to the workspace boundary continue to work seamlessly.
 $GIT_COMMON_DIR is deliberately NOT consulted: for a linked worktree, `.git`
 points at `.git/worktrees/<name>`, giving that worktree its OWN session store.
 A session's fixed prefix is a byte-exact render of the files in one checkout at
-turn 1, and `apply` enforces an editable set of paths in that checkout. Sharing
-one store across worktrees on different branches would hand turn 2 a prefix
+turn 1, and `apply` resolves that session's paths in that checkout. Sharing one
+store across worktrees on different branches would hand turn 2 a prefix
 describing files that are not there.
 
 Relative literal paths resolve against `project_root` and NOT `os.getcwd()`:

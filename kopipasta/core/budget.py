@@ -158,8 +158,14 @@ def selection_chars(selection: Selection) -> int:
 
 
 #: The ladder's stages, as (role, bulk) filters, in the order of spec §5:
-#: `-e` is never demoted, and everything else falls bulk-before-explicit at
+#: `--pin` is never demoted, and everything else falls bulk-before-explicit at
 #: each rung — someone who typed a path meant that path.
+#:
+#: PIN's absence here is the whole content of the role. It is what `--pin`
+#: buys and the reason the role survived losing its write-permission meaning
+#: to `apply --only`: budget decisions are made at assembly time, long before
+#: any patch exists, so this exemption is the one thing about a working set
+#: that cannot be deferred to the moment the changes are known.
 #:
 #: The split by bulk used to apply only to skeletons, because `--all` produced
 #: skeletons and nothing else reached the reference role in bulk. Now that

@@ -25,8 +25,10 @@ To encode semantic meaning directly into the prompt payload, `kopipasta` must ev
 ### 3.1 Role-Based Context Zoning (Delta vs. Base)
 Currently, all files are flattened into `## File Contents`. The LLM cannot distinguish between the target of the work and the reference material.
 * **Implementation:** The prompt generator must separate the context into two distinct zones based on Selection State:
-  * `## Active Workspace (Editable)`: Files in the **Delta (Green)** state. The LLM's attention is focused here.
-  * `## Reference Context (Read-Only)`: Files in the **Base (Cyan)** state. Strictly for understanding dependencies and signatures.
+  * `## Working Set (Focus Here)`: Files in the **Delta (Green)** state, selected with `--pin`. The LLM's attention is focused here. The zone note says so plainly: *"The task centres on these files. They are sent whole and are never trimmed to fit a budget."*
+  * `## Supporting Context`: Files in the **Base (Cyan)** state, selected with `-r`. *"Dependencies and call sites, sent whole. Change one only if the task genuinely needs it, and say why."*
+
+  The zones direct **attention**, and deliberately claim no authority over what may be changed. They used to: the headings were `## Active Workspace (Editable)` and `## Reference Context (Read-Only)`, and `apply` enforced exactly that split by refusing patches against files outside the editable zone. The claim was withdrawn because it was a prediction made before the question was asked — the caller had to guess the blast radius up front, and triage, whose whole job is to find out which files matter, emitted a selection that was by construction forbidden from being changed. Permission now lives on `apply --only`, where the proposed patch is in hand and the answer is known rather than guessed. The zoning keeps its real job, which was always the semantic one: a model handed fourteen undifferentiated files spreads its attention across all fourteen.
 
 ### 3.2 The Semantic Skeleton (Map State 2.0)
 The current `Map` (Yellow) state extracts raw symbols (`class Foo(init)`). This saves tokens but strips away the highest-density semantic signals: **contracts and intent**.
@@ -72,6 +74,6 @@ When initiating a new task, the human-AI handshake shifts from:
 > *"Here are the files. Fix the login bug."*
 
 To a high-bandwidth semantic alignment:
-> *"Here is the Active Workspace (Delta) and the Reference Context (Base). The Optimization Target is minimal patch footprint. We are in Decision Mode. Hypothesis: The token expiry logic is racing. Anti-Goal: Do not rewrite the auth middleware. Fix the login bug."*
+> *"Here is the Working Set (Delta) and the Supporting Context (Base). The Optimization Target is minimal patch footprint. We are in Decision Mode. Hypothesis: The token expiry logic is racing. Anti-Goal: Do not rewrite the auth middleware. Fix the login bug."*
 
 By explicitly defining the **Target**, the **Lens**, the **Taste**, and the **Boundaries**, the human controls the LLM's internal probability distribution, resulting in drastically higher first-shot accuracy and architectural synergy.

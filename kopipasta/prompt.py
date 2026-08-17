@@ -78,7 +78,7 @@ DEFAULT_TEMPLATE = """{{ memory }}{{ context }}
 
 ### 🧠 Core Philosophy
 1. **No Hallucinations**: You see the ## Project Structure. If you need to read a file whose contents are not under one of the zone headings above, stop and ask me to paste it.
-2. **Respect the Zones**: Propose changes only to files under ## Active Workspace (Editable). Files under ## Reference Context are there to be read; if one of them has to change, say so and ask me to move it.
+2. **Respect the Zones**: The task centres on ## Working Set (Focus Here); keep changes there where you can. Files under ## Supporting Context are mostly there to be read — change one only if the task genuinely needs it, and say why.
 3. **Critical Partner**: Do not blindly follow instructions if they are flawed. Challenge assumptions. Propose better architectural solutions.
 4. **Hard Stops**: If you need user input, end with [AWAITING USER RESPONSE]. Do not guess.
 
@@ -199,7 +199,7 @@ def selection_from_files(
     the two vocabularies were joined up; a caller that *does* know its roles
     passes a `Selection` instead and keeps them.
     """
-    from kopipasta.core.resolver import EDIT, MAP, SNIPPET, Entry, Selection
+    from kopipasta.core.resolver import MAP, PIN, SNIPPET, Entry, Selection
 
     root = root or os.getcwd()
     selection = Selection(root=root)
@@ -217,7 +217,7 @@ def selection_from_files(
     for path in map_files or []:
         add(path, MAP)
     for path, use_snippet, chunks, _ in files_to_include:
-        add(path, SNIPPET if use_snippet and chunks is None else EDIT, chunks)
+        add(path, SNIPPET if use_snippet and chunks is None else PIN, chunks)
     return selection
 
 
@@ -326,10 +326,10 @@ def generate_prompt_template(
 def _legacy_file_dicts(selection: "Selection") -> List[Dict[str, str]]:
     """`{{ files }}` for a template written before zones existed."""
     from kopipasta.core.context import entry_content, entry_note
-    from kopipasta.core.resolver import EDIT, REF, SNIPPET
+    from kopipasta.core.resolver import PIN, REF, SNIPPET
 
     out = []
-    for entry in selection.by_role(EDIT, REF, SNIPPET):
+    for entry in selection.by_role(PIN, REF, SNIPPET):
         note = entry_note(entry)
         out.append(
             {
@@ -358,7 +358,7 @@ def generate_extension_prompt(
     suffix; this is the clipboard's version of it.
     """
     from kopipasta.core.context import entry_content, entry_note
-    from kopipasta.core.resolver import EDIT, REF, SNIPPET
+    from kopipasta.core.resolver import PIN, REF, SNIPPET
 
     root = root or os.getcwd()
     if selection is None:
@@ -366,7 +366,7 @@ def generate_extension_prompt(
 
     env_decisions: Dict[str, str] = {}
     processed_files = []
-    for entry in selection.by_role(EDIT, REF, SNIPPET):
+    for entry in selection.by_role(PIN, REF, SNIPPET):
         note = entry_note(entry)
         processed_files.append(
             {

@@ -70,17 +70,22 @@ triage output (`p`) auto-detects paths and offers to replace the active selectio
 
 ```bash
 # 1. Ask the model for a coordinated patch across the zoned subsystem
-kopipasta ask -e 'kopipasta/patcher.py' -e 'kopipasta/file.py' \
+kopipasta ask --pin 'kopipasta/patcher.py' --pin 'kopipasta/file.py' \
               -r 'tests/test_patcher*.py' -m 'kopipasta/**/*.py' \
               --mode patch -q "$(cat task.md)" --json
 
 # 2. Apply the returned patch artifact with automated verification & rollback
 kopipasta apply current --verify 'pytest -q' --revert-on-fail --json
+
+# 2b. Or, if this run must not stray outside the subsystem:
+kopipasta apply current --only 'kopipasta/**/*.py' \
+              --verify 'pytest -q' --revert-on-fail --json
 ```
 
-One model call with the whole subsystem in view, zoned editable (`-e`) vs read-only (`-r`),
-applied deterministically to disk, verified with an automated test command, and reported as a
-diffstat.
+One model call with the whole subsystem in view, zoned by attention — the working set (`--pin`)
+first and never trimmed, its supporting context (`-r`) after it — applied deterministically to
+disk, verified with an automated test command, and reported as a diffstat. `--pin` does not
+restrict what the patch may touch; `apply --only` does, and only when asked.
 
 ---
 
@@ -162,14 +167,33 @@ the TUI's core concept work headlessly.
 
 | Flag | State | Rendering | Meaning to the model |
 |---|---|---|---|
-| `-e, --edit` | Delta | full content | Active workspace. Editable. Attention goes here. |
-| `-r, --ref` | Base | full content | Reference. Read for dependencies; do not change. |
+| `-p, --pin` | Delta | full content | The working set. Rendered first, never demoted. Attention goes here. |
+| `-r, --ref` | Base | full content | Supporting context. Dependencies and call sites; change one only if the task needs it. |
 | `-m, --map` | Map | AST skeleton | Signatures and first docstring line only. |
 | `-s, --snippet` | — | first 50 lines | Coarse peek at a file. |
 | `-x, --exclude` | — | dropped | Applied last; wins over everything. |
 | `--url` | — | fetched text | With `--url-full` / `--url-snippet` to answer the size question. |
 
-`--all` selects **every non-ignored file in full**, read-only. The product is a large context
+**`--pin` is about attention and budget priority, not permission.** It means exactly three
+things: the file is sent in full, it is rendered first, and it is **never demoted by the budget
+ladder** (§5). That last guarantee is the entire content of the role, and it is the one thing
+that cannot be deferred to apply-time — budget decisions happen at assembly time, before any
+patch exists to have an opinion about. Everything else `--pin` used to claim has moved to
+`apply --only` (§11).
+
+`--pin` explicitly does **not** restrict what a patch may touch. It used to: the flag was
+`-e/--edit`, the role was called "editable", and `apply` refused any patch against a file that
+was not `-e` in the session. That was a prediction made before the question was asked — the
+caller had to guess the blast radius up front, and `triage`, whose entire job is to discover
+which files matter, emitted a selection (`--from-file` → role `ref`) that was by construction
+forbidden from being changed. The permission now lives where the proposed patch is actually in
+hand.
+
+`-e/--edit` still work as **deprecated aliases** for `-p/--pin`, and are hidden from `--help`.
+Breaking every script and every piece of muscle memory over a rename buys nothing; what the
+flag no longer does is documented rather than enforced by a parse error.
+
+`--all` selects **every non-ignored file in full**, as supporting context. The product is a large context
 window with the codebase actually inside it, so full content is the default and `--budget` is the
 throttle. Starting every file at the skeleton rung instead spent the ladder's entire range before
 the caller asked for anything, left the oracle reasoning about signatures, and sent *nothing at
@@ -178,8 +202,8 @@ listing with `sent: {map: 7}` beside it.
 
 Patterns accept globs (`src/**/*.py`), directories (recursive) and literal paths. `.gitignore`
 and binary filtering always apply. Flags are repeatable and order-independent; the last role
-assigned to a path wins, so `-m '**/*.py' -e kopipasta/patcher.py` means "skeleton the whole tree,
-but give me that one file in full."
+assigned to a path wins, so `-m '**/*.py' --pin kopipasta/patcher.py` means "skeleton the whole
+tree, but give me that one file in full."
 
 **A role a file cannot be rendered in is not a role it keeps.** `-m` is the one role whose
 rendering does not exist for every file: a `.md`, a `.sql`, a file that will not parse and a
@@ -232,7 +256,9 @@ two rungs render identically — to nothing — and only one of the two names is
 Demotion is deterministic and explainable, and falls **bulk before explicit** at every rung —
 someone who typed a path meant that path:
 
-1. Files named by `-e` are **never** demoted. That is the contract of "editable".
+1. Files named by `--pin` are **never** demoted. That is the whole contract of the role, and
+   the reason it has to be declared at selection time rather than inferred later: the ladder
+   runs while the payload is being assembled, long before there is a patch to reason about.
 2. Then everything `--all` or a directory expansion dragged in, largest first.
 3. Then files named by `-r` and `-s`, largest first.
 4. Then skeletons, bulk before explicit.
@@ -454,7 +480,7 @@ Default stdout is the artifact or a compact summary; `--json` makes stdout a sin
   "request": ".kopipasta/sessions/2026-08-15-a3f9/002-request.md",
   "response": ".kopipasta/sessions/2026-08-15-a3f9/002-response.md",
   "usage": {"input": 412330, "cached": 389100, "output": 1840},
-  "sent": {"edit": 2, "ref": 14, "map": 380, "demoted": 22},
+  "sent": {"pin": 2, "ref": 14, "map": 380, "demoted": 22},
   "answer_head": "Token expiry is validated in two places...",
   "max_tokens": 32000,
   "patches_proposed": 2,
@@ -474,6 +500,24 @@ deal than the ambiguity.
 `files_cited` costs nothing: `patcher.find_paths_in_text` already extracts valid project paths
 from model prose. For triage, *which files* is the payload — handing back an array beats making
 the caller parse English.
+
+`apply --json` adds two keys of its own when they apply:
+
+| Key | When | Meaning |
+|---|---|---|
+| `only` | `--only` was passed | The declared paths the restriction actually admitted. |
+| `outside_focus` | non-empty only | Existing files the patch modified that were **not** `--pin` in the session. |
+
+`outside_focus` is reporting, never a refusal (§11). It answers "did the model go somewhere I
+was not looking", which is worth knowing on every run and worth blocking on approximately
+never. New files are excluded from it deliberately: a file that does not exist yet was never in
+anyone's working set, so listing it says nothing.
+
+**`lossy_decode` names any file whose bytes could not be recovered.** Each entry is
+`{"file": ..., "detail": "decoded as utf-8 with 3 unreadable character(s)"}`. The same caveat is
+also written into the payload next to the file's content, because the machine-readable half
+reaches the caller and the payload half reaches the model — and it is the model that is about
+to reason about the damage. See §11 for the bug that made this necessary.
 
 ### Exit codes
 
@@ -542,8 +586,8 @@ because with several selectors "0 files" does not say which one was wrong:
 
 ```
 kopipasta: no files matched.
-  -e kopipasta/pacher.py   0 files   (did you mean kopipasta/patcher.py?)
-  -m kopipasta/*.py       16 files
+  --pin kopipasta/pacher.py   0 files   (did you mean kopipasta/patcher.py?)
+  -m kopipasta/*.py          16 files
 Nothing was selected, so there is nothing to ask about.
 ```
 
@@ -631,6 +675,40 @@ put a kopipasta release between a user and a feature that already works.
 Patch application is a separate, dedicated command (`kopipasta apply [TARGET]`) that accepts
 input from a file path, `-` (stdin), or `current` (the latest session's `response.md`).
 
+### What a patch is allowed to touch
+
+**`apply` is unrestricted by default.** The only restriction is the one the caller asks for:
+
+```
+--only PATH              # repeatable; globs allowed; nothing else is restricted
+```
+
+`--only` is matched with `fnmatch` against **the paths the patch itself declares**, not against
+what is on disk. That is deliberate: `--only 'src/**/*.py'` should constrain a patch that
+*creates* `src/new/thing.py`, and a file that does not exist yet cannot be found by walking the
+tree. The patch names its own targets, so those are what the pattern filters. A patch outside
+the zone is **skipped**, with reason `"excluded by --only"`, and named in `skipped` — not
+silently dropped and not treated as a crash. Exit codes are unchanged by the presence of the
+flag: everything refused and nothing changed is 5, some applied and some refused is 4.
+
+This replaced an automatic restriction, and the reason is worth keeping. `apply` used to refuse
+any patch touching a file that had not been selected with `-e` in the session — an "editable
+set", computed by `apply.editable_set()`. The problem was not the enforcement, it was *when the
+question got asked*: the editable set was a prediction made before the question was asked. The
+caller had to guess the blast radius up front, and `triage` — whose entire job is to discover
+which files matter — emitted a selection (`--from-file`, which lands as role `ref`) that was by
+construction forbidden from being changed. A guard that fires on the answer to its own question
+mostly blocks correct patches.
+
+So the permission moved to where the proposed patch is actually in hand and the answer is known
+rather than guessed. `--any-file`, which existed only to switch the guess off, is **removed**;
+there is no longer anything to switch off. `editable_set()` is now `pinned_set()` and is
+**reporting only** — it feeds `outside_focus` in the envelope (§8) and a line on stderr saying
+which existing files the model changed outside the working set. Knowing is useful. Refusing was
+not.
+
+### Guarantees
+
 A large patch landing unattended needs the guarantees a human review would have given:
 
 - **Clean worktree by default**; refuse otherwise (`--dirty-ok` to override). This is the cheapest
@@ -682,6 +760,39 @@ a box-drawing rule. When only one of the two reader threads died, the survivor's
 whole and the caller read a plausible transcript that had silently lost its first half. The
 policy lives in one constant (`kopipasta.proc.TEXT`) and an AST test keeps every call site on
 it, because the bug is not in any one call site — it is in the default.
+
+**No file is assumed to be UTF-8.** Every read path goes through `file.decode_text()`, which
+checks for UTF-8/UTF-16/UTF-32 BOMs, then sniffs BOM-less UTF-16 from NUL-byte parity, and only
+then falls back to a lossy UTF-8 decode.
+
+The motivating bug is worth stating exactly, because the failure was invisible. PowerShell 5.1's
+`>` redirection writes **UTF-16LE**. `git diff > changes.txt` on Windows therefore produced a
+perfectly well-formed file that kopipasta read as NUL-interleaved mojibake — and because NUL is
+a legal UTF-8 byte, the strict decode *succeeded*. Nothing raised. Only the two BOM bytes became
+U+FFFD, so the file looked fine by every check we had. A review was run over that garbage and
+came back confident. This is why the sniff runs *before* the UTF-8 attempt rather than as a
+fallback after it: a fallback can only catch an encoding that fails to decode, and this one does
+not fail.
+
+Fixed across all four read paths: the file payload, `-q @file`, `--from-file`, and the
+`apply <patchfile>` target. (For `apply` the old symptom was different but the cause identical —
+read as UTF-8, a UTF-16 patch file is a wall of U+FFFD with every fence and every `# FILE:`
+marker destroyed, and `apply` reported "no patches found" for a file that was entirely valid.)
+
+**A file that could not be decoded cleanly says so in the payload itself**, not only on stderr:
+
+```
+# FILE: x.md (decoded as utf-8 with 3 unreadable character(s))
+```
+
+and in the `ask` envelope as `lossy_decode` (§8). A warning on stderr never reaches the model
+doing the reasoning, and a model that is not told will review the mojibake with total
+confidence — which is the entire failure above, repeated one layer up.
+
+Note the deliberate exception: the **patch write path** (`patcher._read_file`) keeps its own
+reader, because bytes there must round-trip to disk unchanged. `decode_text` normalises line
+endings to `\n` and uses `errors="replace"`, both of which are correct for text going into a
+prompt or an HTTP body and wrong for text going back onto disk.
 
 Two further constraints any implementation must honour:
 
@@ -790,17 +901,41 @@ The TUI's three-state engine and the selection grammar are one model in two voca
 they resolve to the same roles:
 
 ```
-Delta (green)  ->  edit      active workspace, editable
-Base  (cyan)   ->  ref       synced context, read-only
+Delta (green)  ->  pin       the working set; attention belongs here
+Base  (cyan)   ->  ref       supporting context
 Map   (yellow) ->  map       skeleton only
 snippet        ->  snippet   first 50 lines, whichever state selected it
 ```
 
-That correspondence was already load-bearing — the Ralph loop hands an agent Delta as editable
-and Base as read-only — but the pasted prompt flattened it into one undifferentiated
-`## File Contents` list, so the model was never shown the boundary the tool enforces everywhere
-else. Two renderers for one prompt is the drift this file exists to prevent; a test asserts the
-shared body is byte-identical from both entry points.
+The persisted role string in `selection.json` is `"pin"`. It was `"edit"`, and reads still
+normalise the legacy value, so sessions recorded before the rename keep resolving.
+
+Those roles render as the zones the model actually reads, in this order, defined once in
+`core/context.py` because a second surface with its own headings is a second prompt:
+
+| Heading | Role | The note under it |
+|---|---|---|
+| `## Working Set (Focus Here)` | `pin` | *The task centres on these files. They are sent whole and are never trimmed to fit a budget.* |
+| `## Supporting Context` | `ref` | *Dependencies and call sites, sent whole. Change one only if the task genuinely needs it, and say why.* |
+| `## Snippets (partial files)` | `snippet` | *Only the first lines of each file are shown. Ask for the rest if you need it.* |
+
+They were `## Active Workspace (Editable)` and `## Reference Context (Read-Only)` while `apply`
+enforced that split. The headings changed with the enforcement, because a heading that claims a
+permission the tool does not enforce is worse than no heading — it is a promise to the model
+that nothing keeps. `--mode patch` matches: its instruction tail asks the model to keep changes
+inside the Working Set where it can, to change a Supporting Context file if the task genuinely
+needs it *and say why*, and to touch as few files as possible. That is guidance addressed to a
+reader, which is what it always was; it no longer describes itself as a boundary.
+
+That correspondence is load-bearing — it is what makes the TUI's core concept work headlessly —
+but the pasted prompt used to flatten it into one undifferentiated `## File Contents` list, so
+the model was never shown which files the task actually centred on. The zones exist to direct
+*attention*: a model given fourteen files with no ranking spreads its effort across all
+fourteen, and the one the question was about gets the same weight as a call site. Note that this
+is now the *whole* justification. The zones deliberately claim no authority over what may be
+changed — they used to, and §11 records why that claim was withdrawn. Two renderers for one
+prompt is the drift this file exists to prevent; a test asserts the shared body is
+byte-identical from both entry points.
 
 Two rules for anything added here:
 

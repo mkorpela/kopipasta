@@ -154,20 +154,20 @@ class SelectionManager:
         The three-state engine and the CLI's flags are the same idea in two
         vocabularies, and they line up one to one:
 
-            DELTA  ->  edit      active focus; changes belong here
+            DELTA  ->  pin       the working set; attention belongs here
             BASE   ->  ref       synced context; read for dependencies
             MAP    ->  map       skeleton only
             snippet -> snippet   only the first lines were sent, whatever
                                  state selected it
 
         That correspondence was already load-bearing — the Ralph loop hands
-        the agent Delta as editable and Base as read-only — but the prompt
-        flattened it into one undifferentiated list, so the model pasting
-        window never saw the boundary the tool enforces everywhere else.
+        the agent Delta as its editable set — but the prompt flattened it into
+        one undifferentiated list, so the pasting window never saw the
+        distinction the rest of the tool tracks.
         """
-        from kopipasta.core.resolver import EDIT, MAP, REF, SNIPPET, Entry, Selection
+        from kopipasta.core.resolver import MAP, PIN, REF, SNIPPET, Entry, Selection
 
-        state_role = {FileState.DELTA: EDIT, FileState.BASE: REF, FileState.MAP: MAP}
+        state_role = {FileState.DELTA: PIN, FileState.BASE: REF, FileState.MAP: MAP}
         selection = Selection(root=root)
         for path, (state, is_snippet, chunks) in self._files.items():
             role = state_role.get(state)

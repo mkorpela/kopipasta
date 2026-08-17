@@ -114,7 +114,7 @@ def _spec_from(args: argparse.Namespace) -> SelectionSpec:
     nobody asked. They join the map role, which is the only role this verb has.
     """
     spec = SelectionSpec(
-        edit=args.edit or [],
+        pin=args.pin or [],
         ref=args.ref or [],
         map=(args.map or []) + list(args.paths or []),
         snippet=args.snippet or [],

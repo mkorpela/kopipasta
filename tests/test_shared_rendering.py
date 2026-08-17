@@ -15,7 +15,7 @@ here rather than in someone's chat window.
 import pytest
 
 from kopipasta.core.context import render_context
-from kopipasta.core.resolver import EDIT, MAP, REF, SNIPPET, SelectionSpec, resolve
+from kopipasta.core.resolver import MAP, PIN, REF, SNIPPET, SelectionSpec, resolve
 from kopipasta.prompt import DEFAULT_TEMPLATE, generate_prompt_template
 from kopipasta.selection import FileState, SelectionManager
 
@@ -79,7 +79,7 @@ def _cli_selection(project):
     """The same four files, selected the way an agent selects them."""
     return resolve(
         SelectionSpec(
-            edit=["src/calc.py"],
+            pin=["src/calc.py"],
             ref=["src/main.py"],
             snippet=["src/util.py"],
             map=["src/tree.py"],
@@ -90,12 +90,12 @@ def _cli_selection(project):
 
 
 def test_the_two_vocabularies_resolve_to_the_same_roles(project):
-    """Delta is -e, Base is -r, a snippet is -s, a map is -m."""
+    """Delta is --pin, Base is -r, a snippet is -s, a map is -m."""
     tui = {e.rel: e.role for e in _tui_selection(project).entries.values()}
     cli = {e.rel: e.role for e in _cli_selection(project).entries.values()}
     assert tui == cli
     assert tui == {
-        "src/calc.py": EDIT,
+        "src/calc.py": PIN,
         "src/main.py": REF,
         "src/util.py": SNIPPET,
         "src/tree.py": MAP,
@@ -131,14 +131,14 @@ def test_the_clipboard_prompt_carries_the_zones(project):
         selection=_tui_selection(project),
         root=str(project),
     )
-    assert "## Active Workspace (Editable)" in tui
-    assert "## Reference Context (Read-Only)" in tui
+    assert "## Working Set (Focus Here)" in tui
+    assert "## Supporting Context" in tui
     assert "## Snippets (partial files)" in tui
-    # Delta is editable, Base is not: the boundary the Ralph loop enforces is
-    # now the one the model is shown.
-    assert tui.index("Active Workspace") < tui.index("src/calc.py")
-    assert tui.index("Reference Context") < tui.index("src/main.py")
-    assert tui.index("src/calc.py") < tui.index("Reference Context")
+    # Delta is the focus, Base surrounds it: the distinction the TUI has always
+    # tracked is the one the model is shown.
+    assert tui.index("Working Set") < tui.index("src/calc.py")
+    assert tui.index("Supporting Context") < tui.index("src/main.py")
+    assert tui.index("src/calc.py") < tui.index("Supporting Context")
 
 
 def test_the_clipboard_prompt_carries_the_tree_and_its_legend(project):
@@ -162,7 +162,7 @@ def test_the_clipboard_prompt_carries_the_tree_and_its_legend(project):
 
 def test_a_file_list_with_no_roles_still_renders(project):
     """The cached-selection path has no Delta/Base to preserve, so everything
-    lands in the active workspace rather than in no zone at all."""
+    lands in the working set rather than in no zone at all."""
     tui, _ = generate_prompt_template(
         files_to_include=[(str(project / "src" / "calc.py"), False, None, "python")],
         ignore_patterns=[],
@@ -171,7 +171,7 @@ def test_a_file_list_with_no_roles_still_renders(project):
         search_paths=[str(project)],
         root=str(project),
     )
-    assert "## Active Workspace (Editable)" in tui
+    assert "## Working Set (Focus Here)" in tui
     assert "# FILE: src/calc.py" in tui
 
 
@@ -203,7 +203,7 @@ def test_the_instruction_tail_names_the_zones_it_relies_on(project):
         root=str(project),
     )
     assert "## File Contents" not in tui
-    assert "## Active Workspace (Editable)" in tui.split("## Task Instructions")[1]
+    assert "## Working Set (Focus Here)" in tui.split("## Task Instructions")[1]
 
 
 def test_secrets_are_masked_on_the_clipboard_path_too(project):
@@ -291,7 +291,7 @@ def test_a_template_written_before_zones_still_renders(project):
     )
     assert "# FILE: src/calc.py" in tui
     assert "# FILE: src/util.py (first 50 lines only)" in tui
-    assert "## Active Workspace" not in tui  # no zones, as the template asked
+    assert "## Working Set" not in tui  # no zones, as the template asked
 
 
 # -- the TUI's output is the canonical prompt -------------------------------
@@ -359,7 +359,7 @@ def _ask_payload(project, capsys, *extra_argv, task="Fix the thing."):
         [
             "--backend",
             "none",
-            "-e",
+            "--pin",
             "src/calc.py",
             "-r",
             "src/main.py",

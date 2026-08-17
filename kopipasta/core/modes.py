@@ -348,8 +348,11 @@ PATCH = Mode(
             "  `<<<<<<< SEARCH` / exact existing lines / `=======` / new lines /",
             "  `>>>>>>> REPLACE`",
             "- To CREATE a file, give its FULL content.",
-            "- Only files under '## Active Workspace (Editable)' may be modified. A patch",
-            "  against any other file is rejected before it is applied.",
+            "- Keep the change inside '## Working Set (Focus Here)' where you can. If a",
+            "  file under '## Supporting Context' has to change too, change it and say",
+            "  why in the summary — do not work around it.",
+            "- Touch as few files as possible. A patch spanning two or three files lands;",
+            "  one spanning six tends not to.",
             "- Output the code blocks and a one-paragraph summary. Do not ask questions:",
             "  nobody can answer them.",
         ]

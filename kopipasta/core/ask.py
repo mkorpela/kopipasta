@@ -66,8 +66,8 @@ from kopipasta.core.errors import (
     UsageError,
 )
 from kopipasta.core.resolver import (
-    EDIT,
     MAP,
+    PIN,
     REF,
     SNIPPET,
     Selection,
@@ -78,6 +78,7 @@ from kopipasta.core.resolver import (
 )
 from kopipasta.core.resolver import ROLE_ORDER as ALL_ROLES
 from kopipasta.core.session import Session, _resolve_state
+from kopipasta.file import decode_text, lossy_reads
 from kopipasta.interaction import (
     NoHumanAttached,
     get_task_from_user_interactive,
@@ -112,18 +113,30 @@ def add_selection_args(parser: argparse.ArgumentParser) -> None:
     """The selection grammar of spec §4. Shared with the other verbs."""
     g = parser.add_argument_group("selection (repeatable, order-independent)")
     g.add_argument(
+        "-p",
+        "--pin",
+        action="append",
+        metavar="PATTERN",
+        help="full content, never demoted — the working set the task centres on",
+    )
+    # The former spelling. `-e/--edit` claimed a write permission that this
+    # role no longer carries, and the claim was always a prediction made before
+    # the question was asked. Kept working, kept out of --help: breaking every
+    # script and muscle memory over a rename buys nothing.
+    g.add_argument(
         "-e",
         "--edit",
         action="append",
+        dest="pin",
         metavar="PATTERN",
-        help="full content, editable — the active workspace",
+        help=argparse.SUPPRESS,
     )
     g.add_argument(
         "-r",
         "--ref",
         action="append",
         metavar="PATTERN",
-        help="full content, read-only — dependencies and call sites",
+        help="full content — dependencies and call sites",
     )
     g.add_argument(
         "-m",
@@ -149,17 +162,17 @@ def add_selection_args(parser: argparse.ArgumentParser) -> None:
     g.add_argument(
         "--all",
         action="store_true",
-        help="every non-ignored file, in full and read-only (use --budget to cap)",
+        help="every non-ignored file, in full (use --budget to cap)",
     )
     g.add_argument(
         "--changed",
         action="store_true",
-        help="git working-tree changes, including untracked, as editable",
+        help="git working-tree changes, including untracked, as the working set",
     )
     g.add_argument(
         "--changed-since",
         metavar="REF",
-        help="git diff --name-only REF...HEAD, as editable",
+        help="git diff --name-only REF...HEAD, as the working set",
     )
     g.add_argument(
         "--from-file",
@@ -170,8 +183,10 @@ def add_selection_args(parser: argparse.ArgumentParser) -> None:
         "Patterns take globs (src/**/*.py), directories (recursive) and literal paths.\n"
         "@file anywhere a pattern is expected reads patterns from that file.\n"
         ".gitignore and binary filtering always apply. The most detailed role wins,\n"
-        "so -m '**/*.py' -e kopipasta/patcher.py skeletons the tree but sends that\n"
-        "one file in full."
+        "so -m '**/*.py' --pin kopipasta/patcher.py skeletons the tree but sends\n"
+        "that one file in full.\n"
+        "--pin directs attention and protects from --budget; it does not restrict\n"
+        "what a patch may touch. Use 'apply --only' for that."
     )
     parser.formatter_class = argparse.RawDescriptionHelpFormatter
 
@@ -301,14 +316,24 @@ def _text_arg(value: Optional[str], root: str, flag: str) -> Optional[str]:
     path = value[1:]
     target = path if os.path.isabs(path) else os.path.join(root, path)
     try:
-        with open(target, encoding="utf-8") as fh:
-            return fh.read()
+        # Bytes, then `decode_text`, rather than a utf-8 text read: on Windows
+        # this file is very often the output of `... > question.txt`, and
+        # PowerShell 5.1 writes that as UTF-16LE. A strict utf-8 read raised
+        # UnicodeDecodeError on a file that was perfectly readable.
+        with open(target, "rb") as fh:
+            text, encoding, replacements = decode_text(fh.read())
     except OSError as exc:
         raise UsageError(
             f"could not read {flag} {path!r}.",
             detail=str(exc),
             hint=f"{flag} @file reads the text from that file.",
         ) from exc
+    if replacements:
+        narrate(
+            f"kopipasta: {flag} {path} decoded as {encoding} with "
+            f"{replacements} unreadable character(s)."
+        )
+    return text
 
 
 # --------------------------------------------------------------------------
@@ -514,7 +539,7 @@ def _ask(args: argparse.Namespace) -> int:
     # 3. Selection.
     ignore = read_gitignore()
     spec = SelectionSpec(
-        edit=args.edit or [],
+        pin=args.pin or [],
         ref=args.ref or [],
         map=args.map or [],
         snippet=args.snippet or [],
@@ -684,10 +709,10 @@ def _ask(args: argparse.Namespace) -> int:
     request_path = session.write_request(prefix, suffix, prefix_reused=prefix_reused)
     # What this turn's context actually contains: the prefix it inherited, with
     # anything selected this turn laid over the top. `hashes` alone is only the
-    # latter, so a follow-up turn with no selectors recorded `{}` — telling
-    # `apply` that nothing was editable in a turn that could see the whole
-    # repo. Spec §11 reads the latest turn to enforce the Active Workspace, so
-    # an incomplete record there is a wrong answer, not a missing one.
+    # latter, so a follow-up turn with no selectors recorded `{}` — claiming an
+    # empty working set for a turn that could see the whole repo. `apply` and
+    # `session show` both read the latest turn, so an incomplete record there is
+    # a wrong answer, not a missing one.
     inherited = {rel: {"role": s.role, "hash": s.hash} for rel, s in in_prefix.items()}
     session.record_selection({**inherited, **hashes}, [d.as_json() for d in demotions])
 
@@ -723,6 +748,21 @@ def _ask(args: argparse.Namespace) -> int:
         # names them, so a caller who asked for a skeleton can see which files
         # could not give one instead of inferring it from a count that moved.
         base["unmappable"] = selection.unmappable[:DEMOTED_IN_JSON]
+
+    # Files whose bytes could not be recovered. The payload carries the same
+    # caveat next to the content, because the model is the one reasoning about
+    # it; this is the machine-readable half, for a caller deciding whether the
+    # answer is worth having at all.
+    damaged = lossy_reads()
+    if damaged:
+        base["lossy_decode"] = [
+            {"file": os.path.relpath(p, root).replace(os.sep, "/"), "detail": note}
+            for p, note in sorted(damaged.items())
+        ][:DEMOTED_IN_JSON]
+        narrate(
+            f"kopipasta: {len(damaged)} file(s) could not be decoded cleanly; "
+            "the payload says so next to each one."
+        )
 
     # What the counts cannot say: whether any of those files put anything in
     # the payload. A budget too small for even one file leaves a directory
@@ -792,8 +832,13 @@ def _ask(args: argparse.Namespace) -> int:
 
 
 def _counts(selection: Optional[Selection]) -> Dict[str, int]:
+    # Keyed off ROLE_ORDER rather than a literal, so the empty envelope and the
+    # populated one can never disagree about what the roles are called. Spelling
+    # them out here is how this shape kept `sent.edit` after the role became
+    # `pin`: an envelope with no selection reported a key that no longer existed
+    # anywhere else.
     if selection is None:
-        return {"edit": 0, "ref": 0, "map": 0, "snippet": 0}
+        return {r: 0 for r in reversed(ALL_ROLES)}
     return selection.counts()
 
 
@@ -810,7 +855,7 @@ def _sends_no_contents(selection, demotions) -> bool:
     """
     if selection is None:
         return False
-    if selection.by_role(EDIT, REF, SNIPPET):
+    if selection.by_role(PIN, REF, SNIPPET):
         return False
     if any(has_skeleton(e.path) for e in selection.by_role(MAP)):
         return False

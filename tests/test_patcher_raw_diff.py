@@ -1,3 +1,5 @@
+from patch_asserts import hunks_of
+
 from kopipasta.patcher import parse_llm_output
 
 
@@ -38,8 +40,9 @@ index 1111111..2222222 100644
     p1 = next(p for p in patches if p["file_path"] == "src/main.py")
     assert p1["type"] == "diff"
     # The parser chunks it into Hunks.
-    assert len(p1["content"]) == 1
-    assert p1["content"][0]["new_lines"] == [
+    hunks1 = hunks_of(p1)
+    assert len(hunks1) == 1
+    assert hunks1[0]["new_lines"] == [
         "def main():",
         '    print("Hello Raw Diff")',
     ]
@@ -47,7 +50,7 @@ index 1111111..2222222 100644
     # Check second file
     p2 = next(p for p in patches if p["file_path"] == "README.md")
     assert p2["type"] == "diff"
-    assert p2["content"][0]["new_lines"] == ["# Title", "Added description."]
+    assert hunks_of(p2)[0]["new_lines"] == ["# Title", "Added description."]
 
 
 def test_raw_diff_no_git_header():
@@ -70,7 +73,7 @@ def test_raw_diff_no_git_header():
     patches = parse_llm_output(llm_output)
     assert len(patches) == 1
     assert patches[0]["file_path"] == "config.json"
-    assert patches[0]["content"][0]["new_lines"] == ["{", '  "debug": true', "}"]
+    assert hunks_of(patches[0])[0]["new_lines"] == ["{", '  "debug": true', "}"]
 
 
 def test_mixed_explicit_and_raw_diff():

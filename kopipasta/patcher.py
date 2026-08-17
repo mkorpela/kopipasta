@@ -1178,9 +1178,9 @@ def apply_patches(
     `dry_run` runs the whole matching pass and writes nothing, so the preview
     is the same computation as the real run rather than a second guess at it.
 
-    `allowed_files` is the Active Workspace of spec §11: a patch against
+    `allowed_files` is the caller's `apply --only` restriction: a patch against
     anything else is recorded as SKIPPED. `None` means no restriction, which is
-    what the interactive TUI path has always done.
+    both the default and what the interactive TUI path has always done.
 
     With no human attached, the two confirmation prompts below become policy
     (spec §11/§12) rather than questions: destructive actions are declined
@@ -1209,24 +1209,29 @@ def apply_patches(
         patch_type = patch["type"]
         patch_content: PatchContent = patch["content"]
 
-        # --- The Editable Zone (spec §11) ---
+        # --- The caller's restriction (`apply --only`) ---
         # Checked before the try, not inside it: this is a policy decision and
         # the broad `except Exception` below would turn it into "corrupt patch",
         # sending the caller to debug something that was fine.
+        #
+        # `zone` is None unless `--only` was passed. It used to be derived from
+        # the session's editable set and applied by default, which meant the
+        # tool guessed the blast radius before the question was asked and then
+        # refused the answer for disagreeing.
         if zone is not None and normalise_path(file_path) not in zone:
             console.print(
-                f"   [yellow]Refused {file_path}: not in the editable set.[/yellow]"
+                f"   [yellow]Refused {file_path}: excluded by --only.[/yellow]"
             )
             result.record(
                 FileOutcome(
                     path=file_path,
                     status=SKIPPED,
-                    reason="not in the editable set for this session",
+                    reason="excluded by --only",
                 )
             )
             if logger:
                 logger.info(
-                    "patch_skipped", file_path=file_path, reason="outside_editable_zone"
+                    "patch_skipped", file_path=file_path, reason="excluded_by_only"
                 )
             continue
 

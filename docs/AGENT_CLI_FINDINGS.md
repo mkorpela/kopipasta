@@ -806,6 +806,27 @@ Ordered by how much time each cost.
 29. **When two outputs of one run disagree, find out which is lying before you believe either.**
     The same `livecheck` run printed a verdict and a cache share that could not both be true.
     The verdict was the headline, so the verdict was believed — and it was the broken one.
+33. **A fallback only catches an encoding that fails to decode.** PowerShell 5.1's `>` writes
+    UTF-16LE, so `git diff > changes.txt` on Windows produced a file we read as
+    NUL-interleaved mojibake — and NUL is a legal UTF-8 byte, so the *strict* `decode("utf-8")`
+    **succeeded**. No exception, nothing to fall back from, only the two BOM bytes replaced.
+    Every count in the envelope looked healthy and a review came back confident over garbage.
+    Trap #18 said "pin `utf-8` on every write"; this is the read-side half nobody wrote down,
+    and it is worse, because the write bug crashed loudly and this one did not. `decode_text`
+    now sniffs BOM-less UTF-16 from NUL-byte parity **before** attempting UTF-8, not after.
+34. **A caveat on stderr does not reach the party that has to act on it.** When a file decodes
+    lossily, the entity about to reason over the damage is the model, and the model never sees
+    stderr. The warning had been printed for a long time and bought nothing. The note now goes
+    into the payload beside the content (`# FILE: x.md (decoded as utf-8 with 3 unreadable
+    character(s))`) and into the envelope as `lossy_decode`. Generalise it: for every warning,
+    name who must change behaviour because of it, then check they are on that channel.
+35. **A permission you must declare before asking the question is a guess, not a policy.**
+    `apply` used to refuse patches against files not selected with `-e`. It fired on the answer
+    to its own question, so it mostly blocked *correct* patches — most sharply for `triage`,
+    whose entire job is to discover which files matter and which emitted a selection
+    (`--from-file` → `ref`) that was by construction unpatchable. Removed; `apply --only` is the
+    opt-in replacement, evaluated when the patch is in hand. The observation was worth keeping
+    and the refusal was not, so `outside_focus` still reports it.
 
 ---
 

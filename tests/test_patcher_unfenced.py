@@ -12,6 +12,8 @@ marker: `# FILE: x` followed by two paragraphs must never become "replace x
 with two paragraphs".
 """
 
+from patch_asserts import hunks_of
+
 from kopipasta.patcher import parse_llm_output
 
 SEARCH_REPLACE = """\
@@ -31,7 +33,7 @@ def test_an_unfenced_search_replace_patch_is_still_a_patch():
     assert len(patches) == 1
     assert patches[0]["file_path"] == "src/calc.py"
     assert patches[0]["type"] == "diff"
-    assert patches[0]["content"][0]["new_lines"] == [
+    assert hunks_of(patches[0])[0]["new_lines"] == [
         "def add(a, b):",
         "    return a + b + 1",
     ]
@@ -45,7 +47,7 @@ def test_the_prose_around_an_unfenced_patch_is_not_part_of_it():
         + "\nLet me know if you would like tests for this.\n"
     )
     assert len(patches) == 1
-    new = patches[0]["content"][0]["new_lines"]
+    new = hunks_of(patches[0])[0]["new_lines"]
     assert "Let me know" not in "\n".join(new)
     assert "off-by-one" not in "\n".join(new)
 

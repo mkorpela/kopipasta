@@ -85,11 +85,32 @@ def nowhere_to_be_found():
 ```
 """
 
+REF_PATCH = """
+### ref.py
+
+```python
+<<<<
+REFERENCE = 1
+====
+REFERENCE = 99
+>>>>
+```
+"""
+
+BOTH_FILES_PATCH = CLEAN_PATCH + REF_PATCH
+
+
+def _git_bin() -> str:
+    git = shutil.which("git")
+    if git is None:
+        raise RuntimeError(
+            "git is required for this test helper but was not found on PATH"
+        )
+    return git
+
 
 def _git(cwd, *args):
-    subprocess.run(
-        [shutil.which("git"), *args], cwd=str(cwd), check=True, capture_output=True
-    )
+    subprocess.run([_git_bin(), *args], cwd=str(cwd), check=True, capture_output=True)
 
 
 @pytest.fixture
@@ -588,13 +609,15 @@ def test_without_revert_on_fail_the_hint_says_the_patch_is_still_there(repo, cap
 
 
 @needs_git
-def test_a_session_with_nothing_editable_still_enforces_the_zone(repo, capsys):
-    """`editable or None` collapsed two different answers into one.
+def test_a_session_with_nothing_pinned_no_longer_blocks_the_apply(repo, capsys):
+    """The premise of the old guard was inverted by the field.
 
-    "No record to enforce against" and "the record says nothing was editable"
-    are opposites: the first cannot be checked, the second must be. Returning
-    None for both let a triage session — all -r and -m, no -e — patch any file
-    in the repo.
+    A session with no `--pin` at all — the shape `triage` produces, all -r and
+    -m — used to have every patch it returned refused, because "nothing was
+    editable" was read as "nothing may be written". The verb whose job is to
+    find out which files matter could not act on its own answer. Nothing is
+    pinned here, so there is no working set to compare against, and the patch
+    simply applies.
     """
     d = repo / ".kopipasta" / "sessions" / "s1"
     d.mkdir(parents=True)
@@ -603,22 +626,13 @@ def test_a_session_with_nothing_editable_still_enforces_the_zone(repo, capsys):
             {"1": {"files": {"ref.py": {"role": "ref", "hash": "y"}}, "demoted": []}}
         )
     )
-    (d / "001-response.md").write_text(
-        """
-### ref.py
-
-```python
-<<<<
-REFERENCE = 1
-====
-REFERENCE = 99
->>>>
-```
-"""
-    )
-    data = run_json(capsys, "--session", "s1", expect=EXIT_PATCH_FAILED)
-    assert data["skipped"] == ["ref.py"]
-    assert (repo / "ref.py").read_text() == "REFERENCE = 1\n"
+    (d / "001-response.md").write_text(REF_PATCH)
+    data = run_json(capsys, "--session", "s1")
+    assert data["applied"] == ["ref.py"]
+    assert (repo / "ref.py").read_text() == "REFERENCE = 99\n"
+    # With nothing pinned there is no focus to be outside of, so the report
+    # says nothing rather than naming every file in the patch.
+    assert "outside_focus" not in data
 
 
 def test_revert_on_fail_without_verify_is_a_usage_error(repo, capsys):
@@ -628,62 +642,126 @@ def test_revert_on_fail_without_verify_is_a_usage_error(repo, capsys):
     assert data["error"] == "usage"
 
 
-# -- the editable zone, spec §11 -------------------------------------------
+# -- the working set is a report; --only is the restriction, spec §11 ------
 
 
 @needs_git
-def test_a_patch_outside_the_sessions_editable_set_is_refused(repo, capsys):
-    _write_session(repo, "s1", editable=["app.py"])
-    patch = """
-### ref.py
+def test_a_patch_outside_the_working_set_applies_and_is_reported(repo, capsys):
+    """The restriction moved to `--only`, and this is why.
 
-```python
-<<<<
-REFERENCE = 1
-====
-REFERENCE = 99
->>>>
-```
-"""
-    (repo / ".kopipasta" / "sessions" / "s1" / "001-response.md").write_text(patch)
-    data = run_json(capsys, "--session", "s1", expect=EXIT_PATCH_FAILED)
-    assert data["skipped"] == ["ref.py"]
-    assert (repo / "ref.py").read_text() == "REFERENCE = 1\n", (
-        "read-only file was edited"
+    `apply` used to refuse any patch touching a file the session had not
+    pinned. That set was a prediction made *before* the question was asked:
+    the caller had to guess the blast radius up front, and a guard that fires
+    on the answer to its own question mostly blocks correct patches. Which
+    files a change needs is discovered by asking.
+
+    What survives is the observation. The patch lands, and `outside_focus`
+    says the model went somewhere the caller was not looking — worth knowing,
+    not worth refusing over.
+    """
+    _write_session(repo, "s1", pinned=["app.py"])
+    (repo / ".kopipasta" / "sessions" / "s1" / "001-response.md").write_text(REF_PATCH)
+    data = run_json(capsys, "--session", "s1")
+    assert data["applied"] == ["ref.py"]
+    assert data["outside_focus"] == ["ref.py"]
+    assert (repo / "ref.py").read_text() == "REFERENCE = 99\n"
+
+
+@needs_git
+def test_a_legacy_edit_record_is_read_as_pinned(repo, capsys):
+    """Records outlive the rename. `selection.json` files written before the
+    role was called `pin` say `"role": "edit"`, and they are still on disk in
+    every repo that ran the old version — so a read normalises them rather
+    than reporting the whole turn as unpinned.
+    """
+    d = repo / ".kopipasta" / "sessions" / "s1"
+    d.mkdir(parents=True)
+    (d / "selection.json").write_text(
+        json.dumps(
+            {"1": {"files": {"app.py": {"role": "edit", "hash": "x"}}, "demoted": []}}
+        )
     )
+    (d / "001-response.md").write_text(BOTH_FILES_PATCH)
+    data = run_json(capsys, "--session", "s1")
+    # app.py was the legacy "edit" record, so it is in focus and ref.py is not.
+    assert sorted(data["applied"]) == ["app.py", "ref.py"]
+    assert data["outside_focus"] == ["ref.py"]
 
 
 @needs_git
-def test_a_new_file_is_allowed_even_though_it_is_not_in_the_set(repo, capsys):
-    """The guard exists to stop an -r file being rewritten, and such a file
-    exists by definition. Refusing creations would make "add a module"
-    impossible."""
-    _write_session(repo, "s1", editable=["app.py"])
+def test_a_created_file_is_never_reported_as_outside_the_working_set(repo, capsys):
+    """`outside_focus` is about files the model went and *changed* behind the
+    caller's back. A file that did not exist before this patch cannot have
+    been read into the context, so naming it would make "add a module" — the
+    most ordinary thing a patch does — look like a trespass every time."""
+    _write_session(repo, "s1", pinned=["app.py"])
     (repo / ".kopipasta" / "sessions" / "s1" / "001-response.md").write_text(
         "```python\n# FILE: brand_new.py\nprint('hi')\n```"
     )
     data = run_json(capsys, "--session", "s1")
     assert data["applied"] == ["brand_new.py"]
+    assert "outside_focus" not in data
 
 
 @needs_git
-def test_any_file_lifts_the_restriction(repo, capsys):
-    _write_session(repo, "s1", editable=["app.py"])
-    (repo / ".kopipasta" / "sessions" / "s1" / "001-response.md").write_text(
-        """
-### ref.py
-
-```python
-<<<<
-REFERENCE = 1
-====
-REFERENCE = 99
->>>>
-```
-"""
+def test_only_restricts_the_apply(repo, capsys):
+    """The restriction the caller does get, at the point where it can be an
+    informed one: the proposed patch is in hand, so `--only` names paths that
+    are known rather than guessed."""
+    data = run_json(
+        capsys,
+        write_patch(repo, BOTH_FILES_PATCH),
+        "--only",
+        "app.py",
+        expect=EXIT_PATCH_PARTIAL,
     )
-    data = run_json(capsys, "--session", "s1", "--any-file")
-    assert data["applied"] == ["ref.py"]
+    assert data["only"] == ["app.py"]
+    assert data["applied"] == ["app.py"]
+    assert data["skipped"] == ["ref.py"]
+    assert "return 100" in (repo / "app.py").read_text()
+    assert (repo / "ref.py").read_text() == "REFERENCE = 1\n", "excluded file written"
+
+
+@needs_git
+def test_only_says_out_loud_which_file_it_refused(repo, capsys):
+    run(
+        write_patch(repo, BOTH_FILES_PATCH),
+        "--only",
+        "app.py",
+        expect=EXIT_PATCH_PARTIAL,
+    )
+    err = capsys.readouterr().err
+    assert "ref.py" in err
+    assert "excluded by --only" in err
+
+
+@needs_git
+def test_only_refusing_everything_leaves_the_worktree_untouched(repo, capsys):
+    """Spec §8: nothing applied and nothing changed is exit 5, so a retry with
+    a wider `--only` is safe."""
+    data = run_json(
+        capsys,
+        write_patch(repo, REF_PATCH),
+        "--only",
+        "app.py",
+        expect=EXIT_PATCH_FAILED,
+    )
+    assert data["skipped"] == ["ref.py"]
+    assert data["changed"] is False
+    assert (repo / "ref.py").read_text() == "REFERENCE = 1\n"
+
+
+@needs_git
+def test_only_accepts_a_glob(repo, capsys):
+    """Matched against the paths the patch itself declares, not against the
+    worktree: `--only 'src/**/*.py'` has to constrain a patch that *creates*
+    `src/new/thing.py`, and a file that does not exist yet cannot be found by
+    walking the disk."""
+    patch = write_patch(repo, "```python\n# FILE: src/new/thing.py\nx = 1\n```")
+    data = run_json(capsys, patch, "--only", "src/**/*.py")
+    assert data["only"] == ["src/new/thing.py"]
+    assert data["applied"] == ["src/new/thing.py"]
+    assert (repo / "src" / "new" / "thing.py").read_text().strip() == "x = 1"
 
 
 # -- resolving the target ---------------------------------------------------
@@ -691,7 +769,7 @@ REFERENCE = 99
 
 @needs_git
 def test_current_resolves_to_the_latest_response(repo, capsys):
-    _write_session(repo, "s1", editable=["app.py"])
+    _write_session(repo, "s1", pinned=["app.py"])
     d = repo / ".kopipasta" / "sessions" / "s1"
     (d / "001-response.md").write_text(NOTHING_MATCHES)
     (d / "002-response.md").write_text(CLEAN_PATCH)
@@ -744,7 +822,7 @@ def test_stdout_stays_empty_on_failure_without_json(repo, capsys):
 # -- helpers ----------------------------------------------------------------
 
 
-def _write_session(repo, session_id, editable):
+def _write_session(repo, session_id, pinned):
     d = repo / ".kopipasta" / "sessions" / session_id
     d.mkdir(parents=True)
     (d / "selection.json").write_text(
@@ -752,7 +830,7 @@ def _write_session(repo, session_id, editable):
             {
                 "1": {
                     "files": {
-                        **{p: {"role": "edit", "hash": "x"} for p in editable},
+                        **{p: {"role": "pin", "hash": "x"} for p in pinned},
                         "ref.py": {"role": "ref", "hash": "y"},
                     },
                     "demoted": [],
@@ -832,7 +910,7 @@ def test_ask_then_apply_works_on_the_first_run_in_a_clean_repo(repo, capsys, tmp
             [
                 "--backend",
                 f"none:{canned}",
-                "-e",
+                "--pin",
                 "app.py",
                 "--mode",
                 "patch",
@@ -849,7 +927,7 @@ def test_ask_then_apply_works_on_the_first_run_in_a_clean_repo(repo, capsys, tmp
     assert (repo / ".gitignore").read_text() == orig_gitignore
     assert not (repo / ".kopipasta").exists()
     proc = subprocess.run(
-        [shutil.which("git"), "status", "--porcelain"],
+        [_git_bin(), "status", "--porcelain"],
         cwd=str(repo),
         capture_output=True,
         text=True,
@@ -1169,7 +1247,7 @@ def test_worktree_reports_unknown_when_not_in_a_git_repo(tmp_path, capsys, monke
     patch_file = tmp_path / "patch.md"
     patch_file.write_text(CLEAN_PATCH)
 
-    data = run_json(capsys, str(patch_file), "--any-file")
+    data = run_json(capsys, str(patch_file))
     assert data["worktree"]["dirty_check"] == "unknown"
     assert data["worktree"]["dirty_check"] != "clean"
     assert data["worktree"]["blocking"] == []
@@ -1230,25 +1308,23 @@ def test_apply_current_follows_pointer_and_modifies_file_when_state_is_relocated
 
 
 @needs_git
-def test_apply_relocated_state_reads_selection_and_enforces_editable_zone(
+def test_apply_relocated_state_reads_selection_and_reports_outside_focus(
     repo, capsys, monkeypatch
 ):
-    """When state is relocated, `apply` resolves selection.json to enforce the
-    session's editable zone, refusing modifications to read-only files."""
+    """The point of this one is the *lookup*: with state under `.git/`,
+    `apply` still has to find that session's selection.json to know what the
+    working set was. If it silently failed to, `outside_focus` would be absent
+    and the omission would read exactly like "the model stayed in focus".
+    """
     monkeypatch.setenv("KOPIPASTA_STATE_DIR", "git")
     sess = Session.open(str(repo), "relocated-s3")
-    sess.record_selection({"app.py": {"role": "edit", "hash": "x"}}, demoted=[])
+    sess.record_selection({"app.py": {"role": "pin", "hash": "x"}}, demoted=[])
+    sess.write_response(REF_PATCH)
 
-    ref_patch = (
-        CLEAN_PATCH.replace("app.py", "ref.py")
-        .replace("def a():\n    return 1", "REFERENCE = 1")
-        .replace("def a():\n    return 100", "REFERENCE = 99")
-    )
-    sess.write_response(ref_patch)
-
-    data = run_json(capsys, "--session", "relocated-s3", expect=EXIT_PATCH_FAILED)
-    assert data["skipped"] == ["ref.py"]
-    assert (repo / "ref.py").read_text() == "REFERENCE = 1\n"
+    data = run_json(capsys, "--session", "relocated-s3")
+    assert data["applied"] == ["ref.py"]
+    assert data["outside_focus"] == ["ref.py"]
+    assert (repo / "ref.py").read_text() == "REFERENCE = 99\n"
 
 
 @needs_git
@@ -1256,7 +1332,7 @@ def test_apply_default_state_location_applies_patch_and_modifies_file(repo, caps
     """Under default state location, session response and selection are found
     and the target file on disk is modified."""
     sess = Session.open(str(repo), "default-s1")
-    sess.record_selection({"app.py": {"role": "edit", "hash": "x"}}, demoted=[])
+    sess.record_selection({"app.py": {"role": "pin", "hash": "x"}}, demoted=[])
     sess.write_response(CLEAN_PATCH)
     sess.set_current()
 

@@ -802,3 +802,83 @@ The `.gitignore` line earlier versions wrote is left where it is. Removing a lin
 the user owns, on their behalf, to tidy up after a version they may still be running, is not
 worth the surprise. The README says it is safe to delete along with the directory, and leaves
 that to the reader.
+
+---
+
+## 12. Round 6 - what later changes did to the findings above
+
+Appended rather than merged, for the reason in the header: a report that quietly edits itself
+after the fact is worth nothing. Nothing above this line has been rewritten. Three changes
+landed since round 5 that a reader of the earlier sections needs to know about.
+
+### 12.1 The editable set is gone as a mechanism; §8.6 stands as a measurement
+
+`-e/--edit` is now `-p/--pin`, and the role no longer claims a write permission. `apply` no
+longer refuses patches against files that were not in the session's editable set — it is
+unrestricted by default, and `apply --only PATH` is the opt-in replacement, matched against the
+paths the patch itself declares. `--any-file` is removed; there is nothing left to switch off.
+`editable_set()` is `pinned_set()` and only reports, feeding `outside_focus` in the envelope.
+
+The reason is visible in §8.4 above, from the other side. That entry notes the guard
+"deliberately adds every non-existent path to the zone, because refusing creations would make
+'add a new module' impossible" — a guard already carving out an exception for the case where it
+could not know the answer in advance. It could not know the answer in advance in general: the
+editable set was a prediction made before the question was asked. Triage, whose entire job is
+to discover which files matter, emitted a selection that arrived as `ref` and was therefore
+forbidden from being changed by the tool that had just recommended it.
+
+§4 above lists the restriction under "what worked, unqualified" — *"it was always clear what
+was in scope"* — and that was a fair reading of that session. It is worth being honest about
+what was given up: on a run where the caller already knows the blast radius, the guard cost
+nothing and made scope legible. The trade is that it charged that cost to every run where the
+caller did *not* know, which is the run the tool exists for. `--only` keeps the property for
+whoever wants it and stops billing everyone else for it, and `outside_focus` keeps the
+legibility — which, re-reading §4, is most of what was actually valued there.
+
+**§8.6's finding is unaffected and still holds.** "The editable set is the reliability budget"
+was never a claim about the guard; it was a measurement of how many files a model can rewrite
+in one pass before the patch times out or arrives half-written. Two or three land, five does
+not. Read "editable set" there as "the working set you `--pin`" and the number is the same
+number. What changed is that the tool no longer pretends to enforce it, which was never what
+made it true.
+
+### 12.2 §9.6's retracted BOM claim was half right, and the other half was a real bug
+
+Round 3 retracted the BOM finding: `--json` output does not carry a BOM, and what I saw was
+PowerShell's pipeline re-encoding between native commands. That retraction is correct and
+stands.
+
+What it did not follow up on is that PowerShell's re-encoding is not confined to pipelines.
+**PowerShell 5.1's `>` redirection writes UTF-16LE.** So `git diff > changes.txt` on this
+machine — the exact host in the table at the top of this report — produces a file kopipasta
+read as NUL-interleaved mojibake. And it failed in the worst available way: NUL is a legal
+UTF-8 byte, so the strict decode *succeeded*. Nothing raised, nothing was replaced except the
+two BOM bytes, and every count in the envelope looked healthy. A review was run over that
+garbage and came back confident.
+
+That is the §3.2 failure mode — laundering a false premise into a high-confidence finding —
+arriving through the file system instead of through the prompt, and it was sitting under this
+report's own platform row the whole time.
+
+Fixed with `file.decode_text()`: BOM detection for UTF-8/UTF-16/UTF-32, then a BOM-less UTF-16
+sniff from NUL-byte parity, then lossy UTF-8 as the last resort. The sniff has to run *before*
+the UTF-8 attempt rather than after it as a fallback, because a fallback can only catch an
+encoding that fails to decode and this one does not fail. Applied to all four read paths: the
+file payload, `-q @file`, `--from-file`, and the `apply <patchfile>` target. The patch *write*
+path keeps its own `surrogateescape` reader (§9.4), which is still the correct opposite choice
+for the same reason it was then.
+
+### 12.3 A caveat on stderr does not reach the reader who needs it
+
+The corollary, and the more general lesson. A file that still cannot be decoded cleanly now
+carries the damage into the payload itself:
+
+```
+# FILE: x.md (decoded as utf-8 with 3 unreadable character(s))
+```
+
+and into the `ask` envelope as `lossy_decode`. The stderr warning was there before and was
+useless for the purpose, because **the model doing the reasoning never sees stderr.** §2.7
+above complains that stderr chatter is too loud on Windows; this is the same channel failing in
+the opposite direction. Whoever has to act on a caveat has to be handed it, and for "this file
+is a guess" that is the model, not the console.

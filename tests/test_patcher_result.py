@@ -18,6 +18,7 @@ have to change to learn something new is available.
 
 import os
 from pathlib import Path
+from typing import Iterator
 
 import pytest
 
@@ -62,7 +63,7 @@ ORIGINAL = "def a():\n    return 1\n\ndef b():\n    return 2\n"
 
 
 @pytest.fixture
-def project(tmp_path: Path) -> Path:
+def project(tmp_path: Path) -> Iterator[Path]:
     (tmp_path / "app.py").write_text(ORIGINAL)
     (tmp_path / "other.py").write_text("def c():\n    return 3\n")
     original_cwd = os.getcwd()
@@ -136,8 +137,9 @@ def test_dry_run_does_not_delete(project: Path):
     assert result.outcomes[0].action == "deleted"
 
 
-def test_patch_outside_the_editable_zone_is_refused(project: Path):
-    """spec §11: only files under Active Workspace (Editable) may be modified.
+def test_patch_outside_the_only_list_is_refused(project: Path):
+    """`allowed_files` is what `apply --only` is made of: the caller names the
+    paths this run may write, and everything else is refused.
 
     The refusal must be a recorded decision, not an exception: the per-file
     body of apply_patches catches broad exceptions, so raising here would be
@@ -150,7 +152,7 @@ def test_patch_outside_the_editable_zone_is_refused(project: Path):
     assert (project / "app.py").read_text() == ORIGINAL
     assert result.skipped == ["app.py"]
     assert result.changed is False
-    assert "editable" in result.outcomes[0].reason.lower()
+    assert result.outcomes[0].reason == "excluded by --only"
 
 
 def test_allowed_files_permits_a_file_inside_the_zone(project: Path):

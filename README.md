@@ -45,7 +45,7 @@ kopipasta ask --all -q "Tokens are accepted after expiry. Which files implement
   "request":  ".kopipasta/sessions/2026-08-16-0e5f/001-request.md",
   "response": ".kopipasta/sessions/2026-08-16-0e5f/001-response.md",
   "usage": {"input": 412330, "cached": 389100, "output": 1840},
-  "sent": {"edit": 0, "ref": 0, "map": 380, "demoted": 22},
+  "sent": {"pin": 0, "ref": 0, "map": 380, "demoted": 22},
   "files_cited": ["src/auth/tokens.py", "src/auth/session.py"]
 }
 ```
@@ -82,16 +82,24 @@ a tight, high-signal window without re-reading anything irrelevant.
 ### 3. Coordinated patch — one call, many files, verified
 
 ```bash
-kopipasta ask -e 'src/auth/tokens.py' -e 'src/auth/session.py' \
+kopipasta ask --pin 'src/auth/tokens.py' --pin 'src/auth/session.py' \
               -r 'tests/test_auth*.py' -m 'src/**/*.py' \
               --mode patch -q @task.md --json
 
 kopipasta apply current --verify 'pytest -q' --revert-on-fail --json
 ```
 
-One model call with the whole subsystem in view, zoned into editable (`-e`) and read-only
-(`-r`), applied deterministically, verified, reported as a diffstat — and rolled back if the
-tests fail.
+One model call with the whole subsystem in view, zoned by attention — the working set
+(`--pin`) first and never trimmed, the supporting context (`-r`) after it — applied
+deterministically, verified, reported as a diffstat, and rolled back if the tests fail.
+
+`--pin` does **not** restrict what the patch may touch; it is about attention and budget
+priority. If this particular run must not stray, say so at apply time, where the proposed
+patch is actually in hand:
+
+```bash
+kopipasta apply current --only 'src/auth/**' --verify 'pytest -q' --json
+```
 
 `ask` **proposes**. Nothing is written until `apply` runs, and the envelope says so:
 `patches_proposed` and `patches_applied` are separate counts, and `next` is the exact command
@@ -148,15 +156,26 @@ the request and records the session exactly as a real run would.
 ## Selecting files
 
 The TUI's four-state model, as flags. Repeatable and order-independent; the most detailed
-role wins, so `-m '**/*.py' -e src/api.py` skeletons the tree but sends that one file whole.
+role wins, so `-m '**/*.py' --pin src/api.py` skeletons the tree but sends that one file whole.
 
 | Flag | Rendering | Means |
 |---|---|---|
-| `-e, --edit` | full content | active workspace — editable, attention goes here |
-| `-r, --ref` | full content | reference — read for dependencies, don't change |
+| `-p, --pin` | full content | the working set — rendered first, never demoted by `--budget` |
+| `-r, --ref` | full content | supporting context — dependencies and call sites |
 | `-m, --map` | AST skeleton | signatures and one docstring line |
 | `-s, --snippet` | first 50 lines | a coarse peek |
 | `-x, --exclude` | dropped | applied last, wins over everything |
+
+**`--pin` is attention and budget priority, not permission.** It means three things and only
+three: sent in full, rendered first, and never demoted when `--budget` starts trimming. It
+does not restrict what a patch may touch — use `apply --only` for that.
+
+It was called `-e/--edit`, and `apply` used to refuse patches against anything that had not
+been `-e` in the session. That was a guess made before the question was asked: you had to
+predict the blast radius up front, and a triage answer fed back in with `--from-file` arrived
+as `ref` and was therefore forbidden from being changed — by the very tool whose job was to
+find out which files matter. `-e/--edit` still work as hidden aliases so existing scripts and
+muscle memory keep running.
 
 ```
 --all                 every non-ignored file, as a skeleton
@@ -174,7 +193,7 @@ otherwise produce a confident answer built from nothing:
 
 ```
 kopipasta: no files matched.
-  -e kopipasta/pacher.py               0 files   (did you mean kopipasta/patcher.py?)
+  --pin kopipasta/pacher.py            0 files   (did you mean kopipasta/patcher.py?)
 ```
 
 ## Budget
@@ -185,9 +204,11 @@ Whole repos exceed even a 1M-token window, so files **demote** rather than vanis
 full content  →  AST skeleton  →  path-only (still in the structure tree)
 ```
 
-`--budget 400k` sets the target. Files named by `-e` are never demoted; everything demoted
-is reported, because silent truncation is what makes an answer confidently wrong.
-`--strict-budget` exits 6 instead of demoting.
+`--budget 400k` sets the target. Files named by `--pin` are never demoted — that guarantee is
+the whole content of the role, and it is why it has to be declared when you select rather than
+inferred later: the ladder runs while the payload is assembled, before there is any patch to
+reason about. Everything demoted is reported, because silent truncation is what makes an
+answer confidently wrong. `--strict-budget` exits 6 instead of demoting.
 
 ## Configuration
 
@@ -341,6 +362,15 @@ Two fields exist because their absence was read as the opposite of the truth:
   ours — the hint says so and names the reason in `revert_declined_why`. A tool that reports a
   restoration it did not perform is the one failure mode that running it again cannot catch.
 
+Three more that only appear when they have something to say:
+
+- `only` — on `apply --json`, the declared paths a `--only` restriction actually admitted.
+- `outside_focus` — on `apply --json`, existing files the patch changed that were not `--pin`
+  in the session. Reported, never refused.
+- `lossy_decode` — on `ask --json`, files whose bytes could not be recovered, each as
+  `{"file": …, "detail": "decoded as utf-8 with 3 unreadable character(s)"}`. The same caveat
+  is written into the payload beside the file, because stderr does not reach the model.
+
 ---
 
 ## The interactive TUI
@@ -469,8 +499,23 @@ the one nobody ever ran.
 - Guards against "snippet hallucination", where a model returns a fragment as if it were a
   whole file, and would otherwise truncate it.
 - `apply` refuses a dirty worktree by default, so `git checkout .` is always a complete undo.
-  Deletes need `--allow-delete`. Patches are restricted to the session's editable set unless
-  you pass `--any-file`.
+  Deletes need `--allow-delete`.
+- `apply` is otherwise **unrestricted by default**. `--only PATH` (repeatable, globs allowed)
+  is the opt-in restriction, matched against the paths the patch itself declares — so
+  `--only 'src/**/*.py'` also constrains a file the patch is about to create. Anything outside
+  is skipped with reason `"excluded by --only"`, and the exit codes are unchanged: everything
+  refused and nothing written is 5, a mix is 4.
+- Files the patch changed that were not `--pin` in the session are **reported, not refused**,
+  on stderr and as `outside_focus` in the envelope. "The model went somewhere you were not
+  looking" is worth knowing on every run and worth blocking on almost never.
+- **No file is assumed to be UTF-8.** BOMs are honoured and BOM-less UTF-16 is sniffed before
+  any UTF-8 decode is attempted. PowerShell 5.1's `>` writes UTF-16LE, so `git diff >
+  changes.txt` on Windows used to be read as NUL-interleaved mojibake — and since NUL is a
+  legal UTF-8 byte the strict decode *succeeded*, damaging only the two BOM bytes, so nothing
+  looked wrong and a review came back confident over garbage. A file that still cannot be
+  decoded cleanly carries the caveat into the payload the model reads
+  (`# FILE: x.md (decoded as utf-8 with 3 unreadable character(s))`) and into the envelope as
+  `lossy_decode` — a warning on stderr never reaches the model doing the reasoning.
 
 ## Design docs
 

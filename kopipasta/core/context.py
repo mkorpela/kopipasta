@@ -40,8 +40,8 @@ from kopipasta.core.render import (
     get_project_structure,
     handle_env_variables,
 )
-from kopipasta.core.resolver import EDIT, MAP, REF, SNIPPET, Entry, Selection
-from kopipasta.file import extract_symbols, read_file_contents
+from kopipasta.core.resolver import MAP, PIN, REF, SNIPPET, Entry, Selection
+from kopipasta.file import decode_note, extract_symbols, read_file_contents
 
 #: The quad-memory layers, in the order the clipboard prompt has always
 #: emitted them: global kernel, project constitution, working memory
@@ -193,25 +193,47 @@ def entry_content(entry: Entry) -> str:
 
 
 def entry_note(entry: Entry) -> str:
-    """The caveat for this entry, which is the role's unless it is chunked."""
+    """The caveat for this entry, which is the role's unless it is chunked.
+
+    Only meaningful *after* the entry's content has been read: a decode caveat
+    is discovered by reading, not by inspecting the path. `_zone` orders the
+    two calls accordingly.
+    """
     if entry.chunks is not None:
-        return "selected patches"
-    return role_note(entry.role)
+        base = "selected patches"
+    else:
+        base = role_note(entry.role)
+    damage = decode_note(entry.path)
+    if not damage:
+        return base
+    return f"{base}; {damage}" if base else damage
 
 
-#: The zones, in the order the model reads them: what it may change, what it
-#: may only read, then what it has only part of. One definition, because a
+#: The zones, in the order the model reads them: what the task centres on,
+#: what surrounds it, then what it has only part of. One definition, because a
 #: second surface with its own headings is a second prompt.
+#:
+#: These headings direct *attention*, and deliberately claim no authority over
+#: what may be changed. They used to: this zone was "Active Workspace
+#: (Editable)", the next was "Reference Context (Read-Only)", and `apply`
+#: enforced exactly that split. The claim was a prediction made before the
+#: question was asked — the caller had to guess the blast radius up front, and
+#: `triage`, whose whole job is to find out which files matter, emitted a
+#: selection that was by construction forbidden from being changed. The
+#: permission now lives on `apply --only`, where the proposed patch is in hand
+#: and the answer is known rather than guessed.
 ZONES: Tuple[Tuple[str, str, str], ...] = (
     (
-        EDIT,
-        "Active Workspace (Editable)",
-        "These files are the working set. Changes belong here.",
+        PIN,
+        "Working Set (Focus Here)",
+        "The task centres on these files. They are sent whole and are never "
+        "trimmed to fit a budget.",
     ),
     (
         REF,
-        "Reference Context (Read-Only)",
-        "Read these for dependencies and call sites. Do not propose changes to them.",
+        "Supporting Context",
+        "Dependencies and call sites, sent whole. Change one only if the task "
+        "genuinely needs it, and say why.",
     ),
     (
         SNIPPET,
@@ -226,10 +248,11 @@ def _zone(title: str, note: str, entries: Sequence[Entry], mask) -> List[str]:
         return []
     out = [f"## {title}", "", note, ""]
     for e in entries:
+        # Content first: a lossy decode is only known once the bytes have been
+        # read, and the caveat that says so is the whole point of reporting it.
+        body = mask(entry_content(e))
         caveat = entry_note(e)
-        out += _block(
-            e.rel, e.path, mask(entry_content(e)), f" ({caveat})" if caveat else ""
-        )
+        out += _block(e.rel, e.path, body, f" ({caveat})" if caveat else "")
     return out
 
 

@@ -173,7 +173,7 @@ money silently. Checked after ~12 cache creations across the runs above: `0`.
 ```sh
 export KOPIPASTA_NONINTERACTIVE=1
 kopipasta ask --mode triage --backend gemini:gemini-3.7-flash --json \
-  -e kopipasta/cache.py -e kopipasta/main.py \
+  --pin kopipasta/cache.py --pin kopipasta/main.py \
   -q "Concrete defects only, with file and line. ... If a category is clean, say none."
 ```
 
@@ -340,7 +340,7 @@ Verify: `uv run pytest -q` (421), `uv run ruff check kopipasta spike tests`,
 Three things that are load-bearing and not obvious from the spec:
 
 - **A clean worktree is the undo, and everything else only narrows the window.** `--dry-run`,
-  the editable zone and `--verify` all reduce the chance of needing it; the reason a 400-line
+  `--only` and `--verify` all reduce the chance of needing it; the reason a 400-line
   one-shot patch is safe to *try* is that `git diff` shows what it did and `git checkout .`
   puts it back. Hence the refusal by default, and hence `--dry-run` not requiring it — a run
   that cannot write cannot need an undo.
@@ -351,6 +351,27 @@ Three things that are load-bearing and not obvious from the spec:
   the caller had already modified is theirs. Reverting it to tidy up after a failed `--verify`
   would destroy uncommitted work — a far worse outcome than leaving the patch in place — so
   those are reported in `revert_declined` and left alone.
+
+### Since changed: the zone stopped being automatic
+
+What this section calls "the zone" was, at the time of writing, the **editable set**: `apply`
+read the session's latest turn and refused any patch touching a file that had not been selected
+with `-e`. That is gone. `apply` is unrestricted by default, and the restriction is now opt-in
+as `apply --only PATH` (repeatable, globs allowed, matched against the paths the patch itself
+declares). `--any-file`, which existed only to switch the automatic guess off, is removed
+alongside it.
+
+The reason is the same one that shows up twice in §10 below: the editable set was a prediction
+made before the question was asked. The caller had to guess the blast radius up front, and
+`triage` — whose entire job is to discover which files matter — emitted a selection
+(`--from-file`, role `ref`) that was by construction forbidden from being changed. The
+permission now lives where the proposed patch is in hand. `editable_set()` is `pinned_set()`
+and is reporting only; it feeds `outside_focus` in the envelope, which names existing files the
+patch changed that were not pinned. Worth knowing, not worth refusing over. Spec §11.
+
+The selection flag renamed with it: `-e/--edit` is now `-p/--pin` (the old spellings still work,
+hidden from `--help`), and the role no longer claims a write permission at all — it means sent
+in full, rendered first, and never demoted by the budget ladder.
 
 ### Not built, deliberately
 
@@ -382,8 +403,8 @@ these three, find the rest".
    mode that left no handle to it. The *reading* rule (an agent must not inherit a racy pointer)
    was sound and stays; write-always and follow-never are two rules, and they had been one.
 3. **A follow-up turn recorded `files: {}`.** With no selectors the turn inherits the whole
-   prefix, but the record said nothing was in play — so `apply`, which reads the latest turn to
-   enforce the Active Workspace, would either reject every patch or read "empty" as
+   prefix, but the record said nothing was in play — so `apply`, which at the time read the
+   latest turn to enforce the editable zone, would either reject every patch or read "empty" as
    "unrestricted". The record is now the prefix with this turn's selection laid over it.
 4. **Every argparse usage error exited 2**, which spec §8 reserves for "no usable backend — no
    key, no command". A mistyped flag told the caller its credentials were missing. Now 1, via

@@ -1,8 +1,16 @@
+import codecs
 from pathlib import Path
 
 import pytest
 
-from kopipasta.file import is_ignored, read_file_contents
+from kopipasta.file import (
+    decode_note,
+    decode_text,
+    is_binary,
+    is_ignored,
+    lossy_reads,
+    read_file_contents,
+)
 
 
 @pytest.fixture
@@ -118,3 +126,114 @@ def test_a_valid_utf8_file_is_returned_verbatim(tmp_path: Path):
     target.write_text("clean \u2014 text\n", encoding="utf-8")
 
     assert read_file_contents(str(target)) == "clean \u2014 text\n"
+
+
+# -- the encoding is sniffed, not assumed -----------------------------------
+#
+# PowerShell 5.1's `>` redirection writes UTF-16LE. `git diff > changes.txt`
+# therefore produces a perfectly readable file that is not UTF-8, and reading
+# it as UTF-8 with errors="replace" turned it into a wall of U+FFFD. A review
+# was run over that wall and came back confident: the model was never told it
+# was reading nothing, because the warning went to stderr and the payload said
+# nothing at all. Every one of these is that bug.
+
+
+@pytest.mark.parametrize(
+    "encoding, bom",
+    [
+        ("utf-16-le", codecs.BOM_UTF16_LE),
+        ("utf-16-be", codecs.BOM_UTF16_BE),
+        ("utf-32-le", codecs.BOM_UTF32_LE),
+        ("utf-32-be", codecs.BOM_UTF32_BE),
+        ("utf-8", codecs.BOM_UTF8),
+    ],
+)
+def test_a_bom_marked_file_is_decoded_by_its_bom(tmp_path: Path, encoding, bom):
+    original = "diff --git a/x.py b/x.py\n+added line\n"
+    target = tmp_path / "changes.txt"
+    target.write_bytes(bom + original.encode(encoding))
+
+    assert read_file_contents(str(target)) == original
+
+
+def test_the_utf32_bom_is_not_read_as_utf16(tmp_path: Path):
+    """BOM_UTF32_LE starts with BOM_UTF16_LE. Testing the short mark first
+    decodes a UTF-32 file as UTF-16 and yields plausible-looking garbage
+    rather than an error, which is the worst available outcome."""
+    original = "hello\n"
+    target = tmp_path / "wide.txt"
+    target.write_bytes(codecs.BOM_UTF32_LE + original.encode("utf-32-le"))
+
+    assert read_file_contents(str(target)) == original
+
+
+def test_a_bomless_utf16_file_is_sniffed_from_its_null_bytes(tmp_path: Path):
+    original = "line one\nline two\nline three\n"
+    target = tmp_path / "nobom.txt"
+    target.write_bytes(original.encode("utf-16-le"))
+
+    assert read_file_contents(str(target)) == original
+
+
+def test_sniffing_does_not_fire_on_ordinary_utf8(tmp_path: Path):
+    """The heuristic must never touch the common path."""
+    original = "def f():\n    return 1\n"
+    target = tmp_path / "code.py"
+    target.write_text(original, encoding="utf-8")
+
+    text, encoding, replacements = decode_text(target.read_bytes())
+
+    assert (text, encoding, replacements) == (original, "utf-8", 0)
+
+
+def test_crlf_is_normalised_the_way_text_mode_normalised_it(tmp_path: Path):
+    """These reads were text-mode until the encoding fix made them binary.
+    Losing universal newlines put CRLF in the payload and in the memory
+    prologue, so one file rendered to different bytes on different platforms."""
+    target = tmp_path / "crlf.txt"
+    target.write_bytes(b"one\r\ntwo\rthree\n")
+
+    assert read_file_contents(str(target)) == "one\ntwo\nthree\n"
+
+
+def test_a_utf16_file_is_not_mistaken_for_a_binary(tmp_path: Path):
+    """UTF-16 text is more than half NUL bytes, so the null-byte test called it
+    binary and the file vanished from the selection without a word."""
+    target = tmp_path / "notes.rst"
+    target.write_bytes(codecs.BOM_UTF16_LE + "hello\n".encode("utf-16-le"))
+
+    assert is_binary(str(target)) is False
+
+
+def test_a_real_binary_is_still_binary(tmp_path: Path):
+    target = tmp_path / "blob.rst"
+    target.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00")
+
+    assert is_binary(str(target)) is True
+
+
+def test_a_lossy_decode_is_reported_against_the_file(tmp_path: Path):
+    """The caveat has to be reachable by the renderer, because a warning on
+    stderr never reaches the model doing the reasoning."""
+    target = tmp_path / "prose.md"
+    target.write_bytes(b"x \x97 y\n")
+
+    read_file_contents(str(target))
+
+    note = decode_note(str(target))
+    assert note and "unreadable" in note
+    assert str(target.resolve()) in {str(Path(p)) for p in lossy_reads()}
+
+
+def test_a_clean_reread_clears_an_earlier_lossy_note(tmp_path: Path):
+    """The note is per-file state. A file repaired between two runs in one
+    process must not keep carrying a caveat it no longer earns."""
+    target = tmp_path / "prose.md"
+    target.write_bytes(b"x \x97 y\n")
+    read_file_contents(str(target))
+    assert decode_note(str(target))
+
+    target.write_text("x - y\n", encoding="utf-8")
+    read_file_contents(str(target))
+
+    assert decode_note(str(target)) is None

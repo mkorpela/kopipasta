@@ -96,25 +96,36 @@ def run_json(capsys, *argv, expect=EXIT_OK, backend="none"):
 
 
 def test_roles_are_rendered_in_their_own_zones(project, capsys):
-    run("-e", "src/calc.py", "-r", "src/main.py", "-q", "why")
+    run("--pin", "src/calc.py", "-r", "src/main.py", "-q", "why")
     out = capsys.readouterr().out
-    assert "## Active Workspace (Editable)" in out
-    assert "## Reference Context (Read-Only)" in out
-    assert out.index("Active Workspace") < out.index("src/calc.py")
-    assert out.index("Reference Context") < out.index("src/main.py")
+    assert "## Working Set (Focus Here)" in out
+    assert "## Supporting Context" in out
+    assert out.index("Working Set") < out.index("src/calc.py")
+    assert out.index("Supporting Context") < out.index("src/main.py")
+
+
+def test_the_old_edit_flag_still_selects_the_pin_role(project, capsys):
+    """`-e/--edit` was the flag for years and lives in scripts and in muscle
+    memory. The role it named is now `--pin`, but breaking the old spelling
+    would fail every recorded invocation with a bare "unrecognized argument"
+    — so it stays as a hidden alias writing to the same dest."""
+    data = run_json(capsys, "-e", "src/calc.py", "-q", "x")
+    long_form = run_json(capsys, "--edit", "src/calc.py", "-q", "x")
+    assert data["sent"]["pin"] == long_form["sent"]["pin"] == 1
+    assert "edit" not in data["sent"]
 
 
 def test_the_most_detailed_role_wins_whatever_the_flag_order(project, capsys):
     """Documented as order-independent, so it has to be resolved by precedence."""
-    first = run_json(capsys, "-m", "src/*.py", "-e", "src/calc.py", "-q", "x")
-    second = run_json(capsys, "-e", "src/calc.py", "-m", "src/*.py", "-q", "x")
-    assert first["sent"]["edit"] == second["sent"]["edit"] == 1
+    first = run_json(capsys, "-m", "src/*.py", "--pin", "src/calc.py", "-q", "x")
+    second = run_json(capsys, "--pin", "src/calc.py", "-m", "src/*.py", "-q", "x")
+    assert first["sent"]["pin"] == second["sent"]["pin"] == 1
     assert first["sent"]["map"] == second["sent"]["map"] == 1
 
 
-def test_exclude_is_applied_last_and_beats_edit(project, capsys):
-    data = run_json(capsys, "-e", "src/*.py", "-x", "src/main.py", "-q", "x")
-    assert data["sent"]["edit"] == 1
+def test_exclude_is_applied_last_and_beats_pin(project, capsys):
+    data = run_json(capsys, "--pin", "src/*.py", "-x", "src/main.py", "-q", "x")
+    assert data["sent"]["pin"] == 1
 
 
 def test_a_glob_that_matches_nothing_is_reported_but_not_fatal(project, capsys):
@@ -249,9 +260,7 @@ def test_every_selected_file_appears_under_a_zone_heading(project, capsys):
     assert blocks == {"src/calc.py", "src/main.py", "docs/spec.md", "pyproject.toml"}
     # And the counts add up to what is in the payload, so `sent` can be trusted
     # without opening the request.
-    assert sum(data["sent"][r] for r in ("edit", "ref", "map", "snippet")) == len(
-        blocks
-    )
+    assert sum(data["sent"][r] for r in ("pin", "ref", "map", "snippet")) == len(blocks)
 
 
 def test_the_state_directory_can_never_join_an_all_selection(project, capsys):
@@ -285,7 +294,7 @@ def test_over_budget_files_walk_down_the_ladder_instead_of_vanishing(project, ca
     )
     demoted = {d["path"]: d for d in data["demoted"]}
     assert "src/big.py" in demoted
-    # -e is never demoted: that is the contract of "editable".
+    # --pin is never demoted: that is the contract of the working set.
     assert "src/calc.py" not in demoted
     payload = (project / data["request"]).read_text(encoding="utf-8")
     assert '"big.py"' in payload  # still named in the structure tree, not gone
@@ -456,7 +465,7 @@ def test_strict_budget_refuses_on_a_counted_number_not_a_guess(
     lowest measured for that reason.
     """
     real_build = askmod.build
-    counted = {}
+    counted: dict[str, object] = {}
 
     def fake_build(cfg, **kw):
         backend = real_build(cfg, **kw)
@@ -571,13 +580,13 @@ def test_a_changed_file_is_resent_and_marked_as_superseding(project, capsys, can
 
 def test_a_role_change_defeats_dedup(project, capsys, canned):
     """Same bytes, different role. Deduping on the hash alone would answer
-    `-e file` with the 50-line snippet turn 1 sent, and report it as sent."""
+    `--pin file` with the 50-line snippet turn 1 sent, and report it as sent."""
     run_json(capsys, "-s", "src/main.py", "--session", "s", "-q", "one", backend=canned)
     second = run_json(
-        capsys, "-e", "src/main.py", "--session", "s", "-q", "two", backend=canned
+        capsys, "--pin", "src/main.py", "--session", "s", "-q", "two", backend=canned
     )
     assert second["sent"]["deduped"] == 0
-    assert "now edit" in (project / second["request"]).read_text(encoding="utf-8")
+    assert "now pin" in (project / second["request"]).read_text(encoding="utf-8")
 
 
 def test_dedup_only_trusts_the_prefix_not_earlier_suffixes(project, capsys, canned):
@@ -682,15 +691,15 @@ def test_the_current_pointer_is_written_even_under_json(project, capsys):
 
 
 def test_a_follow_up_turn_records_the_context_it_inherited(project, capsys, canned):
-    """`apply` reads the latest turn to learn the editable set (spec §11).
+    """`apply` reads the latest turn to learn the working set (spec §11).
 
     A follow-up turn with no selectors inherits the whole prefix, but recorded
-    `files: {}` — which tells `apply` that nothing was editable, so it either
-    rejects every patch or treats "empty" as "unrestricted" and allows any.
+    `files: {}` — which tells `apply` that nothing was in focus, so its
+    `outside_focus` report describes a context the turn never had.
     """
     run_json(
         capsys,
-        "-e",
+        "--pin",
         "src/calc.py",
         "-r",
         "src/main.py",
@@ -705,7 +714,7 @@ def test_a_follow_up_turn_records_the_context_it_inherited(project, capsys, cann
     s_dir = Path(sessionmod.session_dir(str(project), "s"))
     record = json.loads((s_dir / "selection.json").read_text(encoding="utf-8"))
     assert record["2"]["files"], "turn 2 recorded no files at all"
-    assert record["2"]["files"]["src/calc.py"]["role"] == "edit"
+    assert record["2"]["files"]["src/calc.py"]["role"] == "pin"
     assert record["2"]["files"]["src/main.py"]["role"] == "ref"
 
 
@@ -713,12 +722,14 @@ def test_a_follow_up_turn_records_the_role_it_changed(project, capsys, canned):
     """This turn's role wins over the inherited one, or the record describes
     a context that no longer exists."""
     run_json(capsys, "-r", "src/calc.py", "--session", "s", "-q", "one", backend=canned)
-    run_json(capsys, "-e", "src/calc.py", "--session", "s", "-q", "two", backend=canned)
+    run_json(
+        capsys, "--pin", "src/calc.py", "--session", "s", "-q", "two", backend=canned
+    )
 
     s_dir = Path(sessionmod.session_dir(str(project), "s"))
     record = json.loads((s_dir / "selection.json").read_text(encoding="utf-8"))
     assert record["1"]["files"]["src/calc.py"]["role"] == "ref"
-    assert record["2"]["files"]["src/calc.py"]["role"] == "edit"
+    assert record["2"]["files"]["src/calc.py"]["role"] == "pin"
 
 
 def test_a_second_ask_does_not_silently_continue_the_first(project, capsys, canned):
@@ -1402,7 +1413,7 @@ def test_a_failure_still_reports_what_was_sent(project, capsys):
     )
     data = json.loads(capsys.readouterr().out)
     assert (project / data["request"]).exists()
-    assert data["sent"]["edit"] == 1
+    assert data["sent"]["pin"] == 1
 
 
 def test_prose_modes_return_prose(project, capsys):
@@ -1497,7 +1508,7 @@ def test_changed_selects_the_working_tree(project, capsys):
     data = run_json(capsys, "--changed", "-q", "x")
     # Untracked files count: a file you just created is the file you are
     # working on, and leaving it out answers from a stale tree.
-    assert data["sent"]["edit"] == 2
+    assert data["sent"]["pin"] == 2
 
 
 # -- a payload with nothing in it, spec §5 ----------------------------------
@@ -1567,7 +1578,7 @@ def test_all_sends_whole_files_not_skeletons(project, capsys):
     assert data["sent"]["map"] == 0
     payload = (project / data["request"]).read_text(encoding="utf-8")
     assert "return a + b" in payload  # the body, not just the signature
-    assert "## Reference Context (Read-Only)" in payload
+    assert "## Supporting Context" in payload
 
 
 def test_all_reads_a_language_it_cannot_skeleton(rust, capsys):
@@ -1582,13 +1593,13 @@ def test_all_reads_a_language_it_cannot_skeleton(rust, capsys):
 
 
 def test_an_explicit_role_still_beats_all(project, capsys):
-    """`--all -e src/calc.py` is the shape the whole tool is for: the repo as
-    read-only background, one file as the workspace."""
-    data = run_json(capsys, "--all", "-e", "src/calc.py", "-q", "x")
-    assert data["sent"]["edit"] == 1
+    """`--all --pin src/calc.py` is the shape the whole tool is for: the repo
+    as background, one file as the working set."""
+    data = run_json(capsys, "--all", "--pin", "src/calc.py", "-q", "x")
+    assert data["sent"]["pin"] == 1
     assert data["sent"]["ref"] == 3
     payload = (project / data["request"]).read_text(encoding="utf-8")
-    assert payload.index("Active Workspace") < payload.index("src/calc.py")
+    assert payload.index("Working Set") < payload.index("src/calc.py")
 
 
 def test_the_ladder_demotes_what_all_dragged_in_before_what_you_named(project, capsys):

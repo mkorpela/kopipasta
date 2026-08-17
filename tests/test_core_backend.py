@@ -43,6 +43,7 @@ SUFFIX = "SUFFIX-question"
 
 class State:
     def __init__(self):
+        self.url = ""
         self.seen = {}
         self.deleted = []
         self.created = []
@@ -575,6 +576,7 @@ def test_gemini_truncation_names_both_numbers(server):
     server.truncate_next = True
     with pytest.raises(ResponseTruncated) as exc:
         gem(server).complete(PREFIX, SUFFIX, max_tokens=8192)
+    assert exc.value.detail is not None
     assert "8,192" in exc.value.detail
     assert exc.value.to_json()["finish_reason"] == "MAX_TOKENS"
 

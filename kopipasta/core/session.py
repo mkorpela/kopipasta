@@ -35,6 +35,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from kopipasta.core.context import Turn
 from kopipasta.core.errors import UsageError
+from kopipasta.core.resolver import LEGACY_ROLES
 from kopipasta.core.state import SRC_DEFAULT, StateRoot, resolve_state_root
 from kopipasta.git_utils import add_to_gitignore
 from kopipasta.output import narrate
@@ -618,14 +619,24 @@ def read_turns(
     return out
 
 
+def _normalize_role(role: object) -> str:
+    if isinstance(role, str):
+        return LEGACY_ROLES.get(role, role)
+    return ""
+
+
 def read_selection(
     root: str, session_id: str, state_root: Optional[StateRoot] = None
 ) -> Tuple[int, Dict[str, Dict[str, str]]]:
     """(turn, files) for the latest recorded turn. `(0, {})` when there is none.
 
     The *latest* turn, because that is the context the next thing to touch this
-    session inherits — the same record `apply` reads to enforce the editable
-    zone.
+    session inherits — the same record `apply` reads to report on the working
+    set.
+
+    Roles are normalised on the way out. A session written before `edit` became
+    `pin` is still on disk and still resumable, and a stale role string would
+    otherwise read as an unknown role rather than the one it plainly means.
     """
     st = _resolve_state(root, state_root)
     data = _read_json(
@@ -636,7 +647,11 @@ def read_selection(
     latest = max(data, key=lambda k: int(k) if str(k).isdigit() else -1)
     files = (data.get(latest) or {}).get("files") or {}
     turn = int(latest) if str(latest).isdigit() else 0
-    return turn, {k: v for k, v in files.items() if isinstance(v, dict)}
+    return turn, {
+        k: {**v, "role": _normalize_role(v.get("role"))}
+        for k, v in files.items()
+        if isinstance(v, dict)
+    }
 
 
 def read_lease(

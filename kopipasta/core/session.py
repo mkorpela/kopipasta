@@ -140,7 +140,8 @@ class Session:
         self.id = session_id
         self.dir = os.path.join(root, SESSIONS_DIR, session_id)
         self.created = created
-        self._dir_ready = os.path.isdir(self.dir)
+        self._dir_ready = False
+        self._gitignore_checked = False
         self.turn = self._next_turn()
 
     # -- lifecycle -----------------------------------------------------------
@@ -182,25 +183,43 @@ class Session:
         directory = os.path.join(root, SESSIONS_DIR, session_id)
         return cls(root, session_id, created=not os.path.isdir(directory))
 
-    def _ensure_dir(self) -> None:
-        if self._dir_ready:
+    def _in_worktree(self) -> bool:
+        """True when the state directory lives inside a git worktree.
+
+        A git repo has a .git directory or a .git file (worktrees and
+        submodules). Writing a .gitignore into a directory with no git would
+        litter a non-repo checkout with an artifact nothing will ever read.
+        """
+        return os.path.exists(os.path.join(self.root, ".git"))
+
+    def _ensure_gitignore(self) -> None:
+        """Keep .kopipasta/ out of version control, once per session instance.
+
+        Announced when it happens, because on a first run in a fresh repo it
+        is the *only* change the run makes to the tree, and a tracked file
+        edited in silence is one `git diff` away from looking like a bug in
+        something else.
+
+        Checked independently of directory creation: resuming a session must
+        still repair the rule if it was lost, but non-git checkouts must never
+        gain a stray .gitignore.
+        """
+        if self._gitignore_checked:
             return
-        os.makedirs(self.dir, exist_ok=True)
-        # Session artifacts are records, not source. Committing them was a real
-        # bug in the spike, so the ignore entry is written before anything else
-        # lands in the directory — via the existing helper, which handles the
-        # missing-trailing-newline case that the spike got wrong.
-        #
-        # Announced when it happens, because on a first run in a fresh repo it
-        # is the *only* change the run makes to the tree, and a tracked file
-        # edited in silence is one `git diff` away from looking like a bug in
-        # something else. Said once: the helper only returns True on the write.
+        self._gitignore_checked = True
+        if not self._in_worktree():
+            return
         if add_to_gitignore(self.root, f"{STATE_DIR}/"):
             narrate(
                 f"kopipasta: added '{STATE_DIR}/' to .gitignore — session "
                 "records are bookkeeping, not source."
             )
-        self._dir_ready = True
+
+    def _ensure_dir(self) -> None:
+        if not self._dir_ready:
+            os.makedirs(self.dir, exist_ok=True)
+            self._dir_ready = True
+        self._ensure_gitignore()
 
     @staticmethod
     def read_current(root: str) -> Optional[str]:

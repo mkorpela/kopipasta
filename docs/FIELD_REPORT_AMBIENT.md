@@ -340,15 +340,15 @@ one-shot. **The verify command is the quality ceiling; the prompt is the quality
 
 ---
 
-## 8. Round 3 — dogfooding kopipasta on kopipasta (2026-08-17, same machine)
+## 8. Round 3 â€” dogfooding kopipasta on kopipasta (2026-08-17, same machine)
 
 Different in kind from rounds 1 and 2. This was not a task in another repo; it was `kopipasta ask`
 and `kopipasta apply` used to change *kopipasta*, against an editable install, so every patch that
 landed was running by the next invocation. Everything below was reproduced by running it.
 
-### 8.1 §7.1 was misdiagnosed, and here is the actual cause
+### 8.1 Â§7.1 was misdiagnosed, and here is the actual cause
 
-§7.1 opens "Not adding `.kopipasta/` to `.gitignore` is the right default". **The tool never
+Â§7.1 opens "Not adding `.kopipasta/` to `.gitignore` is the right default". **The tool never
 stopped adding it.** `Session._ensure_dir` still calls `add_to_gitignore` (session.py:198), and
 `tests/test_ask.py:1049` pins that it does. What 2.6 fixed was the *announcement*, not the edit.
 A fresh repo, one `ask`, and `git status` shows ` M .gitignore`.
@@ -367,22 +367,22 @@ directory already exists, so:
 ```
 remove '.kopipasta/' from .gitignore, then
   ask (new session)         -> re-added      OK
-  ask --session <existing>  -> NOT re-added  <-- §7.1 happened here
+  ask --session <existing>  -> NOT re-added  <-- Â§7.1 happened here
 ```
 
 Delete the line once, continue a session, and the transcripts are exposed to every repo-wide tool
-from then on. That is what §7.1 observed, and it is a bug rather than a design decision.
+from then on. That is what Â§7.1 observed, and it is a bug rather than a design decision.
 
 `.git/info/exclude` is not the fix: it hides the directory from `git status` and prettier still
-walks it (measured). And `git clean -xfd` reports `Would remove .kopipasta/` — a routine hygiene
+walks it (measured). And `git clean -xfd` reports `Would remove .kopipasta/` â€” a routine hygiene
 command destroys the transcripts *and* `cache.json`, which is a lease on a cache billed per
 token-hour.
 
 ### 8.2 `--revert-on-fail` cannot restore an untracked file, and left the tree unrunnable
 
 `revert()` has two mechanisms: `os.remove` for files this run *created*, and `git checkout --` for
-everything else. A file that is untracked **and** pre-existing falls between them — git cannot
-check out a path it does not track — so it keeps its new contents and is recorded as `GIT_REFUSED`.
+everything else. A file that is untracked **and** pre-existing falls between them â€” git cannot
+check out a path it does not track â€” so it keeps its new contents and is recorded as `GIT_REFUSED`.
 
 That is not a corner case; it is every second turn of a session that created a file on an earlier
 turn. Observed: turn 3 rewrote the untracked `kopipasta/core/state.py` to import a symbol whose
@@ -394,7 +394,7 @@ ImportError: cannot import name 'load_toml' from 'kopipasta.core.config'
 ```
 
 The tree before the run worked. The tree after the patch worked badly. The tree after the *undo*
-did not import at all — a state that had never existed. An undo that can produce a state the
+did not import at all â€” a state that had never existed. An undo that can produce a state the
 caller was never in is worse than no undo. Second-order: outside a git repository every modified
 file takes the `git checkout` branch, so `--revert-on-fail` restores nothing it modified.
 
@@ -403,7 +403,7 @@ The fix is to snapshot pre-run bytes rather than delegate to git. That also reti
 HEAD and would have destroyed uncommitted work, whereas a snapshot taken after the caller's edits
 and before ours restores that work instead of discarding it.
 
-### 8.3 A complete, correct patch was discarded in silence — now fixed
+### 8.3 A complete, correct patch was discarded in silence â€” now fixed
 
 A `--mode patch` response declared two files. `kopipasta/core/apply.py` carried four well-formed
 SEARCH/REPLACE hunks. The envelope said:
@@ -415,7 +415,7 @@ SEARCH/REPLACE hunks. The envelope said:
 and nothing else. Isolated to the byte: the same content standalone gives `{"error":
 "no_patches"}`; with one opening fence added it parses. `modes.py:343-345` even warns the model
 that "an unfenced block is skipped in silence, however correct it is." The skipping is defensible.
-The silence is not — by this repo's own §2.2 standard, reporting one patch when the model sent two
+The silence is not â€” by this repo's own Â§2.2 standard, reporting one patch when the model sent two
 is a report of what was intended rather than what occurred.
 
 Measured causes are more varied than the fence rule suggests:
@@ -446,15 +446,15 @@ Would create b.py
 ```
 
 Confirmed minimal case: a `# FILE:` header inside a string literal inside a fenced block becomes a
-patch. The editable-set guard cannot catch it — `apply.py:592-600` deliberately adds every
+patch. The editable-set guard cannot catch it â€” `apply.py:592-600` deliberately adds every
 non-existent path to the zone, because refusing creations would make "add a new module"
 impossible. So a hallucinated or misparsed creation is waved through by design, and only
 `--dry-run` stands between it and the worktree. `--dry-run` earned its keep twice in this round.
 
 ### 8.5 Session state should not live in the worktree
 
-`.git/kopipasta/` removes 8.1 entirely — there is nothing to ignore, so no tracked file is ever
-edited — while staying reachable from the repo root by a relative path, which `.git`-relative
+`.git/kopipasta/` removes 8.1 entirely â€” there is nothing to ignore, so no tracked file is ever
+edited â€” while staying reachable from the repo root by a relative path, which `.git`-relative
 paths are: `git rev-parse --git-path kopipasta` returns `.git/kopipasta`. That matters because
 many agent sandboxes permit writes only inside the workspace, so a `$HOME` state directory is a
 write they would deny.
@@ -480,14 +480,14 @@ becomes its own project, so `nogit/.kopipasta` and `nogit/sub/.kopipasta` both e
 ### 8.6 What dogfooding was good and bad at
 
 Good: a focused single-concern patch over 2-3 files landed first try, repeatedly, including tests
-with real teeth — sabotaging `.exists()` to `.is_dir()` turned 6 of them red. Prefix caching made
+with real teeth â€” sabotaging `.exists()` to `.is_dir()` turned 6 of them red. Prefix caching made
 correction turns cost 10-40s. Feeding a verbatim pytest traceback back in worked with no editing.
 
 Bad, and consistently so: **large editable sets.** Five files and 62k tokens timed out at 900s
 with nothing to show. Three named editable files produced two, twice; on one of those it emitted
 the tests and not the implementation, which is the worse half to hold alone. Whole-file rewrites
-of a 726-line module matched 2 of 4 hunks. And it dropped a specified test case in silence — the
-one case with a real bug behind it — which only reading the diff caught.
+of a 726-line module matched 2 of 4 hunks. And it dropped a specified test case in silence â€” the
+one case with a real bug behind it â€” which only reading the diff caught.
 
 The rule this suggests, and it is the round-3 counterpart to "the verify command is the quality
 ceiling": **the editable set is the reliability budget.** Two or three files is a patch that

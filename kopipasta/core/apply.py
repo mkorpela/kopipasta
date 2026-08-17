@@ -10,7 +10,8 @@ The safety model is one idea: **a clean worktree is the undo**. Everything
 else — the editable zone, the hunk accounting, `--verify`, `--revert-on-fail`
 — narrows the window in which that undo is needed, but the reason a 400-line
 one-shot patch is safe to try at all is that `git diff` shows exactly what it
-did and `git checkout .` puts it back.
+did, `--revert-on-fail` restores pre-patch snapshots, and `git checkout .`
+puts anything else back.
 
 Two things this had to be built on before it could be honest, both found by
 dogfooding `ask` at this repo:
@@ -31,7 +32,7 @@ import os
 import shutil
 import subprocess
 import sys
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from kopipasta.cache import find_project_root
 from kopipasta.core.errors import (
@@ -66,10 +67,11 @@ from kopipasta.proc import TEXT
 class DirtyWorktree(KopipastaError):
     """A file this patch would write already has uncommitted changes.
 
-    The undo is `git checkout` of the patched files, so applying over
-    uncommitted work in one of them puts that work one failed `--verify` away
-    from being destroyed. Only the files the patch targets can be harmed that
-    way; the rest of the worktree is none of this guard's business.
+    The caller's manual undo is `git checkout` of the patched files, so
+    applying over uncommitted work in one of them mingles changes and makes
+    clean inspection impossible. Only the files the patch targets can be
+    harmed that way; the rest of the worktree is none of this guard's
+    business.
 
     Not retryable: nothing about running it again changes the answer. The
     caller has to commit, stash, or accept the risk with --dirty-ok.
@@ -352,52 +354,77 @@ def run_format(
     return run_command(root, command, timeout, "--format-cmd")
 
 
-#: Why a file this run wrote was left as it is. The distinction matters to
-#: the caller: the first is a deliberate refusal protecting their work, the
-#: other two are the undo failing to do its job.
-WAS_ALREADY_DIRTY = "had uncommitted changes before this run"
-GIT_REFUSED = "git could not restore it"
+#: Why a file this run wrote was left as it is.
 COULD_NOT_REMOVE = "the file it created could not be removed"
+RESTORE_FAILED = "it could not be restored"
+
+
+def take_snapshot(root: str, targets: Iterable[str]) -> Dict[str, Optional[bytes]]:
+    """Capture pre-patch file bytes for --revert-on-fail.
+
+    Keys are normalised paths. Missing files are recorded as None so revert
+    knows to remove them. Files that cannot be read are omitted so revert
+    declines them with RESTORE_FAILED rather than crashing before the patch
+    is attempted.
+    """
+    snapshot: Dict[str, Optional[bytes]] = {}
+    for target in targets:
+        norm = normalise_path(target)
+        full = os.path.join(root, norm)
+        if not os.path.lexists(full):
+            snapshot[norm] = None
+        else:
+            try:
+                with open(full, "rb") as fh:
+                    snapshot[norm] = fh.read()
+            except OSError:
+                pass
+    return snapshot
 
 
 def revert(
-    root: str, result, was_dirty: Optional[Set[str]]
+    root: str,
+    result,
+    snapshot: Optional[Dict[str, Optional[bytes]]],
 ) -> Tuple[List[str], List[Tuple[str, str]]]:
-    """Undo what we just did. Returns (reverted, [(path, why_not), ...]).
+    """Undo what we just did from the pre-patch byte snapshot.
 
-    Only files this run touched, and only those that were clean beforehand.
-    A file the caller had already modified is theirs, not ours: reverting it
-    under --dirty-ok would destroy uncommitted work to tidy up after a failed
-    test run, which is a far worse outcome than leaving the patch in place.
+    Returns (reverted, [(path, why_not), ...]).
 
-    Each decline carries its reason, because the caller's next move depends on
-    which one it was and a bare list of paths cannot tell them apart.
+    Only files this run touched. Missing pre-patch files are removed;
+    modified or deleted files have their original bytes restored.
     """
     reverted: List[str] = []
     declined: List[Tuple[str, str]] = []
-    # Both sides normalised: git says `app.py`, the model may have written
-    # `./app.py`, and a raw comparison answers "was this already dirty?" with
-    # a confident no — then reverts the caller's uncommitted work.
-    already_dirty = {normalise_path(p) for p in (was_dirty or set())}
+    snap = snapshot or {}
     for outcome in result.outcomes:
         if not outcome.wrote:
             continue
         path = outcome.path
-        if normalise_path(path) in already_dirty:
-            declined.append((path, WAS_ALREADY_DIRTY))
+        norm = normalise_path(path)
+        if norm not in snap:
+            declined.append((path, RESTORE_FAILED))
             continue
-        if outcome.action == "created":
+        original = snap[norm]
+        target_path = os.path.join(root, path)
+        if original is None:
             try:
-                os.remove(os.path.join(root, path))
+                os.remove(target_path)
+                reverted.append(path)
+            except FileNotFoundError:
                 reverted.append(path)
             except OSError:
                 declined.append((path, COULD_NOT_REMOVE))
             continue
-        code, _, _ = _git(root, "checkout", "--", path)
-        if code == 0:
+        try:
+            parent = os.path.dirname(target_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(target_path, "wb") as fh:
+                fh.write(original)
             reverted.append(path)
-        else:
-            declined.append((path, GIT_REFUSED))
+        except OSError:
+            declined.append((path, RESTORE_FAILED))
     return reverted, declined
 
 
@@ -424,7 +451,7 @@ def revert_hint(
             + ", ".join(reverted[:8])
             + "."
         )
-    for reason in (WAS_ALREADY_DIRTY, GIT_REFUSED, COULD_NOT_REMOVE):
+    for reason in (COULD_NOT_REMOVE, RESTORE_FAILED):
         paths = [p for p, why in declined if why == reason]
         if not paths:
             continue
@@ -571,15 +598,14 @@ def _apply(args: argparse.Namespace) -> int:
             "so this reports the fact, not a diagnosis."
         )
 
-    # 1. The undo, before anything is touched.
+    # 1. The worktree guard, before anything is touched.
     #
-    #    Scoped to the files this patch will write, because that is the whole
-    #    extent of the undo: reverting is `git checkout` of those paths, and a
-    #    file the patch never touches cannot be harmed by it. Refusing over
-    #    unrelated dirt cost a run and protected nothing — most visibly on the
-    #    documented two-step, where `ask` appends `.kopipasta/` to .gitignore
-    #    on first use and `apply` then refused because the worktree was dirty.
-    #    The tool dirtied the tree and blocked itself, on a clean first run.
+    #    Scoped to the files this patch will write, because a file the patch
+    #    never touches cannot be harmed by it. Refusing over unrelated dirt
+    #    cost a run and protected nothing — most visibly on the documented
+    #    two-step, where `ask` appends `.kopipasta/` to .gitignore on first
+    #    use and `apply` then refused because the worktree was dirty. The tool
+    #    dirtied the tree and blocked itself, on a clean first run.
     was_dirty = dirty_files(root)
     targets = {normalise_path(p["file_path"]) for p in patches}
     blocking = sorted(p for p in (was_dirty or ()) if normalise_path(p) in targets)
@@ -591,13 +617,14 @@ def _apply(args: argparse.Namespace) -> int:
     elif blocking and not (args.dirty_ok or args.dry_run):
         raise DirtyWorktree(blocking)
     if bystanders:
-        # Not blocking is not the same as not mentioning. `revert` still
-        # declines to touch any of these, so uncommitted work stays safe
-        # whichever way the run ends.
         narrate(
             f"kopipasta: {len(bystanders)} uncommitted change(s) not touched by this "
             "patch, and left alone: " + ", ".join(bystanders[:8])
         )
+
+    snapshot: Dict[str, Optional[bytes]] = {}
+    if not args.dry_run:
+        snapshot = take_snapshot(root, targets)
 
     # 2. The editable zone, when we know it.
     zone: Optional[Set[str]] = None
@@ -695,12 +722,9 @@ def _apply(args: argparse.Namespace) -> int:
             declined: List[Tuple[str, str]] = []
             reverted: List[str] = []
             if args.revert_on_fail:
-                reverted, declined = revert(root, result, was_dirty)
+                reverted, declined = revert(root, result, snapshot)
                 payload["reverted"] = reverted
                 payload["revert_declined"] = [p for p, _ in declined]
-                # The reason, not just the path: "I refused to touch your
-                # uncommitted work" and "git would not put it back" call for
-                # opposite next moves.
                 payload["revert_declined_why"] = {p: why for p, why in declined}
             raise VerifyFailed(
                 f"--verify failed (exit {code}).",

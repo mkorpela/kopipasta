@@ -441,7 +441,26 @@ _PATCH_BODY_MARKERS = re.compile(
 def parse_llm_output(content: str, console: Optional[Console] = None) -> List[Patch]:
     parser = PatchParser(content, console)
     patches = parser.parse()
-    return patches or _parse_unfenced(content, console)
+    if patches:
+        # A column-0 `# FILE:` is an explicit directive that outranks header
+        # inference. When fenced parsing finds patches (e.g. from code blocks
+        # nested inside test fixture strings) but completely misses every
+        # declared target file, the inferred patches are shadowing the actual
+        # patch. Prefer the unfenced parser if it recovers the intended edits.
+        declared = declared_file_paths(content)
+        if declared:
+            parsed_paths = {normalise_path(p["file_path"]) for p in patches}
+            if parsed_paths.isdisjoint(declared):
+                unfenced = _parse_unfenced(content, console)
+                if unfenced:
+                    if console:
+                        console.print(
+                            "[dim yellow]⚠ Inferred fenced patches contradicted "
+                            "declared files; preferring unfenced patch.[/dim yellow]"
+                        )
+                    return unfenced
+        return patches
+    return _parse_unfenced(content, console)
 
 
 def _parse_unfenced(content: str, console: Optional[Console] = None) -> List[Patch]:
@@ -675,6 +694,22 @@ def _reindent_lines(lines: List[str], old_indent: str, new_indent: str) -> List[
             # Can't strip old_indent; leave as-is
             result.append(line)
     return result
+
+
+def _read_file(path: str) -> str:
+    """Read a text file, preserving undecodable bytes via surrogateescape.
+
+    Paired with `_write_file` so non-UTF-8 bytes round-trip untouched through
+    unmodified regions of a patch without corruption or decode crashes.
+    """
+    with open(path, encoding="utf-8", errors="surrogateescape") as f:
+        return f.read()
+
+
+def _write_file(path: str, content: str) -> None:
+    """Write text back to disk, re-encoding surrogate bytes to their original values."""
+    with open(path, "w", encoding="utf-8", errors="surrogateescape") as f:
+        f.write(content)
 
 
 def _find_all_sublist_indices(
@@ -1018,8 +1053,7 @@ def _apply_diff_patch(
         final_content += "\n"
 
     if not dry_run:
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(final_content)
+        _write_file(file_path, final_content)
 
     verb = "Would patch" if dry_run else "Patched"
     shortfall = (
@@ -1200,6 +1234,9 @@ def apply_patches(
         original_content_log: Optional[str] = None
         if os.path.exists(file_path):
             try:
+                # Forensics/telemetry only: never written back to disk. Using
+                # errors="replace" here ensures logging (e.g. JSON serialization)
+                # cannot crash on lone surrogates from non-UTF-8 files.
                 with open(file_path, encoding="utf-8", errors="replace") as f:
                     original_content_log = f.read()
             except OSError:
@@ -1316,8 +1353,7 @@ def apply_patches(
                     parent_dir = os.path.dirname(file_path)
                     if parent_dir:
                         os.makedirs(parent_dir, exist_ok=True)
-                    with open(file_path, "w", encoding="utf-8") as f:
-                        f.write(full_content)
+                    _write_file(file_path, full_content)
                 result.record(
                     FileOutcome(path=file_path, status=APPLIED, action="created")
                 )
@@ -1329,8 +1365,7 @@ def apply_patches(
                 continue
 
             # File exists, so we apply a patch.
-            with open(file_path, encoding="utf-8") as f:
-                original_content = f.read()
+            original_content = _read_file(file_path)
 
             if patch_type == "diff" and isinstance(patch_content, list):
                 diff = _apply_diff_patch(
@@ -1439,8 +1474,7 @@ def apply_patches(
                         continue
 
                 if not dry_run:
-                    with open(file_path, "w", encoding="utf-8") as f:
-                        f.write(final_content)
+                    _write_file(file_path, final_content)
 
                 result.record(
                     FileOutcome(path=file_path, status=APPLIED, action="overwritten")

@@ -329,53 +329,6 @@ def test_revert_on_fail_removes_a_file_it_created(repo, capsys):
     assert not (repo / "brand_new.py").exists()
 
 
-@needs_git
-def test_revert_refuses_to_discard_work_it_did_not_do(repo, capsys):
-    """The dangerous case: --dirty-ok plus --revert-on-fail. Reverting a file
-    the caller had already modified would destroy uncommitted work to tidy up
-    after a failed test run — a worse outcome than leaving the patch."""
-    (repo / "app.py").write_text(ORIGINAL + "# precious\n")
-    data = run_json(
-        capsys,
-        write_patch(repo, CLEAN_PATCH),
-        "--dirty-ok",
-        "--verify",
-        "exit 1",
-        "--revert-on-fail",
-        expect=EXIT_VERIFY,
-    )
-    assert data["revert_declined"] == ["app.py"]
-    assert data["reverted"] == []
-    assert "# precious" in (repo / "app.py").read_text()
-
-
-@needs_git
-def test_revert_matches_paths_the_way_git_spells_them(repo, capsys):
-    """The same file, spelled two ways, is still the same file.
-
-    `git status --porcelain` says `app.py`; a model writes whatever it likes,
-    and `./app.py` is common. Comparing them raw made the "was it already
-    dirty?" check miss, so --dirty-ok with --revert-on-fail ran
-    `git checkout -- ./app.py` over uncommitted work. Found by dogfooding this
-    file at the oracle.
-    """
-    (repo / "app.py").write_text(ORIGINAL + "# precious\n")
-    dotted = CLEAN_PATCH.replace("### app.py", "### ./app.py")
-    data = run_json(
-        capsys,
-        write_patch(repo, dotted),
-        "--dirty-ok",
-        "--verify",
-        "exit 1",
-        "--revert-on-fail",
-        expect=EXIT_VERIFY,
-    )
-
-    assert data["reverted"] == [], "reverted a file the caller had modified"
-    assert data["revert_declined"] == ["./app.py"]
-    assert "# precious" in (repo / "app.py").read_text()
-
-
 # -- the verify reader must never lose the diagnostics ---------------------
 
 
@@ -606,38 +559,6 @@ def test_the_formatters_output_survives_a_unicode_console(repo, capsys):
 
 
 # -- the hint must describe what happened, not what was asked for ----------
-
-
-@needs_git
-def test_the_hint_does_not_claim_a_restoration_that_was_declined(repo, capsys):
-    """Field report 2.2.
-
-    `hint` was an unconditional string keyed off the *flag*, not off the
-    *outcome*. Declining is correct behaviour under --dirty-ok, but anyone
-    reading the console rather than parsing the JSON walked away believing the
-    tree had been restored when it had not — and took their next action
-    against a state they had mismodelled. A tool that reports a restoration it
-    did not perform is the one failure mode running it again cannot catch.
-    """
-    (repo / "app.py").write_text(ORIGINAL + "# precious\n")
-    data = run_json(
-        capsys,
-        write_patch(repo, CLEAN_PATCH),
-        "--dirty-ok",
-        "--verify",
-        "exit 1",
-        "--revert-on-fail",
-        expect=EXIT_VERIFY,
-    )
-    assert data["reverted"] == []
-    assert data["revert_declined"] == ["app.py"]
-    # The reason, not just the path: "I refused to touch your uncommitted
-    # work" and "git would not put it back" call for opposite next moves.
-    assert data["revert_declined_why"]["app.py"] == applymod.WAS_ALREADY_DIRTY
-    assert "have been restored" not in data["hint"]
-    assert "declined" in data["hint"]
-    assert "app.py" in data["hint"] or "1 file" in data["hint"]
-    assert "still applied" in data["hint"]
 
 
 @needs_git
@@ -925,3 +846,253 @@ def test_ask_then_apply_works_on_the_first_run_in_a_clean_repo(repo, capsys, tmp
     assert data["ok"] is True
     assert data["applied"] == ["app.py"]
     assert "return 100" in (repo / "app.py").read_text()
+
+
+@needs_git
+def test_revert_restores_uncommitted_work_to_the_callers_version(repo, capsys):
+    """The snapshot restores the caller's pre-patch bytes, not HEAD.
+
+    Under git checkout, reverting a dirty file would have blown away the
+    caller's uncommitted work to clean up after a failed verify. The snapshot
+    records the caller's uncommitted bytes and restores them exactly, so
+    --revert-on-fail puts the caller's version back instead of declining or
+    resetting to HEAD.
+    """
+    caller_version = ORIGINAL + "# uncommitted caller work\n"
+    (repo / "app.py").write_text(caller_version)
+    data = run_json(
+        capsys,
+        write_patch(repo, CLEAN_PATCH),
+        "--dirty-ok",
+        "--verify",
+        "exit 1",
+        "--revert-on-fail",
+        expect=EXIT_VERIFY,
+    )
+    assert data["reverted"] == ["app.py"]
+    assert data["revert_declined"] == []
+    assert (repo / "app.py").read_text() == caller_version
+
+
+@needs_git
+def test_revert_matches_dotted_paths_against_snapshot_keys(repo, capsys):
+    """A patch declaring `./app.py` must find the snapshot keyed `app.py`.
+
+    Paths from the model may carry leading `./` prefixes. Both sides are
+    normalised so the snapshot entry is resolved and the file is restored
+    rather than declined with RESTORE_FAILED.
+    """
+    dotted = CLEAN_PATCH.replace("### app.py", "### ./app.py")
+    data = run_json(
+        capsys,
+        write_patch(repo, dotted),
+        "--verify",
+        "exit 1",
+        "--revert-on-fail",
+        expect=EXIT_VERIFY,
+    )
+    assert data["reverted"] == ["./app.py"]
+    assert data["revert_declined"] == []
+    assert (repo / "app.py").read_text() == ORIGINAL
+
+
+@needs_git
+def test_revert_on_fail_restores_untracked_pre_existing_file(repo, capsys):
+    """The field failure that motivated byte-level snapshots.
+
+    An untracked pre-existing file cannot be restored by `git checkout -- <path>`
+    because git does not track it. Under git-based revert it was recorded as
+    GIT_REFUSED and left patched. The byte snapshot restores it cleanly.
+    """
+    untracked_content = "def helper():\n    return 'original untracked'\n"
+    (repo / "helper.py").write_text(untracked_content)
+
+    patch = write_patch(
+        repo,
+        """
+### helper.py
+
+```python
+<<<<
+def helper():
+    return 'original untracked'
+====
+def helper():
+    return 'modified untracked'
+>>>>
+```
+""",
+    )
+    data = run_json(
+        capsys,
+        patch,
+        "--dirty-ok",
+        "--verify",
+        "exit 1",
+        "--revert-on-fail",
+        expect=EXIT_VERIFY,
+    )
+    assert data["reverted"] == ["helper.py"]
+    assert data["revert_declined"] == []
+    assert (repo / "helper.py").read_text() == untracked_content
+
+
+def test_revert_on_fail_works_outside_git_repository(tmp_path, capsys, monkeypatch):
+    """Without a git repository, snapshot revert still restores touched files."""
+    work = tmp_path / "plain_dir"
+    work.mkdir()
+    (work / "app.py").write_text(ORIGINAL)
+    monkeypatch.chdir(work)
+    monkeypatch.setenv("KOPIPASTA_NONINTERACTIVE", "1")
+
+    patch_file = tmp_path / "patch.md"
+    patch_file.write_text(CLEAN_PATCH)
+
+    data = run_json(
+        capsys,
+        str(patch_file),
+        "--dirty-ok",
+        "--verify",
+        "exit 1",
+        "--revert-on-fail",
+        expect=EXIT_VERIFY,
+    )
+    assert data["reverted"] == ["app.py"]
+    assert data["revert_declined"] == []
+    assert (work / "app.py").read_text() == ORIGINAL
+
+
+@needs_git
+def test_revert_preserves_crlf_line_endings_byte_for_byte(repo, capsys):
+    """The snapshot is binary, so an undo cannot silently normalise newlines.
+
+    Worth pinning on its own: every file in a Windows checkout with
+    `core.autocrlf=true` is CRLF on disk, so a revert that wrote back LF would
+    show the entire file as modified in `git diff` after an undo that was
+    supposed to leave no trace. Reading and writing text with the default
+    newline handling would do exactly that; bytes are what prevent it.
+    """
+    raw_bytes = b"def a():\r\n    return 1\r\n\r\ndef b():\r\n    return 2\r\n"
+    (repo / "app.py").write_bytes(raw_bytes)
+
+    patch = write_patch(
+        repo,
+        """
+### app.py
+
+```python
+<<<<
+def b():
+    return 2
+====
+def b():
+    return 200
+>>>>
+```
+""",
+    )
+    data = run_json(
+        capsys,
+        patch,
+        "--dirty-ok",
+        "--verify",
+        "exit 1",
+        "--revert-on-fail",
+        expect=EXIT_VERIFY,
+    )
+    assert data["reverted"] == ["app.py"]
+    assert data["revert_declined"] == []
+    assert (repo / "app.py").read_bytes() == raw_bytes
+
+
+@needs_git
+def test_revert_on_fail_restores_file_deleted_by_patch(repo, capsys):
+    """A file deleted by --allow-delete has its original bytes restored on fail."""
+    (repo / "doomed.py").write_text("goodbye world\n")
+    patch = write_patch(repo, "### doomed.py\n\n```python\n<<<DELETE>>>\n```\n")
+    data = run_json(
+        capsys,
+        patch,
+        "--allow-delete",
+        "--dirty-ok",
+        "--verify",
+        "exit 1",
+        "--revert-on-fail",
+        expect=EXIT_VERIFY,
+    )
+    assert data["reverted"] == ["doomed.py"]
+    assert data["revert_declined"] == []
+    assert (repo / "doomed.py").read_text() == "goodbye world\n"
+
+
+@needs_git
+def test_the_hint_does_not_claim_a_restoration_that_was_declined(
+    repo, capsys, monkeypatch
+):
+    """Field report 2.2.
+
+    `hint` was an unconditional string keyed off the *flag*, not off the
+    *outcome*. Declining is correct behaviour when a restore fails, but anyone
+    reading the console rather than parsing the JSON walked away believing the
+    tree had been restored when it had not — and took their next action
+    against a state they had mismodelled. A tool that reports a restoration it
+    did not perform is the one failure mode running it again cannot catch.
+    """
+    real_open = open
+
+    def fail_wb(file, mode="r", *args, **kwargs):
+        if "wb" in mode and str(file).endswith("app.py"):
+            raise OSError("simulated restore failure")
+        return real_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", fail_wb)
+
+    data = run_json(
+        capsys,
+        write_patch(repo, CLEAN_PATCH),
+        "--verify",
+        "exit 1",
+        "--revert-on-fail",
+        expect=EXIT_VERIFY,
+    )
+    assert data["reverted"] == []
+    assert data["revert_declined"] == ["app.py"]
+    assert data["revert_declined_why"]["app.py"] == applymod.RESTORE_FAILED
+    assert "have been restored" not in data["hint"]
+    assert "Restored" not in data["hint"]
+    assert "declined" in data["hint"]
+    assert "app.py" in data["hint"] or "1 file" in data["hint"]
+    assert "still applied" in data["hint"]
+
+
+@needs_git
+def test_a_file_that_is_not_valid_utf8_is_patched_not_refused(repo, capsys):
+    """One legacy byte must not make a file unpatchable.
+
+    This used to fail the whole file with `'utf-8' codec can't decode byte
+    0xff`, so a cp1252 em-dash or a latin-1 accent left anywhere in a module
+    put it permanently out of reach. Tolerance belongs in the parser: the
+    read and write are paired through `surrogateescape`, so bytes that are not
+    valid UTF-8 decode to lone surrogates and re-encode to exactly themselves.
+
+    The two halves are asserted separately on purpose. That the patch applied
+    is the fix; that the byte survived is what makes the fix safe. A cp1252 or
+    latin-1 fallback would also have "worked" here while writing back
+    different bytes, which is silent corruption and worse than the crash.
+    """
+    raw_bytes = b"def a():\n    return '\xff'\n\n\ndef b():\n    return 2\n"
+    (repo / "app.py").write_bytes(raw_bytes)
+
+    patch = write_patch(
+        repo,
+        "### app.py\n\n```python\n<<<<\ndef b():\n    return 2\n"
+        "====\ndef b():\n    return 200\n>>>>\n```\n",
+    )
+    data = run_json(capsys, patch, "--dirty-ok")
+
+    assert data["applied"] == ["app.py"]
+    after = (repo / "app.py").read_bytes()
+    assert b"return 200" in after, "the region the patch names must be updated"
+    assert b"return '\xff'" in after, (
+        "the byte it could not decode must survive the round trip untouched"
+    )

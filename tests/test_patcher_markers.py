@@ -169,3 +169,81 @@ def test_skipped_file_paths_is_empty_when_everything_parsed():
     text = "```python\n# FILE: b.py\nprint('hi')\n```\n"
     patches = parse_llm_output(text)
     assert skipped_file_paths(text, patches) == []
+
+
+# -- a directive outranks an inference -------------------------------------
+#
+# The parser infers a file path by looking back up to five lines from a fence.
+# That is reasonable until the fence is fixture data inside somebody else's
+# patch body, at which point it invents files out of test strings. Measured on
+# a real artifact: a response editing tests/test_apply.py parsed as two patches
+# for helper.py and app.py, and `apply` offered to create both in the repo root.
+
+
+def test_a_fixture_fence_does_not_shadow_the_declared_file():
+    """The regression, in miniature.
+
+    The outer block is unfenced, so `last_block_end_idx` never guards anything
+    and the nested ```python is treated as a top-level block whose header is
+    found by looking backwards into the fixture string.
+
+    The fixture header is markdown (`### helper.py`), copied from the real
+    artifact, and that spelling is the whole trap: `declared_file_paths` only
+    recognises `# FILE:`, so it does not see it, while the parser's lookback
+    matches it via MARKDOWN_FILE_HEADER_REGEX. The two disagree completely,
+    which is exactly the condition the rule keys on.
+    """
+    text = (
+        "# FILE: tests/test_thing.py\n"
+        "<<<<<<< SEARCH\n"
+        "def test_old():\n"
+        "    pass\n"
+        "=======\n"
+        "def test_new():\n"
+        '    patch = """\n'
+        "### helper.py\n"
+        "\n"
+        "```python\n"
+        "<<<<\n"
+        "def helper():\n"
+        "    return 1\n"
+        "====\n"
+        "def helper():\n"
+        "    return 2\n"
+        ">>>>\n"
+        "```\n"
+        '"""\n'
+        "    assert patch\n"
+        ">>>>>>> REPLACE\n"
+    )
+    assert declared_file_paths(text) == ["tests/test_thing.py"]
+    got = [p["file_path"] for p in parse_llm_output(text)]
+    assert got == ["tests/test_thing.py"]
+    assert "helper.py" not in got, "a file invented from a test fixture"
+
+
+def test_a_normal_fenced_patch_is_untouched_by_the_rule():
+    """The header is at column 0 inside the fence, so declared and parsed
+    intersect and the rule cannot fire. This is the common shape."""
+    text = "```python\n# FILE: b.py\nprint(1)\n```\n"
+    assert [p["file_path"] for p in parse_llm_output(text)] == ["b.py"]
+
+
+def test_markdown_headers_declare_nothing_so_the_rule_cannot_fire():
+    """Most of the suite uses `### app.py`, which is not a `# FILE:` directive.
+    An empty declared set has to leave the fenced result alone."""
+    text = "### app.py\n\n```python\n<<<<\nold\n====\nnew\n>>>>\n```\n"
+    assert declared_file_paths(text) == []
+    assert [p["file_path"] for p in parse_llm_output(text)] == ["app.py"]
+
+
+def test_a_declared_file_that_did_parse_keeps_the_other_patches():
+    """Disjoint is the trigger, not "some file is missing". When any declared
+    file parsed, the parser and the model agree enough to trust the result."""
+    text = (
+        "# FILE: prose_only.py\nI would change the imports here.\n\n"
+        "```python\n# FILE: real.py\nprint(1)\n```\n"
+    )
+    got = [p["file_path"] for p in parse_llm_output(text)]
+    assert "real.py" in got
+    assert skipped_file_paths(text, parse_llm_output(text)) == ["prose_only.py"]

@@ -1058,6 +1058,63 @@ def test_the_announcement_is_not_repeated_once_the_rule_is_there(project, capsys
     assert "added '.kopipasta/'" not in capsys.readouterr().err
 
 
+def test_the_gitignore_announcement_happens_at_most_once_per_run(project, capsys):
+    """Multiple writes within one turn must not duplicate the narration."""
+    assert ".kopipasta/" not in (project / ".gitignore").read_text()
+    run("-e", "src/calc.py", "-q", "x")
+    err = capsys.readouterr().err
+    assert err.count("added '.kopipasta/' to .gitignore") == 1
+
+
+def test_the_gitignore_entry_is_not_duplicated_when_already_present(project):
+    """Running multiple times must leave exactly one entry in .gitignore."""
+    run("-e", "src/calc.py", "-q", "one")
+    run("-e", "src/calc.py", "-q", "two")
+    lines = (project / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert lines.count(".kopipasta/") == 1
+
+
+def test_resuming_an_existing_session_repairs_a_missing_gitignore_entry(
+    project, capsys, canned
+):
+    """DEFECT 1: A continued session must still ensure the ignore entry.
+
+    When a session directory already exists, `_dir_ready` used to short-circuit
+    `_ensure_dir` before checking gitignore, leaving a lost rule unrepaired
+    permanently. Resuming an existing session must re-add the entry and preserve
+    unrelated lines like `*.log`.
+    """
+    run("-e", "src/calc.py", "--session", "s1", "-q", "one", backend=canned)
+    assert ".kopipasta/" in (project / ".gitignore").read_text()
+
+    # Overwrite .gitignore without .kopipasta/
+    (project / ".gitignore").write_text("*.log\n", encoding="utf-8")
+
+    run("-e", "src/calc.py", "--session", "s1", "-q", "two", backend=canned)
+    content = (project / ".gitignore").read_text(encoding="utf-8")
+    assert "*.log" in content
+    assert ".kopipasta/" in content
+    assert "added '.kopipasta/' to .gitignore" in capsys.readouterr().err
+
+
+def test_a_non_git_directory_never_gains_a_gitignore(project, capsys):
+    """DEFECT 2: Running outside a git repository must not litter a .gitignore.
+
+    In a directory with no `.git`, kopipasta must not create a `.gitignore`
+    that nothing will ever read, while the session records under `.kopipasta/`
+    are still created and the run succeeds.
+    """
+    (project / ".git").rmdir()
+    (project / ".gitignore").unlink()
+
+    run("-e", "src/calc.py", "-q", "x")
+    err = capsys.readouterr().err
+    assert not (project / ".gitignore").exists()
+    assert "added '.kopipasta/'" not in err
+    assert (project / ".kopipasta" / "sessions").is_dir()
+    assert list((project / ".kopipasta" / "sessions").iterdir())
+
+
 def test_a_response_with_no_patch_is_a_format_problem_not_a_misconfigured_backend(
     project, capsys
 ):

@@ -177,6 +177,11 @@ def _load_toml(path: Path) -> Dict[str, Any]:
         raise ConfigInvalid(str(path), f"Not valid TOML: {exc}") from exc
 
 
+def load_toml(path: Path) -> Dict[str, Any]:
+    """Read a TOML file so other modules do not depend on a private helper."""
+    return _load_toml(path)
+
+
 @dataclass
 class BackendConfig:
     provider: str

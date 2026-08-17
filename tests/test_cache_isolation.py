@@ -252,6 +252,85 @@ def test_two_repos_under_one_parent_stay_separate(home, tmp_path, monkeypatch):
     assert cache.get_project_key(str(a)) != cache.get_project_key(str(b))
 
 
+# -- project root discovery ------------------------------------------------
+
+
+def test_pyproject_toml_is_root_from_subdirectory(tmp_path, monkeypatch):
+    project = tmp_path / "proj"
+    sub = project / "src" / "pkg"
+    sub.mkdir(parents=True)
+    (project / "pyproject.toml").write_text(
+        "[project]\nname = 'proj'\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(sub)
+    assert cache.find_project_root() == project.resolve()
+
+
+@pytest.mark.parametrize("manifest", ["package.json", "go.mod", "Cargo.toml"])
+def test_project_manifest_is_root_from_subdirectory(tmp_path, monkeypatch, manifest):
+    project = tmp_path / "proj"
+    sub = project / "src" / "pkg"
+    sub.mkdir(parents=True)
+    (project / manifest).write_text("", encoding="utf-8")
+
+    monkeypatch.chdir(sub)
+    assert cache.find_project_root() == project.resolve()
+
+
+@pytest.mark.parametrize("vcs_marker", [".hg", ".jj", ".svn"])
+def test_other_vcs_roots_are_recognised(tmp_path, monkeypatch, vcs_marker):
+    repo = tmp_path / "repo"
+    sub = repo / "src"
+    sub.mkdir(parents=True)
+    (repo / vcs_marker).mkdir()
+
+    monkeypatch.chdir(sub)
+    assert cache.find_project_root() == repo.resolve()
+
+
+def test_git_file_worktree_marker_is_recognised(tmp_path, monkeypatch):
+    """A .git file (created by git worktrees and submodules) must be recognised
+    as a VCS root. Checking .is_dir() instead of .exists() would pass the
+    directory-based tests but fail this one, breaking worktrees and submodules."""
+    repo = tmp_path / "worktree_repo"
+    sub = repo / "src" / "pkg"
+    sub.mkdir(parents=True)
+    (repo / ".git").write_text(
+        "gitdir: /path/to/main/repo/.git/worktrees/worktree_repo\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(sub)
+    assert cache.find_project_root() == repo.resolve()
+
+
+def test_git_repo_takes_precedence_over_nested_package_manifest_in_monorepo(
+    tmp_path, monkeypatch
+):
+    """In a JS/Python monorepo (repo/.git with repo/packages/a/package.json),
+    running from packages/a must resolve to repo (the VCS root), NOT packages/a.
+    A single-pass search would stop at package.json and split session stores,
+    caches, and provider keys for monorepo users."""
+    root = tmp_path / "monorepo"
+    pkg = root / "packages" / "a"
+    pkg.mkdir(parents=True)
+    (root / ".git").mkdir()
+    (pkg / "package.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.chdir(pkg)
+    assert cache.find_project_root() == root.resolve()
+
+
+def test_no_marker_anywhere_falls_back_to_cwd(tmp_path, monkeypatch):
+    plain_dir = tmp_path / "plain" / "sub"
+    plain_dir.mkdir(parents=True)
+
+    monkeypatch.chdir(plain_dir)
+    assert cache.find_project_root() == plain_dir.resolve()
+
+
 # -- degradation: a cache must never be why the tool fails ------------------
 
 

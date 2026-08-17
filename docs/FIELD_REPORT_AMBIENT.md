@@ -1,5 +1,10 @@
 # Field report: kopipasta 0.70.0 against the `ambient` repo
 
+> **Round 2, 2026-08-17 (`a823e7c`): every bug in section 2 is fixed. Verified by running them,
+> not by reading the diff â€” see section 7 at the bottom, which also records the one new problem
+> the 2.6 fix created downstream.** Sections 1-6 are left exactly as first written, because a
+> report that quietly edits itself after the fact is worth nothing.
+
 Companion to `AGENT_CLI_FINDINGS.md`. That file is the spike log written by the people building
 the tool. This one is written from the other side: an agent handed `kopipasta ask` and
 `kopipasta apply` and told to fix a real bug in a repo the tool had never seen, **without
@@ -247,3 +252,247 @@ write a failing case cannot be used to prove a test has teeth.
   (`gemini:gemini-3.7-flash`). The Windows encoding bugs (2.1, 2.7, 2.8) should reproduce
   anywhere PowerShell and a cp1252 default encoding meet; the model-behaviour findings in
   section 3 should not be assumed to transfer to another backend.
+
+---
+
+## 7. Round 2 â€” verification of the fixes (2026-08-17, `a823e7c`, same machine)
+
+Same host, same backend, same repo. `pip show` still reports **0.70.0** and there is no
+`--version` flag, so the only way to tell the two builds apart is the git SHA of the editable
+install. **Bump the version, or add `--version`** â€” a user who reports a bug against "0.70.0"
+is naming two different programs.
+
+Each fix was checked by reproducing the original failing invocation, not by reading the diff.
+
+| # | Was | Now | How it was checked |
+|---|---|---|---|
+| 2.1 | `UnicodeDecodeError`, `"output": ""` | **FIXED** | Re-ran the exact sabotage-apply whose verify emits `U+23AF`. Full vitest text captured, `U+23AF` intact, no traceback |
+| 2.2 | `hint` claimed a revert that did not happen | **FIXED** | Forced a declined revert. `hint` now reads `Revert declined: 1 file(s) had uncommitted changes before this run (...); they are untouched and the patch is still applied to them.` |
+| 2.3 | output never prettier-clean | **FIXED** | `--format-cmd "npx prettier --write {files}"` exists, ran on all 3 applied files before verify, `format.exit: 0` |
+| 2.4 | 8192 default killed patch mode | **FIXED** | A 12,212-output-token patch completed; envelope now reports `max_tokens: 65536` |
+| 2.5 | `"patches": N` read as "applied" | **FIXED** | `ask` returns `patches_proposed: 3, patches_applied: 0` plus a `next:` command; `apply` returns `3 / 3` |
+| 2.6 | `.gitignore` edited unasked | **FIXED** | Reverted the entry, re-ran: `.gitignore` untouched, `.kopipasta/` merely untracked |
+| 2.7 | stderr chatter looks fatal in PowerShell | **partially** | Quieter, but `kopipasta: .gitignore detected.` and the uncommitted-changes notice still hit stderr under `--json` and still render as a red `NativeCommandError` |
+| 2.8 | `-q` destroyed by the shell | n/a | A shell fact, not fixable upstream. `-q @file` is now the documented form and is what I use unconditionally |
+
+Three additions I did not ask for and would keep: `revert_declined_why` (a per-file reason map),
+`detail` mirroring `verify.output` at the top level, and `next` telling you the command to run.
+
+### 7.1 One new problem, created by the 2.6 fix
+
+Not adding `.kopipasta/` to `.gitignore` is the right default, but it moved a cost onto the user
+that nothing warns them about. On the next run of `ambient`'s gate:
+
+```
+[warn] .kopipasta/sessions/2026-08-16-11f5/001-request.md
+... 34 more ...
+[warn] Code style issues found in 36 files. Run Prettier with --write to fix.
+```
+
+`prettier --check .` now walks the session transcripts and fails **before reaching a single
+source file**. The same will happen to any repo-wide linter, formatter or dead-code scanner, and
+the failure names kopipasta's files without explaining why they appeared. Worse, `npm run fix`
+would have *rewritten the transcripts* â€” reformatting a verbatim record of what was sent to a
+model, which is evidence.
+
+I fixed it in `ambient` by adding `.kopipasta/` to both `.gitignore` and `.prettierignore` as a
+deliberate repo decision. The tool should make that decision easy to find: on first run in a repo,
+print one line â€” `kopipasta: writing to .kopipasta/; add it to .gitignore and any formatter's
+ignore file` â€” or offer `kopipasta init`. Silently doing nothing is better than silently editing,
+but saying nothing at all is not the same as saying nothing needs doing.
+
+### 7.2 The round-2 task, as evidence the fixes hold under real use
+
+Not a re-run of the old task. A different open item in the same repo: **Graph `/me/events`
+bypassed `checkPolicy`**, so calendar invitations â€” which Microsoft really does email to
+attendees â€” were never checked against the recipient-domain allowlist that every `mail.send` must
+pass.
+
+- One `ask --mode patch` over 3 editable + 2 reference files: 15,597 est input, 19.8s,
+  **3 patches, 6 hunks, all applied**.
+- `apply --format-cmd ... --verify "npm run typecheck && vitest ..." --revert-on-fail`: format
+  exit 0, verify exit 0, first try.
+- Full `npm run check` green with **no** correction round. Contrast with round 1, which needed
+  four. The `--format-cmd` fix alone removed one guaranteed round trip, and the bigger token
+  budget removed another.
+- Negative control: deleting the six-line gate turns **exactly 3 of 14** tests red and leaves the
+  original 11 green.
+- `npm run smoke` and `npm run smoke:schedule` also pass.
+
+The one thing the model still got right only because it was told: the gate must see the
+**post-override** attendee list, not the original. It is a one-line ordering choice, it is
+invisible to typecheck, and getting it backwards would have produced a fix that passes every gate
+while still emailing the wrong person. Spelling that out in the prompt is what made this a
+one-shot. **The verify command is the quality ceiling; the prompt is the quality floor.**
+
+### 7.3 Still open from round 1
+
+- **2.7**, above.
+- **3.1 / 3.2** â€” nothing has changed about triage over-scoping, or about the model laundering a
+  false premise from the prompt into a high-confidence finding. Round 2 confirmed the cost of
+  that from the other direction: a subagent checking `ambient`'s own TODO against the code found
+  **four of fourteen** items describing work that was already done, and one describing an
+  endpoint the repo never calls. Any tool that reads a repo's stated intent â€” and `--mode triage`
+  is exactly that â€” inherits its staleness. A line in the docs saying triage reports *claims*,
+  not *facts*, would be honest.
+- `files_cited` is still asked of the model rather than computed from the payload. In round 2 it
+  happened to be correct; in round 1 it named a file that was never sent.
+
+---
+
+## 8. Round 3 — dogfooding kopipasta on kopipasta (2026-08-17, same machine)
+
+Different in kind from rounds 1 and 2. This was not a task in another repo; it was `kopipasta ask`
+and `kopipasta apply` used to change *kopipasta*, against an editable install, so every patch that
+landed was running by the next invocation. Everything below was reproduced by running it.
+
+### 8.1 §7.1 was misdiagnosed, and here is the actual cause
+
+§7.1 opens "Not adding `.kopipasta/` to `.gitignore` is the right default". **The tool never
+stopped adding it.** `Session._ensure_dir` still calls `add_to_gitignore` (session.py:198), and
+`tests/test_ask.py:1049` pins that it does. What 2.6 fixed was the *announcement*, not the edit.
+A fresh repo, one `ask`, and `git status` shows ` M .gitignore`.
+
+Nor does prettier ignore `.gitignore`. Measured with prettier 3:
+
+```
+.gitignore contains .kopipasta/   -> prettier skips it        (1 file warned)
+.gitignore entry removed          -> prettier walks it        (2 files warned)
+```
+
+The real defect is narrower and worse than either: **the ignore entry is written only when a new
+session directory is created, and is never repaired.** `_ensure_dir` returns early when the
+directory already exists, so:
+
+```
+remove '.kopipasta/' from .gitignore, then
+  ask (new session)         -> re-added      OK
+  ask --session <existing>  -> NOT re-added  <-- §7.1 happened here
+```
+
+Delete the line once, continue a session, and the transcripts are exposed to every repo-wide tool
+from then on. That is what §7.1 observed, and it is a bug rather than a design decision.
+
+`.git/info/exclude` is not the fix: it hides the directory from `git status` and prettier still
+walks it (measured). And `git clean -xfd` reports `Would remove .kopipasta/` — a routine hygiene
+command destroys the transcripts *and* `cache.json`, which is a lease on a cache billed per
+token-hour.
+
+### 8.2 `--revert-on-fail` cannot restore an untracked file, and left the tree unrunnable
+
+`revert()` has two mechanisms: `os.remove` for files this run *created*, and `git checkout --` for
+everything else. A file that is untracked **and** pre-existing falls between them — git cannot
+check out a path it does not track — so it keeps its new contents and is recorded as `GIT_REFUSED`.
+
+That is not a corner case; it is every second turn of a session that created a file on an earlier
+turn. Observed: turn 3 rewrote the untracked `kopipasta/core/state.py` to import a symbol whose
+defining patch the same turn had failed to emit. Verify failed, revert ran, and:
+
+```
+ERROR tests/test_state.py
+ImportError: cannot import name 'load_toml' from 'kopipasta.core.config'
+```
+
+The tree before the run worked. The tree after the patch worked badly. The tree after the *undo*
+did not import at all — a state that had never existed. An undo that can produce a state the
+caller was never in is worse than no undo. Second-order: outside a git repository every modified
+file takes the `git checkout` branch, so `--revert-on-fail` restores nothing it modified.
+
+The fix is to snapshot pre-run bytes rather than delegate to git. That also retires
+`WAS_ALREADY_DIRTY` as a decline reason: the decline existed because `git checkout` restores to
+HEAD and would have destroyed uncommitted work, whereas a snapshot taken after the caller's edits
+and before ours restores that work instead of discarding it.
+
+### 8.3 A complete, correct patch was discarded in silence — now fixed
+
+A `--mode patch` response declared two files. `kopipasta/core/apply.py` carried four well-formed
+SEARCH/REPLACE hunks. The envelope said:
+
+```
+"patches_proposed": 1
+```
+
+and nothing else. Isolated to the byte: the same content standalone gives `{"error":
+"no_patches"}`; with one opening fence added it parses. `modes.py:343-345` even warns the model
+that "an unfenced block is skipped in silence, however correct it is." The skipping is defensible.
+The silence is not — by this repo's own §2.2 standard, reporting one patch when the model sent two
+is a report of what was intended rather than what occurred.
+
+Measured causes are more varied than the fence rule suggests:
+
+```
+# FILE: a.py + SEARCH/REPLACE at column 0   -> parses
+# FILE: a.py + prose, no body               -> dropped
+indented # FILE: a.py + SEARCH/REPLACE      -> dropped whole
+```
+
+**Fixed in this round.** `patcher.declared_file_paths` / `skipped_file_paths` compare what the
+response *declared* against what the parser accepted, and both `ask` and `apply` now report
+`patches_skipped` and narrate it. Replaying the original failure now prints
+`kopipasta: 6 file(s) the response named are not in this patch: kopipasta/patcher.py, ...`.
+The message deliberately states the fact and not a diagnosis, because the cause is not knowable
+from the artifact.
+
+### 8.4 The inverse: test fixtures parsed as real patches
+
+Asked to add tests *for the patch format*, the model emitted fixtures containing `# FILE: a.py`
+headers. The parser extracted the fixtures as real patches and dropped both actual files:
+
+```
+Previewing 3 patch(es)...
+Would create b.py
+Would create a.py
+Would create b.py
+```
+
+Confirmed minimal case: a `# FILE:` header inside a string literal inside a fenced block becomes a
+patch. The editable-set guard cannot catch it — `apply.py:592-600` deliberately adds every
+non-existent path to the zone, because refusing creations would make "add a new module"
+impossible. So a hallucinated or misparsed creation is waved through by design, and only
+`--dry-run` stands between it and the worktree. `--dry-run` earned its keep twice in this round.
+
+### 8.5 Session state should not live in the worktree
+
+`.git/kopipasta/` removes 8.1 entirely — there is nothing to ignore, so no tracked file is ever
+edited — while staying reachable from the repo root by a relative path, which `.git`-relative
+paths are: `git rev-parse --git-path kopipasta` returns `.git/kopipasta`. That matters because
+many agent sandboxes permit writes only inside the workspace, so a `$HOME` state directory is a
+write they would deny.
+
+Greppability does not regress, measured:
+
+```
+rg MARKER              -> finds neither .kopipasta/ nor .git/kopipasta/  (both are dot-dirs)
+rg --hidden MARKER     -> finds BOTH
+```
+
+Landed this round: two-pass project-root discovery (VCS markers anywhere beat manifests anywhere,
+so **git repositories resolve exactly as before** and there is nothing to migrate), and
+`core/state.py`, which resolves the state root through `--state-dir` > `KOPIPASTA_STATE_DIR` >
+`config.toml [state] dir` > a `git -> repo -> xdg -> temp` chain, recording `source` and `kind`
+separately so "you asked for xdg" and "it landed in temp" cannot be confused.
+
+Two non-git defects found on the way, both verified: kopipasta writes a `.gitignore` into
+directories that contain no git at all, and outside a repository every subdirectory you run from
+becomes its own project, so `nogit/.kopipasta` and `nogit/sub/.kopipasta` both exist and
+`--continue` from the wrong one silently finds nothing.
+
+### 8.6 What dogfooding was good and bad at
+
+Good: a focused single-concern patch over 2-3 files landed first try, repeatedly, including tests
+with real teeth — sabotaging `.exists()` to `.is_dir()` turned 6 of them red. Prefix caching made
+correction turns cost 10-40s. Feeding a verbatim pytest traceback back in worked with no editing.
+
+Bad, and consistently so: **large editable sets.** Five files and 62k tokens timed out at 900s
+with nothing to show. Three named editable files produced two, twice; on one of those it emitted
+the tests and not the implementation, which is the worse half to hold alone. Whole-file rewrites
+of a 726-line module matched 2 of 4 hunks. And it dropped a specified test case in silence — the
+one case with a real bug behind it — which only reading the diff caught.
+
+The rule this suggests, and it is the round-3 counterpart to "the verify command is the quality
+ceiling": **the editable set is the reliability budget.** Two or three files is a patch that
+lands; five is a patch that times out or arrives half-written. Splitting is not a workaround, it
+is the unit of work.
+
+Also worth stating: two of these round trips were spent asking a model to sort imports, which
+`ruff check --fix` did instantly and correctly. Mechanical fixes belong to the mechanical tool.

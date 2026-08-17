@@ -13,6 +13,9 @@ FileTuple = Tuple[str, bool, Optional[List[str]], str]
 
 LEGACY_CACHE_FILES = ("last_selection.json", "last_map.json", "last_task.txt")
 
+VCS_MARKERS = (".git", ".hg", ".jj", ".svn")
+PROJECT_MARKERS = ("pyproject.toml", "package.json", "go.mod", "Cargo.toml")
+
 _REPLACE_ATTEMPTS = 5
 
 
@@ -33,18 +36,35 @@ def get_cache_root() -> Path:
 
 
 def find_project_root(start: Optional[str] = None) -> Path:
-    """The repository root, falling back to cwd outside a repo.
+    """The project or repository root, falling back to cwd outside a project.
 
-    Keying on cwd alone would give `repo/` and `repo/src/` two separate
-    caches for one project, so running kopipasta one directory down would
-    silently look like a first run.
+    Uses a strict two-pass walk over the ancestor chain:
+      1. VCS markers (.git, .hg, .jj, .svn): innermost enclosing repo wins.
+      2. Project manifests (pyproject.toml, package.json, go.mod, Cargo.toml):
+         evaluated ONLY if no VCS marker exists anywhere in the chain.
+
+    Why two passes:
+      A single pass checking manifests alongside VCS markers would break in
+      monorepos (e.g. repo/.git with repo/packages/a/package.json), causing
+      kopipasta inside packages/a to treat packages/a as the root instead of
+      repo. That would silently split session stores, caches, and provider keys.
+      Checking VCS first guarantees existing repository behaviour is unchanged.
     """
     current = Path(start or os.getcwd()).resolve()
-    for candidate in (current, *current.parents):
-        # .git is a *file* in worktrees and submodules, so check existence
-        # rather than is_dir().
-        if (candidate / ".git").exists():
-            return candidate
+    chain = (current, *current.parents)
+
+    # Pass 1: VCS root (check .exists() because .git may be a file in worktrees/submodules)
+    for candidate in chain:
+        for marker in VCS_MARKERS:
+            if (candidate / marker).exists():
+                return candidate
+
+    # Pass 2: Project manifest root (only if no VCS root anywhere in the chain)
+    for candidate in chain:
+        for marker in PROJECT_MARKERS:
+            if (candidate / marker).exists():
+                return candidate
+
     return current
 
 

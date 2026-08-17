@@ -90,7 +90,11 @@ from kopipasta.output import (
     narrate,
     stdout_reserved_for_output,
 )
-from kopipasta.patcher import find_paths_in_text, parse_llm_output
+from kopipasta.patcher import (
+    find_paths_in_text,
+    parse_llm_output,
+    skipped_file_paths,
+)
 
 #: How many demotions to name in the JSON. The full list is always in the
 #: session's selection.json — this is a summary, not the record.
@@ -397,6 +401,24 @@ _PATCH_MARKERS = re.compile(
 
 def _looks_like_a_patch(text: str) -> bool:
     return bool(_PATCH_MARKERS.search(text or ""))
+
+
+def _report_skipped(base: Dict[str, Any], text: str, patches: Sequence[Any]) -> None:
+    """Name the files the model declared and the parser would not accept.
+
+    Only added when something was actually skipped: a key that is present and
+    empty on every run is a key readers learn to skip.
+    """
+    skipped = skipped_file_paths(text, patches)
+    if not skipped:
+        return
+    base["patches_skipped"] = skipped
+    narrate(
+        f"kopipasta: {len(skipped)} file(s) this response named produced no "
+        f"patch: {', '.join(skipped)}. Measured causes vary — an indented "
+        "block and a header with no body both parse to nothing — so this "
+        "reports the fact, not a diagnosis."
+    )
 
 
 def _planned_backend(args: argparse.Namespace, section: str):
@@ -1012,6 +1034,12 @@ def _interpret(
         # have traded one ambiguity for a worse one.
         base["patches_proposed"] = len(patches)
         base["patches_applied"] = 0
+        # A response can declare two files and have one silently dropped, most
+        # often because its block was not fenced. Reporting only what parsed
+        # tells the caller a half-change is a whole one, and that is a lie the
+        # next run cannot catch. Named, not raised: the half that parsed is
+        # still worth having.
+        _report_skipped(base, text, patches)
         if not patches:
             excerpt = " ".join(text.split())[:200] or "(nothing)"
             # "It tried and the format was wrong" and "it never tried" look

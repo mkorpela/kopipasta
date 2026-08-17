@@ -51,7 +51,12 @@ from kopipasta.output import (
     narrate,
     stdout_reserved_for_output,
 )
-from kopipasta.patcher import apply_patches, normalise_path, parse_llm_output
+from kopipasta.patcher import (
+    apply_patches,
+    normalise_path,
+    parse_llm_output,
+    skipped_file_paths,
+)
 from kopipasta.proc import TEXT
 
 
@@ -553,6 +558,19 @@ def _apply(args: argparse.Namespace) -> int:
             hint="Check the artifact, or re-ask with --mode patch.",
         )
 
+    # A response can declare two files and have one dropped by the parser,
+    # most often for want of a ``` fence. `apply` is the verb that writes, so
+    # reporting only what parsed is worse here than in `ask`: the caller acts
+    # on a half-applied change believing it whole.
+    dropped = skipped_file_paths(text, patches)
+    if dropped:
+        narrate(
+            f"kopipasta: {len(dropped)} file(s) the response named are not in "
+            f"this patch: {', '.join(dropped)}. Measured causes vary — an "
+            "indented block and a header with no body both parse to nothing — "
+            "so this reports the fact, not a diagnosis."
+        )
+
     # 1. The undo, before anything is touched.
     #
     #    Scoped to the files this patch will write, because that is the whole
@@ -625,6 +643,7 @@ def _apply(args: argparse.Namespace) -> int:
         # comparable without knowing which one produced them.
         "patches_proposed": len(patches),
         "patches_applied": len(result.applied),
+        **({"patches_skipped": dropped} if dropped else {}),
         "applied": result.applied,
         "partial": result.partial,
         "failed": result.failed,

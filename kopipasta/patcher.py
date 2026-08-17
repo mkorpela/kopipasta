@@ -1079,6 +1079,47 @@ def normalise_path(path: str) -> str:
     return os.path.normpath(path).replace("\\", "/")
 
 
+def declared_file_paths(content: str) -> List[str]:
+    """Every path a `# FILE:` header names, fenced or not, first-seen order.
+
+    This is what the model *said* it was changing, as against what the parser
+    was able to accept. The gap between the two is a patch that was thrown
+    away, and the caller has to be told about it.
+
+    The bug this defends against: a `--mode patch` response declared both
+    `kopipasta/core/apply.py` and `tests/test_apply.py`, the first carrying
+    four well-formed SEARCH/REPLACE hunks. Its block was not inside a ```
+    fence, so it was dropped, and the envelope reported `"patches_proposed": 1`
+    with nothing else. Skipping an unfenced block is deliberate — modes.py
+    warns the model that it will happen — but the caller applied the patch,
+    saw success, and had no way to learn that half the change was missing.
+
+    `PatchParser.FILE_HEADER_REGEX` is reused rather than reimplemented. Two
+    regexes for one syntax drift apart, and this one would drift toward
+    reporting that nothing was dropped — the direction in which the answer is
+    worthless.
+    """
+    seen: List[str] = []
+    for line in (content or "").splitlines():
+        match = PatchParser.FILE_HEADER_REGEX.match(line)
+        if not match:
+            continue
+        path = normalise_path(match.group(1).strip())
+        if path and path not in seen:
+            seen.append(path)
+    return seen
+
+
+def skipped_file_paths(content: str, patches: Iterable[Patch]) -> List[str]:
+    """Declared paths that no parsed patch came back for, in declaration order.
+
+    Empty is the normal answer. A non-empty one means the response contained a
+    change the parser refused and said nothing about.
+    """
+    parsed = {normalise_path(p["file_path"]) for p in patches}
+    return [path for path in declared_file_paths(content) if path not in parsed]
+
+
 def _normalise_zone(paths: Optional[Iterable[str]]) -> Optional[set]:
     """The editable zone, spelled the way the patcher spells paths."""
     if paths is None:
